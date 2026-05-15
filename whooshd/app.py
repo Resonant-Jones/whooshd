@@ -13,7 +13,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from whooshd import __version__
 from whooshd.adapters.base import StreamingNotSupportedError
-from whooshd.adapters.stub import StubInferenceAdapter
+from whooshd.adapters.factory import create_adapter
 from whooshd.contracts import (
     ChatCompletionRequest,
     ChatCompletionResponse,
@@ -73,15 +73,16 @@ async def models() -> ModelsResponse:
     return ModelsResponse(models=rt.list_models())
 
 
-# ── Inference adapter (stub by default) ───────────────────────────────────
+# ── Inference adapter (selected by WHOOSHD_ADAPTER env var) ──────────────
 
-_inference_adapter = StubInferenceAdapter()
+_inference_adapter = create_adapter()
 
 
 def get_inference_adapter():
     """Return the current inference adapter.
 
-    Replaced in Phase 1B when MLX is wired in.
+    Controlled by the WHOOSHD_ADAPTER environment variable.
+    Default: stub.  Set to 'mlx' for real mlx-lm inference.
     """
     return _inference_adapter
 
