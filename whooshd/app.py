@@ -1,6 +1,7 @@
 """Whoosh'd FastAPI application.
 
-v0 endpoints: health, runtime, models, generate (stub).
+v0 endpoints: health, runtime, models, generate (stub),
+chat completions (OpenAI-compatible stub), model inventory aliases.
 MLX inference lives behind the adapter boundary.
 """
 
@@ -11,8 +12,11 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
 from whooshd import __version__
+from whooshd.adapters.base import StreamingNotSupportedError
 from whooshd.adapters.stub import StubInferenceAdapter
 from whooshd.contracts import (
+    ChatCompletionRequest,
+    ChatCompletionResponse,
     ErrorCode,
     ErrorResponse,
     GenerateRequest,
@@ -40,6 +44,7 @@ async def health() -> HealthResponse:
         ok=True,
         runner="whooshd",
         version=__version__,
+        status=rt.status,
         active_model=rt.active_model,
         queue_depth=rt.queue_depth,
         active_jobs=rt.active_jobs,
@@ -115,3 +120,51 @@ async def generate(req: GenerateRequest) -> GenerateResponse:
                 detail={"error": str(exc)},
             ).model_dump(),
         ) from exc
+
+
+# ── Streaming not-supported handler ────────────────────────────────────────
+
+@app.exception_handler(StreamingNotSupportedError)
+async def _streaming_not_supported_handler(request, exc: StreamingNotSupportedError):
+    return JSONResponse(
+        status_code=501,
+        content=ErrorResponse(
+            code=ErrorCode.INTERNAL,
+            message=str(exc),
+            detail={"hint": "Set stream=false or use an adapter that supports streaming."},
+        ).model_dump(),
+    )
+
+
+# ── OpenAI-compatible Chat Completions ─────────────────────────────────────
+
+
+@app.post("/v1/chat/completions", response_model=ChatCompletionResponse)
+async def chat_completions(req: ChatCompletionRequest) -> ChatCompletionResponse:
+    """OpenAI-compatible chat completion endpoint.
+
+    Returns deterministic stub output. Set stream=true to receive a 501
+    until a streaming-capable adapter is configured in Phase 1B/1C.
+    """
+    adapter = get_inference_adapter()
+    return await adapter.chat_completion(req)
+
+
+# ── OpenAI-compatible Model Inventory ──────────────────────────────────────
+
+
+@app.get("/v1/models")
+async def openai_models():
+    """OpenAI-compatible model list."""
+    rt = get_runtime()
+    return rt.build_openai_model_list()
+
+
+# ── Ollama-compatible Tags (model inventory alias) ─────────────────────────
+
+
+@app.get("/api/tags")
+async def ollama_tags():
+    """Ollama-compatible model tags list."""
+    rt = get_runtime()
+    return rt.build_ollama_tags()

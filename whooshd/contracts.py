@@ -7,12 +7,27 @@ so Codexify's MLXProviderAdapter can depend on them without drift.
 from __future__ import annotations
 
 from enum import Enum
-from typing import Optional
+from typing import Literal, Optional
 
 from pydantic import BaseModel, Field
 
 
-# ── Health ──────────────────────────────────────────────────────────────────
+# ── Shared enums ────────────────────────────────────────────────────────────
+
+
+class RunnerStatus(str, Enum):
+    """Fine-grained runner lifecycle state.
+
+    Distinguishes process-alive from model-ready so UIs and orchestrators
+    never silently collapse warmup into offline.
+    """
+
+    STARTING = "starting"
+    WARMING = "warming"
+    READY = "ready"
+    GENERATING = "generating"
+    DEGRADED = "degraded"
+    OFFLINE = "offline"
 
 
 class MemoryPressure(str, Enum):
@@ -22,6 +37,9 @@ class MemoryPressure(str, Enum):
     NORMAL = "normal"
     WARNING = "warning"
     CRITICAL = "critical"
+
+
+# ── Health ──────────────────────────────────────────────────────────────────
 
 
 class MemoryInfo(BaseModel):
@@ -39,6 +57,7 @@ class HealthResponse(BaseModel):
     ok: bool = True
     runner: str = "whooshd"
     version: str = Field(..., description="Runner version")
+    status: RunnerStatus = RunnerStatus.READY
     active_model: Optional[str] = Field(None, description="Currently loaded model ID, or null")
     queue_depth: int = Field(0, ge=0, description="Number of jobs waiting in queue")
     active_jobs: int = Field(0, ge=0, description="Number of currently executing jobs")
@@ -167,3 +186,90 @@ class GenerateResponse(BaseModel):
     finish_reason: str = Field("stop", description="Reason generation stopped")
     usage: TokenUsage = Field(default_factory=TokenUsage)
     runtime: ResponseRuntimeInfo = Field(..., description="How this generation was served")
+
+
+# ── OpenAI-compatible Chat Completions ─────────────────────────────────────
+
+
+class ChatMessage(BaseModel):
+    """A single message in a chat completion conversation."""
+
+    role: Literal["system", "user", "assistant", "tool"]
+    content: str = Field(..., min_length=1, description="Text content of the message")
+    name: Optional[str] = Field(None, description="Optional speaker name")
+
+
+class ChatCompletionRequest(BaseModel):
+    """OpenAI-compatible POST /v1/chat/completions request body."""
+
+    model: str = Field(..., min_length=1, description="Model ID to use for completion")
+    messages: list[ChatMessage] = Field(..., min_length=1, description="Conversation messages")
+    temperature: float = Field(0.7, ge=0.0, le=2.0, description="Sampling temperature")
+    top_p: float = Field(0.95, ge=0.0, le=1.0, description="Nucleus sampling threshold")
+    max_tokens: Optional[int] = Field(256, ge=1, le=32768, description="Maximum tokens to generate")
+    stream: bool = Field(False, description="Whether to stream response tokens via SSE")
+    stop: Optional[list[str]] = Field(None, description="Stop sequences")
+    user: Optional[str] = Field(None, description="End-user identifier for abuse monitoring")
+
+
+class ChatCompletionChoice(BaseModel):
+    """A single completion choice."""
+
+    index: int = Field(0, ge=0)
+    message: ChatMessage
+    finish_reason: str = Field("stop", description="Reason generation stopped")
+
+
+class ChatCompletionUsage(BaseModel):
+    """Token usage for a chat completion."""
+
+    prompt_tokens: Optional[int] = Field(None, ge=0, description="Tokens in the input messages")
+    completion_tokens: Optional[int] = Field(None, ge=0, description="Tokens in the generated response")
+    total_tokens: Optional[int] = Field(None, ge=0, description="Sum of prompt and completion tokens")
+
+
+class ChatCompletionResponse(BaseModel):
+    """OpenAI-compatible chat completion response body."""
+
+    id: str = Field(..., description="Unique completion identifier")
+    object: str = Field("chat.completion", description="Object type")
+    created: int = Field(..., description="Unix timestamp of creation")
+    model: str = Field(..., description="Model that served the request")
+    choices: list[ChatCompletionChoice] = Field(..., min_length=1)
+    usage: ChatCompletionUsage = Field(default_factory=ChatCompletionUsage)
+
+
+# ── OpenAI-compatible Model List ───────────────────────────────────────────
+
+
+class OpenAIModelEntry(BaseModel):
+    """A single model entry in an OpenAI-style /v1/models response."""
+
+    id: str = Field(..., description="Model identifier")
+    object: str = Field("model", description="Object type")
+    created: int = Field(..., description="Unix timestamp when model was registered")
+    owned_by: str = Field("whooshd", description="Owning entity")
+
+
+class OpenAIModelListResponse(BaseModel):
+    """OpenAI-compatible GET /v1/models response."""
+
+    object: str = Field("list", description="Object type")
+    data: list[OpenAIModelEntry] = Field(default_factory=list)
+
+
+# ── Ollama-compatible Tags ─────────────────────────────────────────────────
+
+
+class OllamaTagEntry(BaseModel):
+    """A single model entry in an Ollama-style /api/tags response."""
+
+    name: str = Field(..., description="Model name with optional tag suffix")
+    modified_at: str = Field(..., description="ISO-8601 timestamp of last modification")
+    size: int = Field(..., ge=0, description="Model size in bytes")
+
+
+class OllamaTagsResponse(BaseModel):
+    """Ollama-compatible GET /api/tags response."""
+
+    models: list[OllamaTagEntry] = Field(default_factory=list)

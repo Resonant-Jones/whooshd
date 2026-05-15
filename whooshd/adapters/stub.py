@@ -8,12 +8,20 @@ from __future__ import annotations
 import time
 import uuid
 
+from whooshd.adapters.base import StreamingNotSupportedError
 from whooshd.contracts import (
+    ChatCompletionChoice,
+    ChatCompletionRequest,
+    ChatCompletionResponse,
+    ChatCompletionUsage,
+    ChatMessage,
     GenerateRequest,
     GenerateResponse,
     ResponseRuntimeInfo,
     TokenUsage,
 )
+
+_STUB_CHAT_TEXT = "Whoosh'd stub response: chat completion contract is online."
 
 
 class StubInferenceAdapter:
@@ -26,10 +34,17 @@ class StubInferenceAdapter:
 
     def __init__(self) -> None:
         self._call_count = 0
+        self._chat_call_count = 0
 
     @property
     def name(self) -> str:
         return "stub"
+
+    @property
+    def supports_streaming(self) -> bool:
+        return False
+
+    # ── Codexify-style generate ────────────────────────────────────────
 
     async def generate(self, request: GenerateRequest) -> GenerateResponse:
         t0 = time.monotonic()
@@ -62,5 +77,44 @@ class StubInferenceAdapter:
                 adapter=self.name,
                 queued=False,
                 elapsed_ms=round(elapsed_ms, 3),
+            ),
+        )
+
+    # ── OpenAI-compatible chat completions ─────────────────────────────
+
+    async def chat_completion(self, request: ChatCompletionRequest) -> ChatCompletionResponse:
+        if request.stream:
+            raise StreamingNotSupportedError(
+                "Streaming is not available in stub mode. "
+                "Set stream=false or use a real inference adapter."
+            )
+
+        self._chat_call_count += 1
+
+        t0 = time.monotonic()
+
+        # Approximate prompt tokens from concatenated message content.
+        prompt_text = " ".join(m.content for m in request.messages)
+        prompt_tokens = max(1, len(prompt_text.split()))
+        completion_tokens = len(_STUB_CHAT_TEXT.split())
+
+        request_id = f"chatcmpl-stub-{uuid.uuid4().hex[:12]}"
+
+        return ChatCompletionResponse(
+            id=request_id,
+            object="chat.completion",
+            created=int(time.time()),
+            model=request.model,
+            choices=[
+                ChatCompletionChoice(
+                    index=0,
+                    message=ChatMessage(role="assistant", content=_STUB_CHAT_TEXT),
+                    finish_reason="stop",
+                )
+            ],
+            usage=ChatCompletionUsage(
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                total_tokens=prompt_tokens + completion_tokens,
             ),
         )

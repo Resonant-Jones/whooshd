@@ -17,8 +17,18 @@ from whooshd.contracts import (
     MemoryPressure,
     ModelCapability,
     ModelInfo,
+    OllamaTagEntry,
+    OllamaTagsResponse,
+    OpenAIModelEntry,
+    OpenAIModelListResponse,
+    RunnerStatus,
     RuntimeResponse,
 )
+
+# Synthetic creation timestamp for stub models.
+_STUB_MODEL_CREATED = 1700000000
+# Synthetic size in bytes for stub models (~1.5 GB for a 1.5B 4-bit model).
+_STUB_MODEL_SIZE = 1_500_000_000
 
 
 class RuntimeState:
@@ -29,6 +39,9 @@ class RuntimeState:
 
     def __init__(self) -> None:
         self._started_at: float = time.monotonic()
+
+        # ── Runner status ───────────────────────────────────────────────
+        self.status: RunnerStatus = RunnerStatus.READY
 
         # ── Memory (stubbed) ────────────────────────────────────────────
         self.memory = MemoryInfo(
@@ -89,6 +102,36 @@ class RuntimeState:
 
     def get_model(self, model_id: str) -> Optional[ModelInfo]:
         return self._models.get(model_id)
+
+    # ── OpenAI-compatible model list ────────────────────────────────────
+
+    def build_openai_model_list(self) -> OpenAIModelListResponse:
+        """Return registered models in OpenAI /v1/models format."""
+        entries: list[OpenAIModelEntry] = []
+        for m in self._models.values():
+            entries.append(
+                OpenAIModelEntry(
+                    id=m.id,
+                    created=_STUB_MODEL_CREATED,
+                    owned_by="whooshd",
+                )
+            )
+        return OpenAIModelListResponse(data=entries)
+
+    # ── Ollama-compatible tags ───────────────────────────────────────────
+
+    def build_ollama_tags(self) -> OllamaTagsResponse:
+        """Return registered models in Ollama /api/tags format."""
+        entries: list[OllamaTagEntry] = []
+        for m in self._models.values():
+            entries.append(
+                OllamaTagEntry(
+                    name=f"{m.id}:latest",
+                    modified_at="2024-01-01T00:00:00Z",
+                    size=_STUB_MODEL_SIZE,
+                )
+            )
+        return OllamaTagsResponse(models=entries)
 
 
 # Module-level singleton for the app layer to import.
