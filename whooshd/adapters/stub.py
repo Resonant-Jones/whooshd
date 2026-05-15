@@ -5,6 +5,7 @@ Returns deterministic text so contract tests can run without a real model.
 
 from __future__ import annotations
 
+import asyncio
 import time
 import uuid
 from typing import AsyncIterator
@@ -129,6 +130,9 @@ class StubInferenceAdapter:
         request_id = f"chatcmpl-stub-{uuid.uuid4().hex[:12]}"
         created = int(time.time())
 
+        # Yield control so the caller can observe the request is in-flight.
+        await asyncio.sleep(0)
+
         # Chunk 1: assistant role marker, no content.
         yield ChatCompletionChunk(
             id=request_id,
@@ -143,7 +147,9 @@ class StubInferenceAdapter:
         )
 
         # Chunks 2..N: one content delta per word token.
+        # Yield control between chunks so tests can observe active_jobs.
         for token in _STUB_STREAM_TOKENS:
+            await asyncio.sleep(0)
             yield ChatCompletionChunk(
                 id=request_id,
                 created=created,

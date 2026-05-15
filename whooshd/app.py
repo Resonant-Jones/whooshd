@@ -23,6 +23,7 @@ from whooshd.contracts import (
     GenerateResponse,
     HealthResponse,
     ModelsResponse,
+    RequestLifecycleState,
 )
 from whooshd.runtime import get_runtime
 
@@ -108,10 +109,18 @@ async def generate(req: GenerateRequest) -> GenerateResponse:
 
     Currently returns deterministic stub output. Phase 1B wires mlx-lm.
     """
+    rt = get_runtime()
+    model = req.model_id or "stub-model"
+    request_id = rt.begin_request(model=model, stream=False)
+    rt.mark_running(request_id)
+
     adapter = get_inference_adapter()
     try:
-        return await adapter.generate(req)
+        result = await adapter.generate(req)
+        rt.complete_request(request_id)
+        return result
     except Exception as exc:
+        rt.fail_request(request_id)
         raise HTTPException(
             status_code=500,
             detail=ErrorResponse(
@@ -146,19 +155,40 @@ async def chat_completions(req: ChatCompletionRequest):
     - stream=false → JSON response with the full completion.
     - stream=true  → SSE text/event-stream with OpenAI-compatible chunks.
     """
+    rt = get_runtime()
     adapter = get_inference_adapter()
 
+    # ── Non-streaming path ────────────────────────────────────────────
     if not req.stream:
-        return await adapter.chat_completion(req)
+        request_id = rt.begin_request(model=req.model, stream=False)
+        rt.mark_running(request_id)
+        try:
+            result = await adapter.chat_completion(req)
+            rt.complete_request(request_id)
+            return result
+        except Exception:
+            rt.fail_request(request_id)
+            raise
 
     # ── Streaming path ────────────────────────────────────────────────
     if not adapter.supports_streaming:
         raise StreamingNotSupportedError()
 
+    request_id = rt.begin_request(model=req.model, stream=True)
+    rt.mark_streaming(request_id)
+
     async def _sse_stream():
-        async for chunk in adapter.chat_completion_stream(req):
-            yield chunk.to_sse()
-        yield "data: [DONE]\n\n"
+        finished_normally = False
+        try:
+            async for chunk in adapter.chat_completion_stream(req):
+                yield chunk.to_sse()
+            yield "data: [DONE]\n\n"
+            finished_normally = True
+        finally:
+            if finished_normally:
+                rt.complete_request(request_id)
+            else:
+                rt.cancel_request(request_id)
 
     return StreamingResponse(
         _sse_stream(),
@@ -189,3 +219,49 @@ async def ollama_tags():
     """Ollama-compatible model tags list."""
     rt = get_runtime()
     return rt.build_ollama_tags()
+
+
+# ── Internal runtime: request lifecycle ────────────────────────────────────
+
+
+@app.get("/runtime/requests")
+async def runtime_requests():
+    """List all tracked requests and their lifecycle states.
+
+    Internal/debug endpoint — not part of the OpenAI-compatible API.
+    """
+    rt = get_runtime()
+    return rt.build_request_list()
+
+
+@app.post("/runtime/requests/{request_id}/cancel")
+async def runtime_cancel_request(request_id: str):
+    """Cancel an active request by ID.
+
+    Internal/debug endpoint — not part of the OpenAI-compatible API.
+    Returns 404 if the request is unknown or already in a terminal state.
+    """
+    rt = get_runtime()
+    snap = rt.get_request_snapshot(request_id)
+    if snap is None:
+        raise HTTPException(
+            status_code=404,
+            detail=ErrorResponse(
+                code=ErrorCode.INTERNAL,
+                message=f"Request {request_id} not found",
+            ).model_dump(),
+        )
+    if snap.status in (
+        RequestLifecycleState.COMPLETED,
+        RequestLifecycleState.CANCELLED,
+        RequestLifecycleState.FAILED,
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail=ErrorResponse(
+                code=ErrorCode.INTERNAL,
+                message=f"Request {request_id} is already in terminal state {snap.status.value}",
+            ).model_dump(),
+        )
+    rt.cancel_request(request_id)
+    return {"ok": True, "request_id": request_id, "status": "cancelled"}

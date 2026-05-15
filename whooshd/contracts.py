@@ -293,6 +293,43 @@ class OpenAIModelListResponse(BaseModel):
     data: list[OpenAIModelEntry] = Field(default_factory=list)
 
 
+# ── Request Lifecycle ──────────────────────────────────────────────────────
+
+
+class RequestLifecycleState(str, Enum):
+    """States a request moves through from acceptance to termination."""
+
+    ACCEPTED = "accepted"
+    RUNNING = "running"
+    STREAMING = "streaming"
+    COMPLETED = "completed"
+    CANCELLED = "cancelled"
+    FAILED = "failed"
+
+
+class RequestSnapshot(BaseModel):
+    """Public-facing summary of a single request.
+
+    Deliberately excludes prompt text and message content — this is
+    runtime metadata only.
+    """
+
+    request_id: str = Field(..., description="Unique request identifier")
+    model: str = Field(..., description="Model ID used for the request")
+    stream: bool = Field(..., description="Whether this is a streaming request")
+    status: RequestLifecycleState = Field(..., description="Current lifecycle state")
+    started_at: float = Field(..., description="Unix timestamp when request was accepted")
+    ended_at: Optional[float] = Field(None, description="Unix timestamp when request terminated")
+    error_code: Optional[str] = Field(None, description="ErrorCode if status is failed")
+
+
+class RequestListResponse(BaseModel):
+    """Response for GET /runtime/requests."""
+
+    requests: list[RequestSnapshot] = Field(default_factory=list)
+    active_count: int = Field(0, ge=0, description="Count of requests in non-terminal states")
+
+
 # ── Ollama-compatible Tags ─────────────────────────────────────────────────
 
 
