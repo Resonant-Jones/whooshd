@@ -124,3 +124,46 @@ class ErrorResponse(BaseModel):
     message: str
     retry_after_seconds: Optional[float] = Field(None, description="Suggested backoff in seconds")
     detail: Optional[dict] = Field(None, description="Optional machine-readable detail")
+
+
+# ── Generation ─────────────────────────────────────────────────────────────
+
+
+class GenerateRequest(BaseModel):
+    """POST /v1/generate request body."""
+
+    prompt: str = Field(..., min_length=1, description="Input text prompt")
+    model_id: Optional[str] = Field(None, description="Target model ID; uses active model if omitted")
+    max_tokens: int = Field(256, ge=1, le=16384, description="Maximum tokens to generate")
+    temperature: float = Field(0.7, ge=0.0, le=2.0, description="Sampling temperature")
+    top_p: float = Field(0.95, ge=0.0, le=1.0, description="Nucleus sampling threshold")
+    stop: Optional[list[str]] = Field(None, description="Stop sequences")
+    request_id: Optional[str] = Field(None, description="Client-supplied idempotency key")
+
+
+class TokenUsage(BaseModel):
+    """Token accounting for a generation request."""
+
+    prompt_tokens: Optional[int] = Field(None, ge=0, description="Tokens in the input prompt")
+    completion_tokens: Optional[int] = Field(None, ge=0, description="Tokens in the generated response")
+    total_tokens: Optional[int] = Field(None, ge=0, description="Sum of prompt and completion tokens")
+
+
+class ResponseRuntimeInfo(BaseModel):
+    """Runtime metadata about how the generation was served."""
+
+    adapter: str = Field(..., description="Name of the inference adapter used")
+    queued: bool = Field(False, description="Whether the request spent time in queue")
+    elapsed_ms: float = Field(..., ge=0, description="Wall-clock time from request to response")
+
+
+class GenerateResponse(BaseModel):
+    """POST /v1/generate response body."""
+
+    ok: bool = True
+    request_id: str = Field(..., description="Idempotency key for this generation")
+    model_id: Optional[str] = Field(None, description="Model that served the request")
+    text: str = Field(..., description="Generated text")
+    finish_reason: str = Field("stop", description="Reason generation stopped")
+    usage: TokenUsage = Field(default_factory=TokenUsage)
+    runtime: ResponseRuntimeInfo = Field(..., description="How this generation was served")
