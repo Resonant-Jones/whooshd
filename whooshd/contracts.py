@@ -239,6 +239,41 @@ class ChatCompletionResponse(BaseModel):
     usage: ChatCompletionUsage = Field(default_factory=ChatCompletionUsage)
 
 
+# ── OpenAI-compatible Streaming Chat Chunks ────────────────────────────────
+
+
+class ChatCompletionDelta(BaseModel):
+    """Delta content for a streaming chat completion chunk."""
+
+    role: Optional[Literal["assistant"]] = Field(None, description="Set on the first chunk only")
+    content: Optional[str] = Field(None, description="Token or word fragment")
+
+
+class ChatCompletionChunkChoice(BaseModel):
+    """A single choice delta in a streaming chunk."""
+
+    index: int = Field(0, ge=0)
+    delta: ChatCompletionDelta = Field(default_factory=ChatCompletionDelta)
+    finish_reason: Optional[str] = Field(None, description="Set on the final chunk only")
+
+
+class ChatCompletionChunk(BaseModel):
+    """OpenAI-compatible streaming chat completion chunk.
+
+    Serialised as an SSE data line: data: {json}\n\n
+    """
+
+    id: str = Field(..., description="Completion identifier, consistent across the stream")
+    object: str = Field("chat.completion.chunk", description="Object type")
+    created: int = Field(..., description="Unix timestamp of creation")
+    model: str = Field(..., description="Model that served the request")
+    choices: list[ChatCompletionChunkChoice] = Field(..., min_length=1)
+
+    def to_sse(self) -> str:
+        """Render this chunk as an SSE data line with trailing blank line."""
+        return f"data: {self.model_dump_json()}\n\n"
+
+
 # ── OpenAI-compatible Model List ───────────────────────────────────────────
 
 

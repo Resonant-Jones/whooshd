@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from fastapi import FastAPI, HTTPException
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 
 from whooshd import __version__
 from whooshd.adapters.base import StreamingNotSupportedError
@@ -139,15 +139,36 @@ async def _streaming_not_supported_handler(request, exc: StreamingNotSupportedEr
 # ── OpenAI-compatible Chat Completions ─────────────────────────────────────
 
 
-@app.post("/v1/chat/completions", response_model=ChatCompletionResponse)
-async def chat_completions(req: ChatCompletionRequest) -> ChatCompletionResponse:
+@app.post("/v1/chat/completions")
+async def chat_completions(req: ChatCompletionRequest):
     """OpenAI-compatible chat completion endpoint.
 
-    Returns deterministic stub output. Set stream=true to receive a 501
-    until a streaming-capable adapter is configured in Phase 1B/1C.
+    - stream=false → JSON response with the full completion.
+    - stream=true  → SSE text/event-stream with OpenAI-compatible chunks.
     """
     adapter = get_inference_adapter()
-    return await adapter.chat_completion(req)
+
+    if not req.stream:
+        return await adapter.chat_completion(req)
+
+    # ── Streaming path ────────────────────────────────────────────────
+    if not adapter.supports_streaming:
+        raise StreamingNotSupportedError()
+
+    async def _sse_stream():
+        async for chunk in adapter.chat_completion_stream(req):
+            yield chunk.to_sse()
+        yield "data: [DONE]\n\n"
+
+    return StreamingResponse(
+        _sse_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 # ── OpenAI-compatible Model Inventory ──────────────────────────────────────

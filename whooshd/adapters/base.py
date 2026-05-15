@@ -6,9 +6,10 @@ so the HTTP layer stays thin and testable.
 
 from __future__ import annotations
 
-from typing import Protocol
+from typing import AsyncIterator, Protocol
 
 from whooshd.contracts import (
+    ChatCompletionChunk,
     ChatCompletionRequest,
     ChatCompletionResponse,
     GenerateRequest,
@@ -47,4 +48,10 @@ class InferenceAdapter(Protocol):
 
     async def chat_completion(self, request: ChatCompletionRequest) -> ChatCompletionResponse:
         """Run inference for an OpenAI-compatible chat completion request."""
+        ...
+
+    async def chat_completion_stream(
+        self, request: ChatCompletionRequest
+    ) -> AsyncIterator[ChatCompletionChunk]:
+        """Stream inference chunks for an OpenAI-compatible chat completion request."""
         ...

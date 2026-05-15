@@ -7,10 +7,13 @@ from __future__ import annotations
 
 import time
 import uuid
+from typing import AsyncIterator
 
-from whooshd.adapters.base import StreamingNotSupportedError
 from whooshd.contracts import (
+    ChatCompletionChunk,
+    ChatCompletionChunkChoice,
     ChatCompletionChoice,
+    ChatCompletionDelta,
     ChatCompletionRequest,
     ChatCompletionResponse,
     ChatCompletionUsage,
@@ -22,6 +25,7 @@ from whooshd.contracts import (
 )
 
 _STUB_CHAT_TEXT = "Whoosh'd stub response: chat completion contract is online."
+_STUB_STREAM_TOKENS = ["Whoosh'd ", "streaming ", "stub ", "online."]
 
 
 class StubInferenceAdapter:
@@ -42,7 +46,7 @@ class StubInferenceAdapter:
 
     @property
     def supports_streaming(self) -> bool:
-        return False
+        return True
 
     # ── Codexify-style generate ────────────────────────────────────────
 
@@ -83,12 +87,7 @@ class StubInferenceAdapter:
     # ── OpenAI-compatible chat completions ─────────────────────────────
 
     async def chat_completion(self, request: ChatCompletionRequest) -> ChatCompletionResponse:
-        if request.stream:
-            raise StreamingNotSupportedError(
-                "Streaming is not available in stub mode. "
-                "Set stream=false or use a real inference adapter."
-            )
-
+        """Non-streaming chat completion — returns the full response at once."""
         self._chat_call_count += 1
 
         t0 = time.monotonic()
@@ -117,4 +116,56 @@ class StubInferenceAdapter:
                 completion_tokens=completion_tokens,
                 total_tokens=prompt_tokens + completion_tokens,
             ),
+        )
+
+    # ── OpenAI-compatible streaming chat ───────────────────────────────
+
+    async def chat_completion_stream(
+        self, request: ChatCompletionRequest
+    ) -> AsyncIterator[ChatCompletionChunk]:
+        """Streaming chat completion — yields one chunk per word token."""
+        self._chat_call_count += 1
+
+        request_id = f"chatcmpl-stub-{uuid.uuid4().hex[:12]}"
+        created = int(time.time())
+
+        # Chunk 1: assistant role marker, no content.
+        yield ChatCompletionChunk(
+            id=request_id,
+            created=created,
+            model=request.model,
+            choices=[
+                ChatCompletionChunkChoice(
+                    index=0,
+                    delta=ChatCompletionDelta(role="assistant"),
+                )
+            ],
+        )
+
+        # Chunks 2..N: one content delta per word token.
+        for token in _STUB_STREAM_TOKENS:
+            yield ChatCompletionChunk(
+                id=request_id,
+                created=created,
+                model=request.model,
+                choices=[
+                    ChatCompletionChunkChoice(
+                        index=0,
+                        delta=ChatCompletionDelta(content=token),
+                    )
+                ],
+            )
+
+        # Final chunk: empty delta, finish_reason = stop.
+        yield ChatCompletionChunk(
+            id=request_id,
+            created=created,
+            model=request.model,
+            choices=[
+                ChatCompletionChunkChoice(
+                    index=0,
+                    delta=ChatCompletionDelta(),
+                    finish_reason="stop",
+                )
+            ],
         )

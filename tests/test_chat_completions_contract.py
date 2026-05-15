@@ -115,11 +115,12 @@ async def test_chat_completions_different_model(client):
     assert resp.json()["model"] == "any-model-id"
 
 
-# ── Streaming rejection ─────────────────────────────────────────────────────
+# ── Streaming (now supported by stub) ──────────────────────────────────────
 
 
 @pytest.mark.asyncio
-async def test_stream_true_returns_501(client):
+async def test_stream_true_returns_200(client):
+    """The stub adapter now supports streaming — returns SSE 200."""
     resp = await client.post(
         "/v1/chat/completions",
         json={
@@ -128,10 +129,7 @@ async def test_stream_true_returns_501(client):
             "stream": True,
         },
     )
-    assert resp.status_code == 501
-    body = resp.json()
-    assert body["code"] == "INTERNAL"
-    assert "stream" in body["message"].lower()
+    assert resp.status_code == 200
 
 
 # ── Validation errors ──────────────────────────────────────────────────────
