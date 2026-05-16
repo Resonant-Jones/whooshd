@@ -15,6 +15,20 @@ from whooshd.contracts import (
 )
 
 
+# ── Helpers ──────────────────────────────────────────────────────────────────
+
+
+class _MockStreamResponse:
+    """Minimal mock of mlx_lm's stream_generate response object."""
+
+    def __init__(self, text: str):
+        self.text = text
+
+
+def _stream_resp(text: str) -> _MockStreamResponse:
+    return _MockStreamResponse(text)
+
+
 # ── Fixtures ────────────────────────────────────────────────────────────────
 
 
@@ -41,6 +55,11 @@ def mock_mlx_lm_module():
     mock_mlx = MagicMock()
     mock_mlx.load.return_value = (MagicMock(), mock_tokenizer)
     mock_mlx.generate.return_value = "Mocked MLX response."
+    mock_mlx.stream_generate.return_value = iter([
+        _stream_resp("Mocked"),
+        _stream_resp(" streaming"),
+        _stream_resp(" response."),
+    ])
 
     sys.modules["mlx_lm"] = mock_mlx
     yield mock_mlx
@@ -54,8 +73,8 @@ class TestMLXAdapterIdentity:
     def test_name_is_mlx_lm(self, mlx_adapter):
         assert mlx_adapter.name == "mlx-lm"
 
-    def test_streaming_not_supported_yet(self, mlx_adapter):
-        assert mlx_adapter.supports_streaming is False
+    def test_streaming_is_supported(self, mlx_adapter):
+        assert mlx_adapter.supports_streaming is True
 
 
 # ── Lazy loading ────────────────────────────────────────────────────────────
@@ -145,17 +164,24 @@ class TestResponseShape:
 # ── Streaming rejection ─────────────────────────────────────────────────────
 
 
-class TestStreamingRejection:
-    async def test_stream_true_raises(self, mlx_adapter):
-        from whooshd.adapters.base import StreamingNotSupportedError
+class TestStreaming:
+    async def test_stream_true_no_longer_raises(self, mlx_adapter, mock_mlx_lm_module):
+        """Streaming is now supported — stream=true should succeed."""
+        # Provide a mock stream_generate that yields a couple tokens.
+        mock_mlx_lm_module.stream_generate.return_value = [
+            _stream_resp("Hello"),
+            _stream_resp(" from"),
+            _stream_resp(" MLX!"),
+        ]
 
         req = ChatCompletionRequest(
             model="test-model",
             messages=[ChatMessage(role="user", content="Hi")],
             stream=True,
         )
-        with pytest.raises(StreamingNotSupportedError, match="Phase 1F"):
-            await mlx_adapter.chat_completion(req)
+        # Should not raise.
+        chunks = [c async for c in mlx_adapter.chat_completion_stream(req)]
+        assert len(chunks) >= 3  # role + content + finish
 
 
 # ── Codexify-style generate ─────────────────────────────────────────────────

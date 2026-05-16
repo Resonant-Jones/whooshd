@@ -10,15 +10,17 @@ from __future__ import annotations
 import asyncio
 import time
 import uuid
-from typing import Optional
+from typing import AsyncIterator, Optional
 
-from whooshd.adapters.base import StreamingNotSupportedError
 from whooshd.config import (
     get_mlx_max_tokens_default,
     get_mlx_model_path,
 )
 from whooshd.contracts import (
     ChatCompletionChoice,
+    ChatCompletionChunk,
+    ChatCompletionChunkChoice,
+    ChatCompletionDelta,
     ChatCompletionRequest,
     ChatCompletionResponse,
     ChatCompletionUsage,
@@ -35,8 +37,8 @@ class MLXInferenceAdapter:
     """Inference adapter backed by mlx-lm.
 
     Model and tokenizer are loaded lazily on the first request.  Subsequent
-    requests reuse the cached objects.  Streaming is not yet implemented
-    (see Phase 1F).
+    requests reuse the cached objects.  Non-streaming and streaming chat
+    completions are both supported.
     """
 
     def __init__(self) -> None:
@@ -54,7 +56,7 @@ class MLXInferenceAdapter:
 
     @property
     def supports_streaming(self) -> bool:
-        return False
+        return True
 
     # ── Lazy import ─────────────────────────────────────────────────────
 
@@ -130,11 +132,6 @@ class MLXInferenceAdapter:
     async def chat_completion(self, request: ChatCompletionRequest) -> ChatCompletionResponse:
         """Run a non-streaming chat completion through mlx-lm."""
 
-        if request.stream:
-            raise StreamingNotSupportedError(
-                "MLX streaming is not yet implemented.  See Phase 1F."
-            )
-
         model_path = get_mlx_model_path()
         await self._ensure_loaded(model_path)
 
@@ -188,6 +185,88 @@ class MLXInferenceAdapter:
                 completion_tokens=len(response_text.split()),
                 total_tokens=len(prompt.split()) + len(response_text.split()),
             ),
+        )
+
+    # ── Chat completion (streaming) ─────────────────────────────────────
+
+    async def chat_completion_stream(
+        self, request: ChatCompletionRequest
+    ) -> AsyncIterator[ChatCompletionChunk]:
+        """Stream chat completion chunks through mlx-lm.stream_generate."""
+
+        model_path = get_mlx_model_path()
+        await self._ensure_loaded(model_path)
+
+        prompt = self._format_chat_prompt(request)
+        max_tokens = request.max_tokens or get_mlx_max_tokens_default()
+
+        request_id = f"chatcmpl-mlx-{uuid.uuid4().hex[:12]}"
+        created = int(time.time())
+
+        # Chunk 1: assistant role marker, no content.
+        await asyncio.sleep(0)  # yield control so the caller can observe state
+        yield ChatCompletionChunk(
+            id=request_id,
+            created=created,
+            model=model_path,
+            choices=[
+                ChatCompletionChunkChoice(
+                    index=0,
+                    delta=ChatCompletionDelta(role="assistant"),
+                )
+            ],
+        )
+
+        _update_runner_status(RunnerStatus.GENERATING)
+
+        errored = False
+        try:
+            mlx_lm = self._import_mlx_lm()
+            gen_kwargs: dict = {
+                "prompt": prompt,
+                "max_tokens": max_tokens,
+            }
+            if request.temperature != 0.7:
+                gen_kwargs["temp"] = request.temperature
+
+            for response in mlx_lm.stream_generate(
+                self._model, self._tokenizer, **gen_kwargs
+            ):
+                text = response.text
+                if text:
+                    await asyncio.sleep(0)
+                    yield ChatCompletionChunk(
+                        id=request_id,
+                        created=created,
+                        model=model_path,
+                        choices=[
+                            ChatCompletionChunkChoice(
+                                index=0,
+                                delta=ChatCompletionDelta(content=text),
+                            )
+                        ],
+                    )
+        except Exception:
+            _update_runner_status(RunnerStatus.DEGRADED)
+            errored = True
+            raise
+        finally:
+            if not errored:
+                _update_runner_status(RunnerStatus.READY)
+
+        # Final chunk: empty delta, finish_reason = stop.
+        await asyncio.sleep(0)
+        yield ChatCompletionChunk(
+            id=request_id,
+            created=created,
+            model=model_path,
+            choices=[
+                ChatCompletionChunkChoice(
+                    index=0,
+                    delta=ChatCompletionDelta(),
+                    finish_reason="stop",
+                )
+            ],
         )
 
     # ── Codexify-style generate ─────────────────────────────────────────
