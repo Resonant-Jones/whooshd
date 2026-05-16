@@ -9,10 +9,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-import httpx
-
-from whooshd.compat.codexify_probe import reconstruct_assistant_text
-
 
 @dataclass
 class ProviderSmokeResult:
@@ -45,6 +41,10 @@ async def smoke_test_server(
     Returns a ``ProviderSmokeResult`` with per-endpoint pass/fail status
     and any accumulated error messages.
     """
+    import httpx
+
+    from whooshd.compat.codexify_probe import reconstruct_assistant_text
+
     result = ProviderSmokeResult()
     errors: list[str] = []
 
@@ -147,3 +147,52 @@ async def smoke_test_server(
     )
 
     return result
+
+
+# ── CLI entry point (python -m whooshd.compat.probe_server) ─────────────────
+
+
+async def _main() -> None:
+    """Thin CLI wrapper for the smoke probe."""
+    import argparse
+    import httpx
+
+    parser = argparse.ArgumentParser(description="Whoosh'd Provider Smoke Test")
+    parser.add_argument(
+        "--base-url",
+        default="http://localhost:8000",
+        help="Base URL of the Whoosh'd server (default: http://localhost:8000)",
+    )
+    parser.add_argument(
+        "--model",
+        default="stub-model",
+        help="Model ID for chat probes (default: stub-model)",
+    )
+    args = parser.parse_args()
+
+    async with httpx.AsyncClient(base_url=args.base_url, timeout=30) as client:
+        result = await smoke_test_server(client, model=args.model)
+
+    print("Whoosh'd Provider Smoke Test\n")
+    print(f"health: {'ok' if result.health_ok else 'FAIL'}")
+    print(
+        f"ready: {'ok' if result.ready else f'not ready ({result.readiness_reason})'}"
+    )
+    print(f"openai models: {'ok' if result.openai_models_ok else 'FAIL'}")
+    print(f"ollama tags: {'ok' if result.ollama_tags_ok else 'FAIL'}")
+    print(f"non-streaming chat: {'ok' if result.non_streaming_chat_ok else 'FAIL'}")
+    print(f"streaming chat: {'ok' if result.streaming_chat_ok else 'FAIL'}")
+
+    if result.errors:
+        print(f"\nerrors ({len(result.errors)}):")
+        for err in result.errors:
+            print(f"  - {err}")
+
+    print(f"\nresult: {'pass' if result.ok else 'fail'}")
+    raise SystemExit(0 if result.ok else 1)
+
+
+if __name__ == "__main__":
+    import asyncio
+
+    asyncio.run(_main())
