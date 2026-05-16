@@ -30,6 +30,22 @@ class RunnerStatus(str, Enum):
     OFFLINE = "offline"
 
 
+class ModelLifecycleState(str, Enum):
+    """Per-model lifecycle state — independent of process liveness.
+
+    A process can be alive (RunnerStatus.READY) while the model is
+    unloaded or failed.  Codexify uses this to distinguish
+    "wait for warmup" from "route to fallback provider".
+    """
+
+    UNLOADED = "unloaded"
+    WARMING = "warming"
+    READY = "ready"
+    GENERATING = "generating"
+    DEGRADED = "degraded"
+    FAILED = "failed"
+
+
 class MemoryPressure(str, Enum):
     """Unified memory pressure level reported by the runner."""
 
@@ -58,6 +74,7 @@ class HealthResponse(BaseModel):
     runner: str = "whooshd"
     version: str = Field(..., description="Runner version")
     status: RunnerStatus = RunnerStatus.READY
+    model_lifecycle: ModelLifecycleState = ModelLifecycleState.UNLOADED
     active_model: Optional[str] = Field(None, description="Currently loaded model ID, or null")
     queue_depth: int = Field(0, ge=0, description="Number of jobs waiting in queue")
     active_jobs: int = Field(0, ge=0, description="Number of currently executing jobs")
@@ -91,6 +108,7 @@ class RuntimeResponse(BaseModel):
     loaded_models: list[LoadedModelInfo] = Field(default_factory=list)
     concurrency: ConcurrencyBudget = Field(default_factory=ConcurrencyBudget)
     uptime_seconds: float = Field(0.0, ge=0, description="Seconds since runner start")
+    model_lifecycle: ModelLifecycleState = ModelLifecycleState.UNLOADED
 
 
 # ── Models ──────────────────────────────────────────────────────────────────
@@ -328,6 +346,28 @@ class RequestListResponse(BaseModel):
 
     requests: list[RequestSnapshot] = Field(default_factory=list)
     active_count: int = Field(0, ge=0, description="Count of requests in non-terminal states")
+
+
+# ── Model Lifecycle ─────────────────────────────────────────────────────────
+
+
+class ModelRuntimeSnapshot(BaseModel):
+    """Public-safe snapshot of the loaded model's lifecycle.
+
+    No prompts, messages, generated text, or raw tracebacks are included.
+    """
+
+    adapter: str = Field(..., description="Active adapter name (e.g. stub, mlx-lm)")
+    configured_model: Optional[str] = Field(None, description="Model path from config")
+    loaded_model: Optional[str] = Field(None, description="Model currently in memory, if any")
+    lifecycle_state: ModelLifecycleState = Field(ModelLifecycleState.UNLOADED)
+    loaded: bool = Field(False, description="Whether a model is currently loaded")
+    warming: bool = Field(False, description="Whether a warmup is in progress")
+    last_load_started_at: Optional[float] = Field(None, description="Unix timestamp")
+    last_load_completed_at: Optional[float] = Field(None, description="Unix timestamp")
+    last_unloaded_at: Optional[float] = Field(None, description="Unix timestamp")
+    last_error_code: Optional[str] = Field(None, description="ErrorCode from the most recent failure")
+    last_error_message: Optional[str] = Field(None, description="Short error message (no tracebacks)")
 
 
 # ── Ollama-compatible Tags ─────────────────────────────────────────────────

@@ -22,9 +22,11 @@ from whooshd.contracts import (
     GenerateRequest,
     GenerateResponse,
     HealthResponse,
+    ModelLifecycleState,
     ModelsResponse,
     RequestLifecycleState,
 )
+from whooshd.config import get_mlx_model_path
 from whooshd.runtime import get_runtime
 
 app = FastAPI(
@@ -46,6 +48,7 @@ async def health() -> HealthResponse:
         runner="whooshd",
         version=__version__,
         status=rt.status,
+        model_lifecycle=rt.model_lifecycle,
         active_model=rt.active_model,
         queue_depth=rt.queue_depth,
         active_jobs=rt.active_jobs,
@@ -266,3 +269,85 @@ async def runtime_cancel_request(request_id: str):
         )
     rt.cancel_request(request_id)
     return {"ok": True, "request_id": request_id, "status": "cancelled"}
+
+
+# ── Internal runtime: model lifecycle ──────────────────────────────────────
+
+
+@app.get("/runtime/model")
+async def runtime_model():
+    """Current model lifecycle snapshot.
+
+    Returns adapter name, configured model, loaded model, lifecycle state,
+    and timing/error metadata.  No prompts, messages, or generated text.
+    """
+    rt = get_runtime()
+    adapter = get_inference_adapter()
+    configured = get_mlx_model_path()
+    return rt.build_model_snapshot(
+        adapter_name=adapter.name, configured_model=configured
+    )
+
+
+@app.post("/runtime/model/warmup")
+async def runtime_model_warmup():
+    """Trigger model warmup / loading.
+
+    For MLX: calls adapter.warmup() which loads the model.
+    For stub: instant no-op.
+    Status transitions through WARMING → READY on success,
+    or FAILED on load error.
+    """
+    rt = get_runtime()
+    adapter = get_inference_adapter()
+
+    rt.begin_warmup()
+    try:
+        await adapter.warmup()
+        rt.complete_warmup()
+    except Exception as exc:
+        rt.fail_warmup(
+            error_code="MODEL_LOAD_FAILED",
+            error_message=str(exc)[:256],
+        )
+        raise HTTPException(
+            status_code=500,
+            detail=ErrorResponse(
+                code=ErrorCode.MODEL_LOAD_FAILED,
+                message=f"Model warmup failed: {exc}",
+            ).model_dump(),
+        ) from exc
+
+    configured = get_mlx_model_path()
+    return rt.build_model_snapshot(
+        adapter_name=adapter.name, configured_model=configured
+    )
+
+
+@app.post("/runtime/model/unload")
+async def runtime_model_unload():
+    """Unload the model from memory.
+
+    Returns 409 Conflict if active requests are running.
+    For MLX: releases model/tokenizer references and hints the GC.
+    For stub: no-op.
+    """
+    rt = get_runtime()
+    adapter = get_inference_adapter()
+
+    if rt.active_jobs > 0:
+        raise HTTPException(
+            status_code=409,
+            detail=ErrorResponse(
+                code=ErrorCode.INTERNAL,
+                message=f"Cannot unload: {rt.active_jobs} active request(s) in progress.",
+            ).model_dump(),
+        )
+
+    await adapter.unload()
+    rt.complete_unload()
+
+    configured = get_mlx_model_path()
+    return rt.build_model_snapshot(
+        adapter_name=adapter.name, configured_model=configured
+    )

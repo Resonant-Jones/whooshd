@@ -27,6 +27,7 @@ from whooshd.contracts import (
     ChatMessage,
     GenerateRequest,
     GenerateResponse,
+    ModelLifecycleState,
     ResponseRuntimeInfo,
     RunnerStatus,
     TokenUsage,
@@ -84,6 +85,7 @@ class MLXInferenceAdapter:
                 return
 
             _update_runner_status(RunnerStatus.WARMING)
+            _update_model_lifecycle(ModelLifecycleState.WARMING)
 
             try:
                 mlx_lm = self._import_mlx_lm()
@@ -92,9 +94,11 @@ class MLXInferenceAdapter:
                 self._loaded = True
             except Exception:
                 _update_runner_status(RunnerStatus.DEGRADED)
+                _update_model_lifecycle(ModelLifecycleState.FAILED)
                 raise
 
             _update_runner_status(RunnerStatus.READY)
+            _update_model_lifecycle(ModelLifecycleState.READY)
 
     # ── Prompt formatting ───────────────────────────────────────────────
 
@@ -319,6 +323,28 @@ class MLXInferenceAdapter:
             ),
         )
 
+    # ── Lifecycle ───────────────────────────────────────────────────────
+
+    def is_loaded(self) -> bool:
+        return self._loaded
+
+    def model_id(self) -> Optional[str]:
+        return self._model_path
+
+    async def warmup(self) -> None:
+        """Load the model immediately (delegates to _ensure_loaded)."""
+        model_path = get_mlx_model_path()
+        await self._ensure_loaded(model_path)
+
+    async def unload(self) -> None:
+        """Release model and tokenizer references and hint the GC."""
+        self._model = None
+        self._tokenizer = None
+        self._loaded = False
+        self._model_path = None
+        import gc
+        gc.collect()
+
 
 # ── Internal helpers ────────────────────────────────────────────────────────
 
@@ -332,3 +358,14 @@ def _update_runner_status(status: RunnerStatus) -> None:
         rt.status = status
     except Exception:
         pass  # best-effort; never let a status update crash inference
+
+
+def _update_model_lifecycle(state: ModelLifecycleState) -> None:
+    """Push a model lifecycle change into the global RuntimeState."""
+    try:
+        from whooshd.runtime import get_runtime
+
+        rt = get_runtime()
+        rt.model_lifecycle = state
+    except Exception:
+        pass

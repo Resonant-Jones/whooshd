@@ -55,3 +55,21 @@ class InferenceAdapter(Protocol):
     ) -> AsyncIterator[ChatCompletionChunk]:
         """Stream inference chunks for an OpenAI-compatible chat completion request."""
         ...
+
+    # ── Lifecycle ─────────────────────────────────────────────────────
+
+    def is_loaded(self) -> bool:
+        """Return True if the adapter currently holds a loaded model."""
+        ...
+
+    def model_id(self) -> Optional[str]:
+        """Return the loaded model identifier, or None."""
+        ...
+
+    async def warmup(self) -> None:
+        """Ensure the model is loaded and ready for inference."""
+        ...
+
+    async def unload(self) -> None:
+        """Release the model from memory (subject to active-request checks)."""
+        ...

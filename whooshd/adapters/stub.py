@@ -175,3 +175,19 @@ class StubInferenceAdapter:
                 )
             ],
         )
+
+    # ── Lifecycle (stub — always loaded) ───────────────────────────────
+
+    def is_loaded(self) -> bool:
+        return True
+
+    def model_id(self) -> Optional[str]:
+        return "stub-model"
+
+    async def warmup(self) -> None:
+        """Instant no-op — stub is always ready."""
+        pass
+
+    async def unload(self) -> None:
+        """No-op — stub does not hold resources."""
+        pass

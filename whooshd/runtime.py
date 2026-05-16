@@ -21,6 +21,8 @@ from whooshd.contracts import (
     MemoryPressure,
     ModelCapability,
     ModelInfo,
+    ModelLifecycleState,
+    ModelRuntimeSnapshot,
     OllamaTagEntry,
     OllamaTagsResponse,
     OpenAIModelEntry,
@@ -62,6 +64,14 @@ class RuntimeState:
 
         # ── Runner status ───────────────────────────────────────────────
         self.status: RunnerStatus = RunnerStatus.READY
+        self.model_lifecycle: ModelLifecycleState = ModelLifecycleState.UNLOADED
+
+        # ── Model lifecycle timestamps / errors ────────────────────────
+        self._last_load_started_at: Optional[float] = None
+        self._last_load_completed_at: Optional[float] = None
+        self._last_unloaded_at: Optional[float] = None
+        self._last_error_code: Optional[str] = None
+        self._last_error_message: Optional[str] = None
 
         # ── Memory (stubbed) ────────────────────────────────────────────
         self.memory = MemoryInfo(
@@ -133,7 +143,50 @@ class RuntimeState:
             loaded_models=list(self._loaded_snapshots),
             concurrency=self.concurrency,
             uptime_seconds=self.uptime_seconds,
+            model_lifecycle=self.model_lifecycle,
         )
+
+    def build_model_snapshot(
+        self, *, adapter_name: str, configured_model: Optional[str]
+    ) -> ModelRuntimeSnapshot:
+        """Build a public-safe model lifecycle snapshot."""
+        from whooshd.app import get_inference_adapter
+
+        adapter = get_inference_adapter()
+        return ModelRuntimeSnapshot(
+            adapter=adapter_name,
+            configured_model=configured_model,
+            loaded_model=adapter.model_id() if adapter.is_loaded() else None,
+            lifecycle_state=self.model_lifecycle,
+            loaded=adapter.is_loaded(),
+            warming=self.model_lifecycle == ModelLifecycleState.WARMING,
+            last_load_started_at=self._last_load_started_at,
+            last_load_completed_at=self._last_load_completed_at,
+            last_unloaded_at=self._last_unloaded_at,
+            last_error_code=self._last_error_code,
+            last_error_message=self._last_error_message,
+        )
+
+    # ── Model lifecycle bookkeeping ────────────────────────────────────
+
+    def begin_warmup(self) -> None:
+        self.model_lifecycle = ModelLifecycleState.WARMING
+        self._last_load_started_at = time.time()
+
+    def complete_warmup(self) -> None:
+        self.model_lifecycle = ModelLifecycleState.READY
+        self._last_load_completed_at = time.time()
+        self._last_error_code = None
+        self._last_error_message = None
+
+    def fail_warmup(self, *, error_code: Optional[str] = None, error_message: Optional[str] = None) -> None:
+        self.model_lifecycle = ModelLifecycleState.FAILED
+        self._last_error_code = error_code
+        self._last_error_message = error_message
+
+    def complete_unload(self) -> None:
+        self.model_lifecycle = ModelLifecycleState.UNLOADED
+        self._last_unloaded_at = time.time()
 
     def list_models(self) -> list[ModelInfo]:
         return list(self._models.values())
