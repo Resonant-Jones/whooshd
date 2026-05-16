@@ -14,7 +14,7 @@ from httpx import ASGITransport, AsyncClient
 
 from whooshd.app import app
 from whooshd.contracts import ModelLifecycleState
-from whooshd.runtime import RuntimeState
+from whooshd.runtime import RuntimeState, get_runtime
 
 
 # ── Stub HTTP fixtures ──────────────────────────────────────────────────────
@@ -147,6 +147,8 @@ async def test_warmup_stub_marks_ready(client):
 async def test_unload_stub_returns_200(client):
     resp = await client.post("/runtime/model/unload")
     assert resp.status_code == 200
+    # Restore lifecycle so subsequent tests see the correct state.
+    get_runtime().complete_warmup()
 
 
 @pytest.mark.asyncio
@@ -172,6 +174,8 @@ async def test_unload_during_active_request_returns_409(client):
     # After stream completes, unload should work.
     resp = await client.post("/runtime/model/unload")
     assert resp.status_code == 200
+    # Restore lifecycle for subsequent tests.
+    get_runtime().complete_warmup()
 
 
 def test_unload_blocked_during_active_request_via_runtime():

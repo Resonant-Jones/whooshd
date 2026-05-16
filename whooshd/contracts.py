@@ -370,6 +370,26 @@ class ModelRuntimeSnapshot(BaseModel):
     last_error_message: Optional[str] = Field(None, description="Short error message (no tracebacks)")
 
 
+# ── Readiness ───────────────────────────────────────────────────────────────
+
+
+class ReadinessResponse(BaseModel):
+    """GET /ready response — can this provider accept inference right now?
+
+    /ready is about readiness, not liveness.  A 503 here means the
+    process is reachable but the model is not ready.  /health remains
+    the liveness probe.
+    """
+
+    ready: bool = Field(False, description="True if the provider can accept inference requests")
+    status: RunnerStatus = Field(..., description="Current runner status")
+    model_lifecycle: ModelLifecycleState = Field(..., description="Current model lifecycle state")
+    adapter: str = Field(..., description="Active adapter name")
+    configured_model: Optional[str] = Field(None, description="Model path from config")
+    loaded_model: Optional[str] = Field(None, description="Model currently in memory, if any")
+    reason: Optional[str] = Field(None, description="Human-readable reason when not ready")
+
+
 # ── Ollama-compatible Tags ─────────────────────────────────────────────────
 
 

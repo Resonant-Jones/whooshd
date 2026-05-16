@@ -24,7 +24,9 @@ from whooshd.contracts import (
     HealthResponse,
     ModelLifecycleState,
     ModelsResponse,
+    ReadinessResponse,
     RequestLifecycleState,
+    RunnerStatus,
 )
 from whooshd.config import get_mlx_model_path
 from whooshd.runtime import get_runtime
@@ -54,6 +56,50 @@ async def health() -> HealthResponse:
         active_jobs=rt.active_jobs,
         memory=rt.memory,
     )
+
+
+# ── Readiness ──────────────────────────────────────────────────────────────
+
+
+@app.get("/ready")
+async def ready():
+    """Readiness probe — can this provider accept inference right now?
+
+    Returns 200 when ready, 503 when the process is alive but the model
+    is not ready to serve inference (warming, unloaded, failed, degraded).
+    """
+    rt = get_runtime()
+    adapter = get_inference_adapter()
+    configured = get_mlx_model_path()
+
+    lifecycle = rt.model_lifecycle
+    is_ready = lifecycle == ModelLifecycleState.READY
+
+    # Determine reason and HTTP status.
+    reason: Optional[str] = None
+    if is_ready:
+        reason = None
+    elif lifecycle == ModelLifecycleState.WARMING:
+        reason = "model_warming"
+    elif lifecycle == ModelLifecycleState.UNLOADED:
+        reason = "model_unloaded"
+    elif lifecycle == ModelLifecycleState.FAILED:
+        reason = "model_load_failed"
+    elif lifecycle == ModelLifecycleState.DEGRADED:
+        reason = "model_degraded"
+
+    body = ReadinessResponse(
+        ready=is_ready,
+        status=rt.status,
+        model_lifecycle=lifecycle,
+        adapter=adapter.name,
+        configured_model=configured,
+        loaded_model=adapter.model_id() if adapter.is_loaded() else None,
+        reason=reason,
+    )
+
+    status_code = 200 if is_ready else 503
+    return JSONResponse(content=body.model_dump(), status_code=status_code)
 
 
 # ── Runtime ────────────────────────────────────────────────────────────────
@@ -88,6 +134,20 @@ def get_inference_adapter():
     Default: stub.  Set to 'mlx' for real mlx-lm inference.
     """
     return _inference_adapter
+
+
+# ── Startup: sync lifecycle with adapter reality ────────────────────────────
+
+
+def _init_lifecycle():
+    """If the adapter is already loaded, mark the runtime lifecycle as ready."""
+    rt = get_runtime()
+    adapter = get_inference_adapter()
+    if adapter.is_loaded():
+        rt.complete_warmup()
+
+
+_init_lifecycle()
 
 
 # ── Validation error handler ───────────────────────────────────────────────
