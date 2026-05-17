@@ -133,3 +133,45 @@ def test_compatibility_profile():
     ]
     for signal in unsupported_signals:
         assert signal.lower() in text.lower(), f"Guide should mention unsupported: {signal!r}"
+
+
+# ── Queue policy spec validation ────────────────────────────────────────────
+
+QUEUE_SPEC = DOCS_DIR / "queue-policy.md"
+
+
+class TestQueuePolicySpec:
+    def test_spec_exists(self):
+        assert QUEUE_SPEC.exists(), f"Expected {QUEUE_SPEC}"
+        assert QUEUE_SPEC.stat().st_size > 1000, "Queue policy spec is too short"
+
+    def test_spec_covers_required_topics(self):
+        text = QUEUE_SPEC.read_text().lower()
+        required = [
+            "reject-only",
+            "fifo",
+            "priority lanes",
+            "cancellation while queued",
+            "queue timeout",
+            "codexify",
+            "/v1/chat/completions",
+            "no prompts",
+            "no messages",
+            "no generated text",
+            "whooshd_enable_queue",
+            "whooshd_max_queue_depth",
+            "whooshd_queue_timeout_seconds",
+        ]
+        for topic in required:
+            assert topic in text, f"Queue spec missing topic: {topic!r}"
+
+    def test_spec_documents_current_behavior(self):
+        text = QUEUE_SPEC.read_text()
+        assert "WHOOSHD_MAX_ACTIVE_REQUESTS" in text
+        assert "429" in text
+        assert "rejected requests do not create" in text.lower()
+
+    def test_spec_parks_priority_lanes(self):
+        text = QUEUE_SPEC.read_text().lower()
+        assert "priority lanes" in text
+        assert "parked" in text or "later" in text or "not mvp" in text
