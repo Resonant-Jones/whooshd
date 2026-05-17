@@ -56,3 +56,29 @@ def get_mlx_max_tokens_default() -> int:
 def get_mlx_trust_remote_code() -> bool:
     """Allow custom code in model repos.  Off by default."""
     return _env_bool("WHOOSHD_MLX_TRUST_REMOTE_CODE", False)
+
+
+# ── Admission control ───────────────────────────────────────────────────────
+
+
+def get_max_active_requests() -> int:
+    """Maximum concurrent active requests before rejecting with 429.
+
+    Default 2 to match Codexify's current chat worker concurrency.
+    """
+    return _env_int("WHOOSHD_MAX_ACTIVE_REQUESTS", 2)
+
+
+def get_max_prompt_chars() -> int:
+    """Maximum estimated prompt character count before rejection."""
+    return _env_int("WHOOSHD_MAX_PROMPT_CHARS", 262144)
+
+
+def get_max_messages() -> int:
+    """Maximum number of messages in a chat request."""
+    return _env_int("WHOOSHD_MAX_MESSAGES", 128)
+
+
+def get_max_request_max_tokens() -> int:
+    """Server-side cap on max_tokens, even if the contract allows more."""
+    return _env_int("WHOOSHD_MAX_REQUEST_MAX_TOKENS", 32768)

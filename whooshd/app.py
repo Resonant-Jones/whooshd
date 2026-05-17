@@ -12,6 +12,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from whooshd import __version__
+from whooshd.admission import evaluate_chat_request
 from whooshd.adapters.base import StreamingNotSupportedError
 from whooshd.adapters.factory import create_adapter
 from whooshd.contracts import (
@@ -174,6 +175,23 @@ async def generate(req: GenerateRequest) -> GenerateResponse:
     Currently returns deterministic stub output. Phase 1B wires mlx-lm.
     """
     rt = get_runtime()
+
+    # ── Admission control (simple: just active request limit) ─────────
+    from whooshd.config import get_max_active_requests
+
+    if rt.active_jobs >= get_max_active_requests():
+        rt.record_rejected("rejected_overloaded")
+        raise HTTPException(
+            status_code=429,
+            detail=ErrorResponse(
+                code=ErrorCode.RUNNER_OVERLOADED,
+                message=f"Whoosh'd is at its active request limit.",
+                detail={"active_jobs": rt.active_jobs},
+            ).model_dump(),
+        )
+
+    rt.record_accepted()
+
     model = req.model_id or "stub-model"
     request_id = rt.begin_request(model=model, stream=False)
     rt.mark_running(request_id)
@@ -221,6 +239,21 @@ async def chat_completions(req: ChatCompletionRequest):
     """
     rt = get_runtime()
     adapter = get_inference_adapter()
+
+    # ── Admission control ─────────────────────────────────────────────
+    admission = evaluate_chat_request(req, rt)
+    if not admission.accepted:
+        rt.record_rejected(admission.reason.value)
+        return JSONResponse(
+            status_code=admission.http_status,
+            content=ErrorResponse(
+                code=admission.error_code or ErrorCode.INTERNAL,
+                message=admission.message or "Request rejected.",
+                detail=admission.details,
+            ).model_dump(),
+        )
+
+    rt.record_accepted()
 
     # ── Non-streaming path ────────────────────────────────────────────
     if not req.stream:
@@ -411,3 +444,13 @@ async def runtime_model_unload():
     return rt.build_model_snapshot(
         adapter_name=adapter.name, configured_model=configured
     )
+
+
+# ── Internal runtime: admission config ─────────────────────────────────────
+
+
+@app.get("/runtime/admission")
+async def runtime_admission():
+    """Current admission limits and counters."""
+    rt = get_runtime()
+    return rt.build_admission_config()

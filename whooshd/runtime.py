@@ -73,6 +73,15 @@ class RuntimeState:
         self._last_error_code: Optional[str] = None
         self._last_error_message: Optional[str] = None
 
+        # ── Admission counters ────────────────────────────────────────
+        self.total_requests_accepted: int = 0
+        self.total_requests_rejected: int = 0
+        self.total_rejected_overloaded: int = 0
+        self.total_rejected_prompt_too_large: int = 0
+        self.total_rejected_too_many_messages: int = 0
+        self.total_rejected_max_tokens: int = 0
+        self.total_rejected_model_not_ready: int = 0
+
         # ── Memory (stubbed) ────────────────────────────────────────────
         self.memory = MemoryInfo(
             pressure=MemoryPressure.NORMAL,
@@ -187,6 +196,50 @@ class RuntimeState:
     def complete_unload(self) -> None:
         self.model_lifecycle = ModelLifecycleState.UNLOADED
         self._last_unloaded_at = time.time()
+
+    # ── Admission counter helpers ──────────────────────────────────────
+
+    def record_accepted(self) -> None:
+        self.total_requests_accepted += 1
+
+    def record_rejected(self, reason: str) -> None:
+        self.total_requests_rejected += 1
+        if reason == "rejected_overloaded":
+            self.total_rejected_overloaded += 1
+        elif reason == "rejected_prompt_too_large":
+            self.total_rejected_prompt_too_large += 1
+        elif reason == "rejected_too_many_messages":
+            self.total_rejected_too_many_messages += 1
+        elif reason == "rejected_max_tokens_too_high":
+            self.total_rejected_max_tokens += 1
+        elif reason == "rejected_model_not_ready":
+            self.total_rejected_model_not_ready += 1
+
+    def build_admission_config(self) -> dict:
+        """Return current admission limits + counters."""
+        from whooshd.config import (
+            get_max_active_requests,
+            get_max_messages,
+            get_max_prompt_chars,
+            get_max_request_max_tokens,
+        )
+
+        return {
+            "max_active_requests": get_max_active_requests(),
+            "active_jobs": self.active_jobs,
+            "max_prompt_chars": get_max_prompt_chars(),
+            "max_messages": get_max_messages(),
+            "max_request_max_tokens": get_max_request_max_tokens(),
+            "counters": {
+                "accepted": self.total_requests_accepted,
+                "rejected": self.total_requests_rejected,
+                "rejected_overloaded": self.total_rejected_overloaded,
+                "rejected_prompt_too_large": self.total_rejected_prompt_too_large,
+                "rejected_too_many_messages": self.total_rejected_too_many_messages,
+                "rejected_max_tokens": self.total_rejected_max_tokens,
+                "rejected_model_not_ready": self.total_rejected_model_not_ready,
+            },
+        }
 
     def list_models(self) -> list[ModelInfo]:
         return list(self._models.values())
