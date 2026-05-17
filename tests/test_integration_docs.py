@@ -175,3 +175,46 @@ class TestQueuePolicySpec:
         text = QUEUE_SPEC.read_text().lower()
         assert "priority lanes" in text
         assert "parked" in text or "later" in text or "not mvp" in text
+
+
+# ── Benchmark profiles and report template validation ────────────────────────
+
+BENCH_PROFILES = DOCS_DIR / "benchmark-profiles.md"
+REPORT_TEMPLATE = DOCS_DIR / "templates" / "benchmark-report.md"
+SAMPLE_REPORT = DOCS_DIR / "examples" / "stub-benchmark-report.md"
+
+
+class TestBenchmarkProfiles:
+    def test_profiles_doc_exists(self):
+        assert BENCH_PROFILES.exists()
+        assert BENCH_PROFILES.stat().st_size > 500
+
+    def test_report_template_exists(self):
+        assert REPORT_TEMPLATE.exists()
+
+    def test_sample_report_exists(self):
+        assert SAMPLE_REPORT.exists()
+        text = SAMPLE_REPORT.read_text().lower()
+        assert "not model throughput" in text or "not model performance" in text
+
+    def test_profiles_covers_required_topics(self):
+        text = BENCH_PROFILES.read_text().lower()
+        for topic in [
+            "stub",
+            "mlx",
+            "cold",
+            "warm",
+            "concurrency 2",
+            "overload",
+            "do not include private",
+            "codexify",
+        ]:
+            assert topic in text, f"Benchmark profiles missing: {topic!r}"
+
+    def test_profiles_distinguishes_stub_from_mlx(self):
+        text = BENCH_PROFILES.read_text()
+        assert "not model performance" in text or "not model throughput" in text
+
+    def test_report_template_warns_about_privacy(self):
+        text = REPORT_TEMPLATE.read_text().lower()
+        assert "do not include" in text or "private" in text or "warning" in text
