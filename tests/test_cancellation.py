@@ -6,7 +6,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from whooshd.app import app
-from whooshd.contracts import CancellationToken, RequestLifecycleState
+from whooshd.contracts import CancellationToken, RequestExecutionContext, RequestLifecycleState
 from whooshd.runtime import RuntimeState, get_runtime
 
 
@@ -267,3 +267,176 @@ async def test_codexify_probe_cancel_endpoint(client):
     probe = CodexifyProbe(client)
     health = await probe.probe_health()
     assert health.ok is True
+
+
+# ── Adapter-aware cancellation (Phase 3B.1) ─────────────────────────────────
+
+
+class TestAdapterAwareCancellationStub:
+    async def test_context_accepted_by_stub_stream(self):
+        from whooshd.adapters.stub import StubInferenceAdapter
+        from whooshd.contracts import ChatCompletionRequest, ChatMessage
+
+        rt = RuntimeState()
+        rid = rt.begin_request(model="stub", stream=True)
+        token = rt.get_cancellation_token(rid)
+        ctx = RequestExecutionContext(request_id=rid, cancellation_token=token, stream=True)
+
+        adapter = StubInferenceAdapter()
+        req = ChatCompletionRequest(
+            model="stub", messages=[ChatMessage(role="user", content="Hi")]
+        )
+
+        chunks = [c async for c in adapter.chat_completion_stream(req, context=ctx)]
+        # Without cancellation, should get full stream (role + 4 content + finish = 6)
+        assert len(chunks) == 6
+
+    async def test_stub_stream_stops_on_cancellation(self):
+        from whooshd.adapters.stub import StubInferenceAdapter
+        from whooshd.contracts import ChatCompletionRequest, ChatMessage
+
+        rt = RuntimeState()
+        rid = rt.begin_request(model="stub", stream=True)
+        token = rt.get_cancellation_token(rid)
+        ctx = RequestExecutionContext(request_id=rid, cancellation_token=token, stream=True)
+
+        adapter = StubInferenceAdapter()
+        req = ChatCompletionRequest(
+            model="stub", messages=[ChatMessage(role="user", content="Hi")]
+        )
+
+        # Cancel BEFORE streaming.
+        token.cancel()
+        chunks = [c async for c in adapter.chat_completion_stream(req, context=ctx)]
+        assert len(chunks) == 0
+
+    async def test_stub_no_finish_chunk_after_cancellation(self):
+        from whooshd.adapters.stub import StubInferenceAdapter
+        from whooshd.contracts import ChatCompletionRequest, ChatMessage
+
+        rt = RuntimeState()
+        rid = rt.begin_request(model="stub", stream=True)
+        token = rt.get_cancellation_token(rid)
+        ctx = RequestExecutionContext(request_id=rid, cancellation_token=token, stream=True)
+
+        adapter = StubInferenceAdapter()
+        req = ChatCompletionRequest(
+            model="stub", messages=[ChatMessage(role="user", content="Hi")]
+        )
+
+        gen = adapter.chat_completion_stream(req, context=ctx)
+        first = await gen.__anext__()  # role chunk
+        assert first.choices[0].delta.role == "assistant"
+
+        # Get one content chunk
+        second = await gen.__anext__()
+        assert second.choices[0].delta.content is not None
+
+        # Cancel now.
+        token.cancel()
+
+        # Collect remaining — should be empty (cancellation check before each yield)
+        remaining = [c async for c in gen]
+        assert len(remaining) == 0
+
+        # No finish_reason = "stop" anywhere.
+        assert second.choices[0].finish_reason is None
+
+
+class TestAdapterAwareCancellationMLX:
+    async def test_context_accepted_by_mlx_stream(self, mock_mlx_lm_module):
+        from whooshd.adapters.mlx import MLXInferenceAdapter
+        from whooshd.contracts import ChatCompletionRequest, ChatMessage
+
+        mock_mlx_lm_module.stream_generate.return_value = iter([
+            _stream_resp("A"), _stream_resp(" "), _stream_resp("B"),
+        ])
+        rt = RuntimeState()
+        rid = rt.begin_request(model="mlx-model", stream=True)
+        token = rt.get_cancellation_token(rid)
+        ctx = RequestExecutionContext(request_id=rid, cancellation_token=token, stream=True)
+
+        adapter = MLXInferenceAdapter()
+        req = ChatCompletionRequest(
+            model="test", messages=[ChatMessage(role="user", content="Hi")]
+        )
+
+        chunks = [c async for c in adapter.chat_completion_stream(req, context=ctx)]
+        # role + 3 content + finish = 5
+        assert len(chunks) == 5
+
+    async def test_mlx_stream_stops_on_cancellation(self, mock_mlx_lm_module):
+        from whooshd.adapters.mlx import MLXInferenceAdapter
+        from whooshd.contracts import ChatCompletionRequest, ChatMessage
+
+        mock_mlx_lm_module.stream_generate.return_value = iter([
+            _stream_resp("A"), _stream_resp(" "), _stream_resp("B"),
+        ])
+        rt = RuntimeState()
+        rid = rt.begin_request(model="mlx-model", stream=True)
+        token = rt.get_cancellation_token(rid)
+        token.cancel()  # Cancel before streaming
+        ctx = RequestExecutionContext(request_id=rid, cancellation_token=token, stream=True)
+
+        adapter = MLXInferenceAdapter()
+        req = ChatCompletionRequest(
+            model="test", messages=[ChatMessage(role="user", content="Hi")]
+        )
+
+        chunks = [c async for c in adapter.chat_completion_stream(req, context=ctx)]
+        assert len(chunks) == 0
+
+    async def test_mlx_generator_close_called(self, mock_mlx_lm_module):
+        from whooshd.adapters.mlx import MLXInferenceAdapter
+        from whooshd.contracts import ChatCompletionRequest, ChatMessage
+        from unittest.mock import MagicMock
+
+        mock_stream = MagicMock()
+        mock_stream.__iter__.return_value = iter([_stream_resp("A")])
+        mock_stream.close = MagicMock()
+        mock_mlx_lm_module.stream_generate.return_value = mock_stream
+
+        rt = RuntimeState()
+        rid = rt.begin_request(model="mlx-model", stream=True)
+        token = rt.get_cancellation_token(rid)
+        ctx = RequestExecutionContext(request_id=rid, cancellation_token=token, stream=True)
+
+        adapter = MLXInferenceAdapter()
+        req = ChatCompletionRequest(
+            model="test", messages=[ChatMessage(role="user", content="Hi")]
+        )
+
+        async for _ in adapter.chat_completion_stream(req, context=ctx):
+            pass  # drain without cancelling
+
+        # Generator close should have been called in finally block.
+        mock_stream.close.assert_called_once()
+
+
+# ── MLX mock helpers ────────────────────────────────────────────────────────
+
+
+def _stream_resp(text: str):
+    class _Resp:
+        pass
+    r = _Resp()
+    r.text = text
+    return r
+
+
+@pytest.fixture
+def mock_mlx_lm_module():
+    import sys
+    from unittest.mock import MagicMock
+
+    mock_tokenizer = MagicMock()
+    mock_tokenizer.apply_chat_template.return_value = "user\nHello\nassistant\n"
+
+    mock_mlx = MagicMock()
+    mock_mlx.load.return_value = (MagicMock(), mock_tokenizer)
+    mock_mlx.generate.return_value = "Mock"
+    mock_mlx.stream_generate.return_value = iter([])
+
+    sys.modules["mlx_lm"] = mock_mlx
+    yield mock_mlx
+    del sys.modules["mlx_lm"]

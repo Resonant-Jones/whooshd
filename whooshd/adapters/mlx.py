@@ -133,7 +133,7 @@ class MLXInferenceAdapter:
 
     # ── Chat completion (non-streaming) ─────────────────────────────────
 
-    async def chat_completion(self, request: ChatCompletionRequest) -> ChatCompletionResponse:
+    async def chat_completion(self, request: ChatCompletionRequest, context=None) -> ChatCompletionResponse:
         """Run a non-streaming chat completion through mlx-lm."""
 
         model_path = get_mlx_model_path()
@@ -194,9 +194,14 @@ class MLXInferenceAdapter:
     # ── Chat completion (streaming) ─────────────────────────────────────
 
     async def chat_completion_stream(
-        self, request: ChatCompletionRequest
+        self, request: ChatCompletionRequest, context=None
     ) -> AsyncIterator[ChatCompletionChunk]:
-        """Stream chat completion chunks through mlx-lm.stream_generate."""
+        """Stream chat completion chunks through mlx-lm.stream_generate.
+
+        Checks the cancellation token in *context* between yielded
+        responses and stops cleanly when cancellation is requested.
+        Attempts to close the stream generator on early termination.
+        """
 
         model_path = get_mlx_model_path()
         await self._ensure_loaded(model_path)
@@ -207,8 +212,12 @@ class MLXInferenceAdapter:
         request_id = f"chatcmpl-mlx-{uuid.uuid4().hex[:12]}"
         created = int(time.time())
 
+        # Check cancellation before starting.
+        if context and context.cancellation_token.is_cancelled():
+            return
+
         # Chunk 1: assistant role marker, no content.
-        await asyncio.sleep(0)  # yield control so the caller can observe state
+        await asyncio.sleep(0)
         yield ChatCompletionChunk(
             id=request_id,
             created=created,
@@ -223,6 +232,7 @@ class MLXInferenceAdapter:
 
         _update_runner_status(RunnerStatus.GENERATING)
 
+        stream = None
         errored = False
         try:
             mlx_lm = self._import_mlx_lm()
@@ -233,9 +243,12 @@ class MLXInferenceAdapter:
             if request.temperature != 0.7:
                 gen_kwargs["temp"] = request.temperature
 
-            for response in mlx_lm.stream_generate(
+            stream = mlx_lm.stream_generate(
                 self._model, self._tokenizer, **gen_kwargs
-            ):
+            )
+            for response in stream:
+                if context and context.cancellation_token.is_cancelled():
+                    break
                 text = response.text
                 if text:
                     await asyncio.sleep(0)
@@ -255,8 +268,19 @@ class MLXInferenceAdapter:
             errored = True
             raise
         finally:
+            if stream is not None:
+                close_fn = getattr(stream, "close", None)
+                if callable(close_fn):
+                    try:
+                        close_fn()
+                    except Exception:
+                        pass
             if not errored:
                 _update_runner_status(RunnerStatus.READY)
+
+        # Cancelled or completed — no final chunk if cancelled.
+        if context and context.cancellation_token.is_cancelled():
+            return
 
         # Final chunk: empty delta, finish_reason = stop.
         await asyncio.sleep(0)

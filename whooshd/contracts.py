@@ -378,6 +378,24 @@ class CancellationToken:
         await self._event.wait()
 
 
+class RequestExecutionContext:
+    """Bundle of request metadata passed into adapter calls.
+
+    Carries the cancellation token so adapters can check for
+    cancellation cooperatively between generation steps.
+    """
+
+    def __init__(
+        self,
+        request_id: str,
+        cancellation_token: CancellationToken,
+        stream: bool = False,
+    ) -> None:
+        self.request_id = request_id
+        self.cancellation_token = cancellation_token
+        self.stream = stream
+
+
 # ── Model Lifecycle ─────────────────────────────────────────────────────────
 
 

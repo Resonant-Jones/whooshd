@@ -14,6 +14,7 @@ from whooshd.contracts import (
     ChatCompletionResponse,
     GenerateRequest,
     GenerateResponse,
+    RequestExecutionContext,
 )
 
 
@@ -46,12 +47,18 @@ class InferenceAdapter(Protocol):
         """Run inference for a single generation request (Codexify format)."""
         ...
 
-    async def chat_completion(self, request: ChatCompletionRequest) -> ChatCompletionResponse:
+    async def chat_completion(
+        self,
+        request: ChatCompletionRequest,
+        context: RequestExecutionContext | None = None,
+    ) -> ChatCompletionResponse:
         """Run inference for an OpenAI-compatible chat completion request."""
         ...
 
     async def chat_completion_stream(
-        self, request: ChatCompletionRequest
+        self,
+        request: ChatCompletionRequest,
+        context: RequestExecutionContext | None = None,
     ) -> AsyncIterator[ChatCompletionChunk]:
         """Stream inference chunks for an OpenAI-compatible chat completion request."""
         ...

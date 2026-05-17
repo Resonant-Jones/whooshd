@@ -87,7 +87,7 @@ class StubInferenceAdapter:
 
     # ── OpenAI-compatible chat completions ─────────────────────────────
 
-    async def chat_completion(self, request: ChatCompletionRequest) -> ChatCompletionResponse:
+    async def chat_completion(self, request: ChatCompletionRequest, context=None) -> ChatCompletionResponse:
         """Non-streaming chat completion — returns the full response at once."""
         self._chat_call_count += 1
 
@@ -122,13 +122,21 @@ class StubInferenceAdapter:
     # ── OpenAI-compatible streaming chat ───────────────────────────────
 
     async def chat_completion_stream(
-        self, request: ChatCompletionRequest
+        self, request: ChatCompletionRequest, context=None
     ) -> AsyncIterator[ChatCompletionChunk]:
-        """Streaming chat completion — yields one chunk per word token."""
+        """Streaming chat completion — yields one chunk per word token.
+
+        Checks the cancellation token in *context* before each chunk and
+        stops cleanly when cancellation is requested.
+        """
         self._chat_call_count += 1
 
         request_id = f"chatcmpl-stub-{uuid.uuid4().hex[:12]}"
         created = int(time.time())
+
+        # Check cancellation before starting.
+        if context and context.cancellation_token.is_cancelled():
+            return
 
         # Yield control so the caller can observe the request is in-flight.
         await asyncio.sleep(0)
@@ -147,8 +155,9 @@ class StubInferenceAdapter:
         )
 
         # Chunks 2..N: one content delta per word token.
-        # Yield control between chunks so tests can observe active_jobs.
         for token in _STUB_STREAM_TOKENS:
+            if context and context.cancellation_token.is_cancelled():
+                return
             await asyncio.sleep(0)
             yield ChatCompletionChunk(
                 id=request_id,
@@ -161,6 +170,10 @@ class StubInferenceAdapter:
                     )
                 ],
             )
+
+        # Cancellation check before final chunk.
+        if context and context.cancellation_token.is_cancelled():
+            return
 
         # Final chunk: empty delta, finish_reason = stop.
         yield ChatCompletionChunk(

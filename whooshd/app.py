@@ -26,6 +26,7 @@ from whooshd.contracts import (
     ModelLifecycleState,
     ModelsResponse,
     ReadinessResponse,
+    RequestExecutionContext,
     RequestLifecycleState,
     RunnerStatus,
 )
@@ -260,8 +261,11 @@ async def chat_completions(req: ChatCompletionRequest):
         request_id = rt.begin_request(model=req.model, stream=False)
         rt.mark_running(request_id)
         token = rt.get_cancellation_token(request_id)
+        ctx = RequestExecutionContext(
+            request_id=request_id, cancellation_token=token, stream=False
+        ) if token else None
         try:
-            result = await adapter.chat_completion(req)
+            result = await adapter.chat_completion(req, context=ctx)
             rt.complete_request(request_id)
             return result
         except Exception:
@@ -275,13 +279,14 @@ async def chat_completions(req: ChatCompletionRequest):
     request_id = rt.begin_request(model=req.model, stream=True)
     rt.mark_streaming(request_id)
     token = rt.get_cancellation_token(request_id)
+    ctx = RequestExecutionContext(
+        request_id=request_id, cancellation_token=token, stream=True
+    ) if token else None
 
     async def _sse_stream():
         finished_normally = False
         try:
-            async for chunk in adapter.chat_completion_stream(req):
-                if token and token.is_cancelled():
-                    break
+            async for chunk in adapter.chat_completion_stream(req, context=ctx):
                 yield chunk.to_sse()
             yield "data: [DONE]\n\n"
             finished_normally = True
