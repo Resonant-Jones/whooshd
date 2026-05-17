@@ -336,6 +336,7 @@ class RequestSnapshot(BaseModel):
     model: str = Field(..., description="Model ID used for the request")
     stream: bool = Field(..., description="Whether this is a streaming request")
     status: RequestLifecycleState = Field(..., description="Current lifecycle state")
+    cancel_requested: bool = Field(False, description="Whether cancellation has been requested")
     started_at: float = Field(..., description="Unix timestamp when request was accepted")
     ended_at: Optional[float] = Field(None, description="Unix timestamp when request terminated")
     error_code: Optional[str] = Field(None, description="ErrorCode if status is failed")
@@ -346,6 +347,35 @@ class RequestListResponse(BaseModel):
 
     requests: list[RequestSnapshot] = Field(default_factory=list)
     active_count: int = Field(0, ge=0, description="Count of requests in non-terminal states")
+
+
+# ── Cancellation ────────────────────────────────────────────────────────────
+
+
+class CancellationToken:
+    """Cooperative cancellation signal passed to adapters.
+
+    Adapters should check ``is_cancelled()`` between chunks and stop
+    yielding when the token is set.  The runtime sets the token when
+    the cancellation endpoint is called or the client disconnects.
+    """
+
+    def __init__(self, request_id: str) -> None:
+        import asyncio
+
+        self.request_id = request_id
+        self._event = asyncio.Event()
+        self._cancelled = False
+
+    def cancel(self) -> None:
+        self._cancelled = True
+        self._event.set()
+
+    def is_cancelled(self) -> bool:
+        return self._cancelled
+
+    async def wait_cancelled(self) -> None:
+        await self._event.wait()
 
 
 # ── Model Lifecycle ─────────────────────────────────────────────────────────

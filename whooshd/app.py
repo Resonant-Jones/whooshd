@@ -259,6 +259,7 @@ async def chat_completions(req: ChatCompletionRequest):
     if not req.stream:
         request_id = rt.begin_request(model=req.model, stream=False)
         rt.mark_running(request_id)
+        token = rt.get_cancellation_token(request_id)
         try:
             result = await adapter.chat_completion(req)
             rt.complete_request(request_id)
@@ -273,11 +274,14 @@ async def chat_completions(req: ChatCompletionRequest):
 
     request_id = rt.begin_request(model=req.model, stream=True)
     rt.mark_streaming(request_id)
+    token = rt.get_cancellation_token(request_id)
 
     async def _sse_stream():
         finished_normally = False
         try:
             async for chunk in adapter.chat_completion_stream(req):
+                if token and token.is_cancelled():
+                    break
                 yield chunk.to_sse()
             yield "data: [DONE]\n\n"
             finished_normally = True
@@ -285,6 +289,7 @@ async def chat_completions(req: ChatCompletionRequest):
             if finished_normally:
                 rt.complete_request(request_id)
             else:
+                rt.record_stream_disconnect(request_id)
                 rt.cancel_request(request_id)
 
     return StreamingResponse(
@@ -336,7 +341,8 @@ async def runtime_cancel_request(request_id: str):
     """Cancel an active request by ID.
 
     Internal/debug endpoint — not part of the OpenAI-compatible API.
-    Returns 404 if the request is unknown or already in a terminal state.
+    Signals the request's cancellation token so cooperative adapters
+    stop generating.  Returns 404 if unknown, 409 if already terminal.
     """
     rt = get_runtime()
     snap = rt.get_request_snapshot(request_id)
@@ -360,8 +366,15 @@ async def runtime_cancel_request(request_id: str):
                 message=f"Request {request_id} is already in terminal state {snap.status.value}",
             ).model_dump(),
         )
-    rt.cancel_request(request_id)
-    return {"ok": True, "request_id": request_id, "status": "cancelled"}
+    signalled = rt.request_cancellation(request_id)
+    if signalled:
+        rt.cancel_request(request_id)
+    return {
+        "ok": True,
+        "request_id": request_id,
+        "cancelled": signalled,
+        "status": "cancelled",
+    }
 
 
 # ── Internal runtime: model lifecycle ──────────────────────────────────────

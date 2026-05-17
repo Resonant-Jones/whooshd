@@ -196,7 +196,7 @@ class TestSnapshotPrivacy:
         rid = rt.begin_request(model="m", stream=False)
         snap = rt.get_request_snapshot(rid)
         data = snap.model_dump()
-        permitted = {"request_id", "model", "stream", "status", "started_at", "ended_at", "error_code"}
+        permitted = {"request_id", "model", "stream", "status", "cancel_requested", "started_at", "ended_at", "error_code"}
         assert set(data.keys()) == permitted
 
 

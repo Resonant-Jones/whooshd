@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from whooshd.contracts import (
+    CancellationToken,
     ConcurrencyBudget,
     LoadedModelInfo,
     MemoryInfo,
@@ -48,6 +49,8 @@ class _RequestRecord:
     model: str
     stream: bool
     status: RequestLifecycleState = RequestLifecycleState.ACCEPTED
+    cancel_requested: bool = False
+    cancel_token: CancellationToken | None = None
     started_at: float = field(default_factory=time.time)
     ended_at: Optional[float] = None
     error_code: Optional[str] = None
@@ -81,6 +84,11 @@ class RuntimeState:
         self.total_rejected_too_many_messages: int = 0
         self.total_rejected_max_tokens: int = 0
         self.total_rejected_model_not_ready: int = 0
+
+        # ── Cancellation counters ─────────────────────────────────────
+        self.total_requests_cancel_requested: int = 0
+        self.total_requests_cancelled: int = 0
+        self.total_stream_disconnects: int = 0
 
         # ── Memory (stubbed) ────────────────────────────────────────────
         self.memory = MemoryInfo(
@@ -286,13 +294,37 @@ class RuntimeState:
         cancel_request, or fail_request.
         """
         request_id = str(uuid.uuid4())
+        token = CancellationToken(request_id=request_id)
         self._requests[request_id] = _RequestRecord(
             request_id=request_id,
             model=model,
             stream=stream,
             status=RequestLifecycleState.ACCEPTED,
+            cancel_token=token,
         )
         return request_id
+
+    def get_cancellation_token(self, request_id: str) -> CancellationToken | None:
+        """Return the cancellation token for an active request, or None."""
+        rec = self._requests.get(request_id)
+        return rec.cancel_token if rec else None
+
+    def request_cancellation(self, request_id: str) -> bool:
+        """Signal cancellation for an active request.  Returns True if signalled."""
+        rec = self._requests.get(request_id)
+        if rec is None:
+            return False
+        if rec.status in (
+            RequestLifecycleState.COMPLETED,
+            RequestLifecycleState.CANCELLED,
+            RequestLifecycleState.FAILED,
+        ):
+            return False
+        rec.cancel_requested = True
+        self.total_requests_cancel_requested += 1
+        if rec.cancel_token:
+            rec.cancel_token.cancel()
+        return True
 
     def mark_running(self, request_id: str) -> None:
         """Transition an accepted request to running."""
@@ -319,6 +351,11 @@ class RuntimeState:
         if rec:
             rec.status = RequestLifecycleState.CANCELLED
             rec.ended_at = time.time()
+            self.total_requests_cancelled += 1
+
+    def record_stream_disconnect(self, request_id: str) -> None:
+        """Record a client disconnect during streaming."""
+        self.total_stream_disconnects += 1
 
     def fail_request(self, request_id: str, *, error_code: Optional[str] = None) -> None:
         """Mark a request as failed with an optional error code."""
@@ -340,6 +377,7 @@ class RuntimeState:
             model=rec.model,
             stream=rec.stream,
             status=rec.status,
+            cancel_requested=rec.cancel_requested,
             started_at=rec.started_at,
             ended_at=rec.ended_at,
             error_code=rec.error_code,
@@ -353,6 +391,7 @@ class RuntimeState:
                 model=r.model,
                 stream=r.stream,
                 status=r.status,
+                cancel_requested=r.cancel_requested,
                 started_at=r.started_at,
                 ended_at=r.ended_at,
                 error_code=r.error_code,
@@ -374,6 +413,7 @@ class RuntimeState:
                 model=r.model,
                 stream=r.stream,
                 status=r.status,
+                cancel_requested=r.cancel_requested,
                 started_at=r.started_at,
                 ended_at=r.ended_at,
                 error_code=r.error_code,
