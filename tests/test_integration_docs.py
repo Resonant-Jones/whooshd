@@ -218,3 +218,41 @@ class TestBenchmarkProfiles:
     def test_report_template_warns_about_privacy(self):
         text = REPORT_TEMPLATE.read_text().lower()
         assert "do not include" in text or "private" in text or "warning" in text
+
+
+# ── MLX findings packet validation ──────────────────────────────────────────
+
+MLX_FINDINGS = DOCS_DIR / "examples" / "mlx-benchmark-findings.md"
+
+
+class TestMLXFindings:
+    def test_findings_exist(self):
+        assert MLX_FINDINGS.exists()
+        assert MLX_FINDINGS.stat().st_size > 1000
+
+    def test_findings_have_caveat(self):
+        text = MLX_FINDINGS.read_text().lower()
+        assert "not universal" in text or "hardware-specific" in text
+
+    def test_findings_cover_required_sections(self):
+        text = MLX_FINDINGS.read_text()
+        assert "## Status" in text
+        assert "## Environment" in text
+        assert "## Benchmark Summary Table" in text
+        assert "## Observations" in text
+        assert "## Recommended Next Action" in text
+
+    def test_findings_include_admission_validation(self):
+        text = MLX_FINDINGS.read_text()
+        assert "429" in text
+        assert "admission" in text.lower()
+
+    def test_findings_include_stub_results(self):
+        text = MLX_FINDINGS.read_text()
+        assert "stub" in text.lower()
+        assert "concurrency" in text.lower()
+
+    def test_findings_no_prompt_or_generated_text(self):
+        text = MLX_FINDINGS.read_text()
+        assert "Secret prompt" not in text
+        # Should not contain raw generated model text beyond profile labels.
