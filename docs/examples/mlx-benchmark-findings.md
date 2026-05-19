@@ -211,3 +211,59 @@ after both non-streaming and streaming requests.
 2. Run `mlx-warm-concurrent-2` for Codexify-like concurrency.
 3. Compare against stub baseline.
 4. Decide on queue implementation per Phase 4F decision gate.
+
+
+---
+
+## Phase 4E Real MLX Benchmark Results
+
+*Measured on M-series Apple Silicon, 32GB unified memory, macOS 15.x, Python 3.14.3, mlx-lm 0.31.3, Llama-3.2-3B-Instruct-4bit (4-bit).*
+
+### Benchmark Summary Table
+
+| Profile | Stream | Concurrency | Requests | Succeeded | Failed | Rejected | Mean Latency ms | p95 Latency ms | Mean TTFT ms | p95 TTFT ms | Chars/sec | active_jobs after |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|
+| `mlx-warm-single` | true | 1 | 4 | 4 | 0 | 0 | 370 | 536 | 282 | 439 | 37 | 0 |
+| `mlx-warm-concurrent-2` | true | 2 | 8 | 8 | 0 | 0 | 672 | 751 | 458 | 647 | 40 | 0 |
+| `mlx-warm-concurrent-4` | true | 4 | 12 | 5 | 0 | 7 | 443 | 697 | 462 | 580 | 43 | 0 |
+| `mlx-overload` | true | 8 | 16 | 4 | 0 | 12 | 466 | 807 | 561 | 652 | 43 | 0 |
+
+*Latency mean/p95 for concurrent-4 and overload include fast-rejected 429s skewing the distribution.  Successful requests at concurrency 2 averaged ~672ms total and ~458ms TTFT.*
+
+### Runtime / Lifecycle Notes
+
+| Check | Result |
+|---|---|
+| `/ready` before any benchmarks | 200, `ready: true` |
+| `active_jobs` before | 0 |
+| `active_jobs` after warm-single | 0 |
+| `active_jobs` after concurrent-2 | 0 |
+| `active_jobs` after concurrent-4 | 0 |
+| `active_jobs` after overload | 0 |
+| Total admission accepted (all runs) | 21 |
+| Total admission rejected overloaded | 19 |
+
+### Admission Notes
+
+- At concurrency 1 and 2, no rejections — admission control correctly allowed requests within the active limit.
+- At concurrency 4 (above `WHOOSHD_MAX_ACTIVE_REQUESTS=2`), 7 of 12 requests were rejected with structured `429 RUNNER_OVERLOADED`.
+- At concurrency 8, 12 of 16 rejected.
+- All rejected requests returned structured JSON errors — no dropped connections or malformed responses.
+- Rejected streaming requests never started SSE streams.
+
+### Failure Notes
+
+- None.  All requests either succeeded or were cleanly rejected by admission control.  No 5xx errors.
+
+### Interpretation
+
+- **Concurrency 1:** Warmed single-stream TTFT ~282ms, total latency ~370ms.  This is the baseline for this model on this hardware.
+- **Concurrency 2:** All 8 requests succeeded at Codexify-like concurrency.  Latency roughly doubled vs single-stream (~672ms vs ~370ms), consistent with serialized Metal execution on a single GPU.  No rejections — admission control was not triggered.
+- **Concurrency 4:** Admission control correctly enforced the `WHOOSHD_MAX_ACTIVE_REQUESTS=2` limit.  5 requests were accepted and completed; 7 were rejected with structured `429`.  No unstable intermediate behaviour observed.
+- **Overload:** Same pattern at higher concurrency — 4 succeeded, 12 rejected.  Admission control held the line.
+
+### Recommended Next Action
+
+**Option A: Keep reject-only for now.**  Concurrency 2 is stable with clean 429 behavior.  Codexify can retry/backoff.  No urgent burst absorption need demonstrated.  The current admission control layer is working correctly and the design is proven under real MLX load.
+
+Queue implementation (Phase 4F, Option B bounded FIFO) can proceed when measurement justifies it — e.g., if burst patterns in real Codexify usage produce unacceptable 429 rates at concurrency 2.

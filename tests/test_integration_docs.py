@@ -252,8 +252,13 @@ class TestMLXFindings:
         assert "stub" in text.lower()
         assert "concurrency" in text.lower()
 
-    def test_findings_no_prompt_or_generated_text(self):
+    def test_findings_includes_phase_4e_benchmark_results(self):
         text = MLX_FINDINGS.read_text()
+        assert "## Phase 4E Real MLX Benchmark Results" in text
+        assert "`mlx-warm-single`" in text
+        assert "`mlx-warm-concurrent-2`" in text
+        assert "## Recommended Next Action" in text
+        # Privacy: no leaked prompt text in committed findings.
         assert "Secret prompt" not in text
 
 
