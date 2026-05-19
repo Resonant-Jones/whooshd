@@ -145,3 +145,69 @@ Then follow the profiles in `docs/benchmark-profiles.md`.
 - Codexify can retry/backoff on `429`.
 - No urgent burst absorption need demonstrated at this stage.
 - Queue policy is designed and documented; implementation can proceed when measurements justify it.
+
+
+---
+
+## Phase 4D MLX Environment Validation
+
+### Dependency Status
+
+- **`mlx-lm` installed:** ✅ Yes (mlx-lm 0.31.3, mlx 0.31.2)
+- **Install command:** `pip install -e ".[mlx]"`
+- **Python environment:** 3.14.3
+- **Errors:** None
+
+### Model Status
+
+- **Requested model:** `mlx-community/Llama-3.2-3B-Instruct-4bit`
+- **Actual model:** Same — downloaded from HuggingFace on first warmup
+- **Model source/path:** HuggingFace cache at `~/.cache/huggingface/`
+- **First load result:** ✅ Success (~56s for 6 files, 4-bit weights)
+
+### Runtime Validation
+
+| Check | Result |
+|---|---|
+| `/health` with MLX backend | 200, `ok: true`, `lifecycle: unloaded` |
+| `/ready` before warmup | 503, `ready: false`, `reason: model_unloaded` |
+| `/runtime/model` before warmup | `adapter: mlx-lm`, `loaded: false`, `lifecycle: unloaded` |
+| Warmup result | 200, model loaded, `lifecycle: ready` |
+| `/ready` after warmup | 200, `ready: true`, `reason: null` |
+| `/runtime/model` after warmup | `adapter: mlx-lm`, `loaded: true`, `lifecycle: ready` |
+
+### Smoke Results
+
+| Check | Result |
+|---|---|
+| Non-streaming completion | ✅ `chat.completion`, assistant role, content_len=19, finish_reason=stop |
+| Streaming completion | ✅ Role chunk → token-by-token content ("Hello from Whoshd!") → stop chunk → [DONE] |
+| `active_jobs` cleanup | ✅ Returns to 0 after both non-streaming and streaming |
+| Benchmark warm-single | Not yet run (pending) |
+
+### Blockers
+
+None — MLX path is fully functional on this machine.
+
+### Interpretation
+
+The MLX adapter is fully functional.  Real model loading, warmup lifecycle
+transitions, non-streaming completion, and streaming token-by-token
+generation all work correctly.  The adapter protocol boundary holds:
+the HTTP layer does not need to know whether stub or MLX is behind it.
+
+Readiness semantics are correct:
+- `/health` = 200 (process alive) even with model unloaded
+- `/ready` = 503 before warmup, 200 after
+- `/runtime/model` accurately tracks unloaded → warming → ready
+
+Streaming produced proper SSE chunks with role marker, content deltas,
+finish reason, and `[DONE]` terminator.  `active_jobs` returned to zero
+after both non-streaming and streaming requests.
+
+### Recommended Next Action
+
+1. Run `mlx-warm-single` benchmark profile for baseline numbers.
+2. Run `mlx-warm-concurrent-2` for Codexify-like concurrency.
+3. Compare against stub baseline.
+4. Decide on queue implementation per Phase 4F decision gate.

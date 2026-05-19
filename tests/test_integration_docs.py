@@ -255,4 +255,30 @@ class TestMLXFindings:
     def test_findings_no_prompt_or_generated_text(self):
         text = MLX_FINDINGS.read_text()
         assert "Secret prompt" not in text
+
+
+# ── MLX environment docs validation ─────────────────────────────────────────
+
+MLX_ENV_DOC = DOCS_DIR / "mlx-environment.md"
+
+
+class TestMLXEnvironmentDoc:
+    def test_doc_exists(self):
+        assert MLX_ENV_DOC.exists()
+        assert MLX_ENV_DOC.stat().st_size > 500
+
+    def test_doc_covers_required_topics(self):
+        text = MLX_ENV_DOC.read_text().lower()
+        for topic in [
+            "apple silicon",
+            "optional",
+            "pip install mlx-lm",
+            "warmup",
+            "/ready",
+            "non-streaming",
+            "streaming",
+            "troubleshooting",
+            "no model downloads",
+        ]:
+            assert topic in text, f"MLX env doc missing: {topic!r}"
         # Should not contain raw generated model text beyond profile labels.

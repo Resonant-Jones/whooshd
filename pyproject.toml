@@ -22,6 +22,10 @@ dev = [
     "httpx>=0.27.0",
 ]
 
+mlx = [
+    "mlx-lm>=0.20.0",
+]
+
 [tool.hatch.build.targets.wheel]
 packages = ["whooshd"]
 
