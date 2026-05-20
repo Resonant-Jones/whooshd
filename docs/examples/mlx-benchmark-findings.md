@@ -267,3 +267,21 @@ after both non-streaming and streaming requests.
 **Option A: Keep reject-only for now.**  Concurrency 2 is stable with clean 429 behavior.  Codexify can retry/backoff.  No urgent burst absorption need demonstrated.  The current admission control layer is working correctly and the design is proven under real MLX load.
 
 Queue implementation (Phase 4F, Option B bounded FIFO) can proceed when measurement justifies it — e.g., if burst patterns in real Codexify usage produce unacceptable 429 rates at concurrency 2.
+
+
+---
+
+## Queue Decision
+
+**Decision: Do not implement queue yet.**
+
+Evidence:
+- Codexify-like concurrency 2 completed 8/8 successfully.
+- Higher concurrency produced clean structured 429 responses.
+- No 5xx errors in any benchmark run.
+- `active_jobs` returned to 0 after all runs.
+
+Condition to revisit:
+- Real Codexify workloads produce frequent 429s under ordinary use.
+- Codexify retry/backoff is proven inadequate.
+- User-visible local inference failures occur during normal agent/coding bursts.

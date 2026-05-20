@@ -262,6 +262,39 @@ class TestMLXFindings:
         assert "Secret prompt" not in text
 
 
+# ── Codexify contract review and overload docs validation ────────────────────
+
+CONTRACT_REVIEW = DOCS_DIR / "codexify-runtime-contract-review.md"
+
+
+class TestContractReviewAndOverload:
+    def test_contract_review_exists(self):
+        assert CONTRACT_REVIEW.exists()
+
+    def test_integration_guide_covers_overload(self):
+        text = (DOCS_DIR / "codexify-integration.md").read_text()
+        assert "429" in text
+        assert "RUNNER_OVERLOADED" in text
+        assert "not offline" in text or "not provider death" in text
+
+    def test_integration_guide_has_live_checklist(self):
+        text = (DOCS_DIR / "codexify-integration.md").read_text()
+        assert "Live Codexify Integration Checklist" in text
+        assert "[ ]" in text
+
+    def test_findings_record_queue_decision(self):
+        text = MLX_FINDINGS.read_text()
+        assert "Queue Decision" in text
+        assert "Do not implement queue yet" in text
+
+    def test_contract_review_covers_required_topics(self):
+        text = CONTRACT_REVIEW.read_text()
+        assert "429" in text
+        assert "503" in text
+        assert "warmup" in text.lower()
+        assert "Queue Decision" in text
+
+
 # ── MLX environment docs validation ─────────────────────────────────────────
 
 MLX_ENV_DOC = DOCS_DIR / "mlx-environment.md"

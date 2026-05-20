@@ -296,3 +296,60 @@ The following are **not yet implemented or not production-hardened:**
 | `/runtime/model/unload` returns `409` | Active requests are running. Wait for them to complete. |
 | `mlx_lm` import error              | MLX adapter selected but `mlx-lm` not installed. `pip install mlx-lm` or use stub. |
 | Model download on first MLX run    | Expected. The model is cached in `~/.cache/huggingface/` after first load. |
+
+
+---
+
+## Codexify Retry / Backoff Expectations
+
+Whoosh'd returns structured responses for different conditions.
+Codexify should handle them as follows:
+
+| Whoosh'd response | Meaning | Recommended Codexify behavior |
+|---|---|---|
+| `200 /health` | Process alive | Provider reachable |
+| `200 /ready` | Ready for inference | Allow local inference |
+| `503 /ready model_unloaded` | Alive, model not loaded | Trigger warmup or show loading state |
+| `503 /ready model_warming` | Alive, loading | Wait/retry readiness |
+| `503 /ready model_load_failed` | Alive, model failed | Mark degraded; do not call offline |
+| `429 RUNNER_OVERLOADED` | Alive, at active request limit | Retry/backoff or surface busy |
+| `400 prompt too large` | Request rejected by policy | Do not retry unchanged |
+| `400 too many messages` | Request rejected by policy | Reduce context/message count |
+| `400 max_tokens too high` | Request rejected by policy | Lower max_tokens |
+| `5xx` | Runtime or adapter failure | Mark degraded and inspect logs |
+
+**Core rule:**
+
+```text
+429 is capacity pressure, not provider death.
+503 readiness is not transport offline.
+Warmup is not offline.
+```
+
+Codexify must verify that its local provider path distinguishes these
+conditions.  Treating a `429` or a `503` readiness response as a
+provider outage would cause unnecessary fallback to cloud providers.
+
+
+---
+
+## Live Codexify Integration Checklist
+
+Use this checklist when running Codexify against a live Whoosh'd server:
+
+```
+[ ] Start Whoosh'd with MLX (WHOOSHD_ADAPTER=mlx)
+[ ] Warm model (POST /runtime/model/warmup)
+[ ] Confirm /ready returns 200
+[ ] Configure Codexify LOCAL_BASE_URL to http://localhost:8000
+[ ] Configure Codexify LOCAL_CHAT_MODEL to match WHOOSHD_MLX_MODEL
+[ ] Confirm /v1/models returns usable model inventory
+[ ] Send simple Codexify chat turn
+[ ] Confirm streaming tokens appear in Codexify UI
+[ ] Confirm assistant response persisted by Codexify
+[ ] Run two concurrent Codexify chat turns
+[ ] Confirm Whoosh'd active_jobs returns to 0 (GET /health)
+[ ] Trigger overload intentionally (high concurrency, short prompt)
+[ ] Confirm Codexify handles 429 without treating provider as offline
+[ ] Check /runtime/admission counters: accepted/rejected counts make sense
+```
