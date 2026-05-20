@@ -57,3 +57,12 @@ Open http://127.0.0.1:8000/docs for the auto-generated Swagger UI.
 | `WHOOSHD_MLX_MODEL`             | `mlx-community/Llama-3.2-3B-Instruct-4bit`       | HF repo or local model path   |
 | `WHOOSHD_MLX_MAX_TOKENS_DEFAULT`| `256`                                            | Fallback max_tokens           |
 | `WHOOSHD_MLX_TRUST_REMOTE_CODE` | `false`                                          | Allow custom model code       |
+
+## Documentation
+
+- **[Codexify Integration Guide](docs/codexify-integration.md)** — configuration, health vs readiness, streaming
+- **[Codexify Live Rehearsal Runbook](docs/codexify-live-rehearsal.md)** — step-by-step integration test
+- **[MLX Environment Setup](docs/mlx-environment.md)** — Apple Silicon MLX backend
+- **[Benchmarking](docs/benchmarking.md)** — throughput measurement harness
+- **[Release Notes](docs/releases/v0.1-rc.md)** — v0.1 release candidate
+- **[Queue Policy](docs/queue-policy.md)** — future queue design (not implemented)

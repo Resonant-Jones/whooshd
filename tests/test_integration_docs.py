@@ -327,6 +327,38 @@ class TestLiveRehearsal:
         assert "Step 5" in text or "Single chat" in text
 
 
+# ── Release candidate doc validation ────────────────────────────────────────
+
+RC_NOTES = DOCS_DIR / "releases" / "v0.1-rc.md"
+RELEASE_CHECKLIST = DOCS_DIR / "releases" / "release-checklist.md"
+CHANGELOG = DOCS_DIR.parent / "CHANGELOG.md"
+
+
+class TestReleaseCandidate:
+    def test_rc_notes_exist(self):
+        assert RC_NOTES.exists()
+
+    def test_rc_notes_mark_codexify_blocked(self):
+        text = RC_NOTES.read_text()
+        assert "Blocked" in text or "blocked" in text
+
+    def test_rc_notes_mark_mlx_smoke_verified(self):
+        text = RC_NOTES.read_text()
+        assert "Non-streaming" in text
+        assert "Streaming" in text
+
+    def test_changelog_exists(self):
+        assert CHANGELOG.exists()
+
+    def test_release_checklist_exists(self):
+        assert RELEASE_CHECKLIST.exists()
+
+    def test_release_notes_list_deferred_features(self):
+        text = RC_NOTES.read_text()
+        assert "queue" in text.lower() or "Queue" in text
+        assert "batching" in text.lower() or "Batching" in text
+
+
 # ── MLX environment docs validation ─────────────────────────────────────────
 
 MLX_ENV_DOC = DOCS_DIR / "mlx-environment.md"
