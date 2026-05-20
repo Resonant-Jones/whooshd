@@ -295,6 +295,38 @@ class TestContractReviewAndOverload:
         assert "Queue Decision" in text
 
 
+# ── Live rehearsal doc validation ───────────────────────────────────────────
+
+REHEARSAL_DOC = DOCS_DIR / "codexify-live-rehearsal.md"
+
+
+class TestLiveRehearsal:
+    def test_rehearsal_doc_exists(self):
+        assert REHEARSAL_DOC.exists()
+
+    def test_rehearsal_includes_required_sections(self):
+        text = REHEARSAL_DOC.read_text()
+        assert "## Status" in text
+        assert "## Environment" in text
+        assert "## Preflight" in text
+        assert "## Rehearsal Tests" in text
+        assert "## Recommended Next Action" in text
+
+    def test_rehearsal_warns_about_privacy(self):
+        text = REHEARSAL_DOC.read_text()
+        assert "private prompts" in text.lower() or "do not include" in text.lower()
+
+    def test_rehearsal_documents_429_overload_test(self):
+        text = REHEARSAL_DOC.read_text()
+        assert "429" in text
+        assert "overload" in text.lower()
+
+    def test_rehearsal_documents_step_by_step(self):
+        text = REHEARSAL_DOC.read_text()
+        assert "Step 1" in text
+        assert "Step 5" in text or "Single chat" in text
+
+
 # ── MLX environment docs validation ─────────────────────────────────────────
 
 MLX_ENV_DOC = DOCS_DIR / "mlx-environment.md"
