@@ -359,6 +359,33 @@ class TestReleaseCandidate:
         assert "batching" in text.lower() or "Batching" in text
 
 
+# ── Handoff doc validation ──────────────────────────────────────────────────
+
+HANDOFF_DOC = DOCS_DIR / "handoff" / "whooshd-v0.1rc1-handoff.md"
+
+
+class TestHandoffDoc:
+    def test_handoff_exists(self):
+        assert HANDOFF_DOC.exists()
+
+    def test_handoff_marks_codexify_blocked(self):
+        text = HANDOFF_DOC.read_text()
+        assert "Blocked" in text or "blocked" in text
+
+    def test_handoff_lists_parked_work(self):
+        text = HANDOFF_DOC.read_text()
+        assert "queue" in text.lower()
+        assert "ThreadWake" in text or "threadwake" in text.lower()
+
+    def test_handoff_gives_resume_instructions(self):
+        text = HANDOFF_DOC.read_text()
+        assert "Phase 5C" in text or "Live Codexify" in text
+
+    def test_handoff_prevents_architecture_drift(self):
+        text = HANDOFF_DOC.read_text()
+        assert "Do not" in text or "do not" in text.lower()
+
+
 # ── MLX environment docs validation ─────────────────────────────────────────
 
 MLX_ENV_DOC = DOCS_DIR / "mlx-environment.md"
