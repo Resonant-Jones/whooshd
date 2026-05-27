@@ -52,7 +52,7 @@ async def test_openai_models_stub_model_present(client):
     resp = await client.get("/v1/models")
     model_ids = [m["id"] for m in resp.json()["data"]]
 
-    assert "qwen2.5-1.5b-instruct-mlx" in model_ids
+    assert "stub-model" in model_ids
 
 
 # ── /api/tags (Ollama format) ───────────────────────────────────────────────
@@ -79,7 +79,7 @@ async def test_ollama_tags_entry_shape(client):
     entry = resp.json()["models"][0]
 
     assert isinstance(entry["name"], str)
-    assert ":latest" in entry["name"] or ":" in entry["name"]
+    assert len(entry["name"]) > 0
     assert isinstance(entry["modified_at"], str)
     assert isinstance(entry["size"], int)
     assert entry["size"] > 0
@@ -90,7 +90,7 @@ async def test_ollama_tags_stub_model_present(client):
     resp = await client.get("/api/tags")
     tag_names = [m["name"] for m in resp.json()["models"]]
 
-    assert "qwen2.5-1.5b-instruct-mlx:latest" in tag_names
+    assert "stub-model" in tag_names
 
 
 # ── Consistency between aliases ─────────────────────────────────────────────

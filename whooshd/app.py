@@ -30,7 +30,7 @@ from whooshd.contracts import (
     RequestLifecycleState,
     RunnerStatus,
 )
-from whooshd.config import get_mlx_model_path
+from whooshd.config import get_advertised_model_id
 from whooshd.runtime import get_runtime
 
 app = FastAPI(
@@ -72,7 +72,7 @@ async def ready():
     """
     rt = get_runtime()
     adapter = get_inference_adapter()
-    configured = get_mlx_model_path()
+    configured = get_advertised_model_id()
 
     lifecycle = rt.model_lifecycle
     is_ready = lifecycle == ModelLifecycleState.READY
@@ -394,7 +394,7 @@ async def runtime_model():
     """
     rt = get_runtime()
     adapter = get_inference_adapter()
-    configured = get_mlx_model_path()
+    configured = get_advertised_model_id()
     return rt.build_model_snapshot(
         adapter_name=adapter.name, configured_model=configured
     )
@@ -429,7 +429,7 @@ async def runtime_model_warmup():
             ).model_dump(),
         ) from exc
 
-    configured = get_mlx_model_path()
+    configured = get_advertised_model_id()
     return rt.build_model_snapshot(
         adapter_name=adapter.name, configured_model=configured
     )
@@ -458,7 +458,7 @@ async def runtime_model_unload():
     await adapter.unload()
     rt.complete_unload()
 
-    configured = get_mlx_model_path()
+    configured = get_advertised_model_id()
     return rt.build_model_snapshot(
         adapter_name=adapter.name, configured_model=configured
     )

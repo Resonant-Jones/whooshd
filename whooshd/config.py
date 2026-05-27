@@ -48,6 +48,20 @@ def get_mlx_model_path() -> str:
     )
 
 
+def get_advertised_model_id() -> str:
+    """Return the model id that inventory endpoints should advertise.
+
+    Stub mode advertises ``stub-model``. MLX mode advertises the exact
+    configured ``WHOOSHD_MLX_MODEL`` so Codexify can validate the pin
+    without loosening its inventory gate.
+    """
+    if get_adapter_backend().strip().lower() == "mlx":
+        configured = get_mlx_model_path().strip()
+        if configured:
+            return configured
+    return "stub-model"
+
+
 def get_mlx_max_tokens_default() -> int:
     """Default max_tokens when the request does not specify one."""
     return _env_int("WHOOSHD_MLX_MAX_TOKENS_DEFAULT", 256)

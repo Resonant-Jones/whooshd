@@ -34,11 +34,17 @@ from whooshd.contracts import (
     RunnerStatus,
     RuntimeResponse,
 )
+from whooshd.config import get_advertised_model_id
 
-# Synthetic creation timestamp for stub models.
+# Synthetic creation timestamp for inventory entries.
 _STUB_MODEL_CREATED = 1700000000
-# Synthetic size in bytes for stub models (~1.5 GB for a 1.5B 4-bit model).
+# Synthetic size in bytes for inventory entries (~1.5 GB).
 _STUB_MODEL_SIZE = 1_500_000_000
+_DEFAULT_MODEL_CAPABILITIES = [
+    ModelCapability.CHAT,
+    ModelCapability.STREAMING,
+    ModelCapability.JSON,
+]
 
 
 @dataclass
@@ -98,23 +104,6 @@ class RuntimeState:
             available_gb=27.8,
         )
 
-        # ── Models (stubbed) ────────────────────────────────────────────
-        self._models: dict[str, ModelInfo] = {
-            "qwen2.5-1.5b-instruct-mlx": ModelInfo(
-                id="qwen2.5-1.5b-instruct-mlx",
-                loaded=False,
-                capabilities=[
-                    ModelCapability.CHAT,
-                    ModelCapability.STREAMING,
-                    ModelCapability.JSON,
-                ],
-                max_concurrent_jobs=2,
-                context_window=32768,
-                quantization="4bit",
-                memory_class="small",
-            ),
-        }
-
         # ── Loaded-model snapshots (stubbed) ────────────────────────────
         self._loaded_snapshots: list[LoadedModelInfo] = []
 
@@ -153,6 +142,24 @@ class RuntimeState:
         return time.monotonic() - self._started_at
 
     # ── API builders ────────────────────────────────────────────────────
+
+    def _build_model_info(self) -> ModelInfo:
+        """Build the single advertised model entry from current config."""
+        from whooshd.app import get_inference_adapter
+
+        adapter = get_inference_adapter()
+        model_id = get_advertised_model_id()
+        loaded_model_id = adapter.model_id()
+        loaded = bool(adapter.is_loaded() and loaded_model_id == model_id)
+        return ModelInfo(
+            id=model_id,
+            loaded=loaded,
+            capabilities=list(_DEFAULT_MODEL_CAPABILITIES),
+            max_concurrent_jobs=2,
+            context_window=32768,
+            quantization=None,
+            memory_class="small",
+        )
 
     def build_runtime_response(self) -> RuntimeResponse:
         return RuntimeResponse(
@@ -250,17 +257,18 @@ class RuntimeState:
         }
 
     def list_models(self) -> list[ModelInfo]:
-        return list(self._models.values())
+        return [self._build_model_info()]
 
     def get_model(self, model_id: str) -> Optional[ModelInfo]:
-        return self._models.get(model_id)
+        model = self._build_model_info()
+        return model if model.id == model_id else None
 
     # ── OpenAI-compatible model list ────────────────────────────────────
 
     def build_openai_model_list(self) -> OpenAIModelListResponse:
         """Return registered models in OpenAI /v1/models format."""
         entries: list[OpenAIModelEntry] = []
-        for m in self._models.values():
+        for m in self.list_models():
             entries.append(
                 OpenAIModelEntry(
                     id=m.id,
@@ -275,10 +283,10 @@ class RuntimeState:
     def build_ollama_tags(self) -> OllamaTagsResponse:
         """Return registered models in Ollama /api/tags format."""
         entries: list[OllamaTagEntry] = []
-        for m in self._models.values():
+        for m in self.list_models():
             entries.append(
                 OllamaTagEntry(
-                    name=f"{m.id}:latest",
+                    name=m.id,
                     modified_at="2024-01-01T00:00:00Z",
                     size=_STUB_MODEL_SIZE,
                 )

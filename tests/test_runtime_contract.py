@@ -93,4 +93,4 @@ async def test_stubbed_model_present(client):
     resp = await client.get("/models")
     model_ids = [m["id"] for m in resp.json()["models"]]
 
-    assert "qwen2.5-1.5b-instruct-mlx" in model_ids
+    assert "stub-model" in model_ids

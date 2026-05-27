@@ -40,6 +40,11 @@ Whoosh'd presents an OpenAI-compatible API surface with additional runtime endpo
 | `GET /api/tags`              | Yes                | Ollama-compatible model inventory |
 | `POST /v1/chat/completions`  | Yes                | OpenAI-compatible chat            |
 
+> Inventory contract: `/v1/models` and `/api/tags` must advertise the exact
+> configured model id. In stub mode that is `stub-model`; in MLX mode it is
+> `WHOOSHD_MLX_MODEL` verbatim. Codexify uses this to validate
+> `LOCAL_CHAT_MODEL` without loosening its provider gate.
+
 ---
 
 ## Starting Whoosh'd

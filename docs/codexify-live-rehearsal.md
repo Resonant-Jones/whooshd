@@ -47,6 +47,10 @@ Validated in isolation (Whoosh'd running, Codexify not connected):
 | `active_jobs` cleanup | ✅ | Returns to 0 |
 | Admission control (overload) | ✅ | Structured 429 at limit |
 
+Inventory note: both inventory endpoints must advertise the exact configured
+model id before warmup. For this rehearsal that means
+`mlx-community/Llama-3.2-3B-Instruct-4bit`, not a stale alias.
+
 ---
 
 ## Rehearsal Tests
