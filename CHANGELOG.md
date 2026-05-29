@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.1.0rc2 (2026-05-29)
+
+### Added
+
+- Release hygiene tag capturing the configured-model inventory alignment and successful live Codexify integration proof.
+
 ## v0.1.0rc1 (2026-05-17)
 
 ### Added
