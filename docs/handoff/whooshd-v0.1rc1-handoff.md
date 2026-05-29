@@ -7,10 +7,10 @@ How to resume work on Whoosh'd without re-reading the entire history.
 ## Current Status
 
 - **Version:** 0.1.0rc1
-- **Test count:** 335 (all passing)
-- **Runtime state:** Stable. No known bugs in admission, cancellation, lifecycle, or adapter boundaries.
+- **Test count:** 343 (all passing)
+- **Runtime state:** Stable. Live Codexify integration verified; no known bugs in admission, cancellation, lifecycle, or adapter boundaries.
 - **MLX state:** ✅ Verified. Real smoke and benchmarks complete for Llama-3.2-3B-Instruct-4bit (4-bit).
-- **Codexify integration state:** ⚠️ Blocked. Runbook complete. Codexify runtime unavailable.
+- **Codexify integration state:** ✅ Completed. Live rehearsal succeeded end to end.
 
 ---
 
@@ -44,13 +44,13 @@ How to resume work on Whoosh'd without re-reading the entire history.
 | MLX concurrency 2 benchmark | ✅ 8/8, 672ms latency, 458ms TTFT |
 | MLX overload benchmark | ✅ 12/16 rejected (429), 0 errors |
 | `active_jobs` cleanup | ✅ Returns to 0 after all runs |
+| Live Codexify chat turn | ✅ `task.progress`, `task.chunk`, `task.completed`, assistant message `12412` persisted |
 
 ---
 
 ## What Is Blocked
 
-- **Live Codexify integration rehearsal** — Codexify runtime not available.
-  Runbook: `docs/codexify-live-rehearsal.md`.
+- **Live Codexify integration rehearsal** — none for the verified path. Runbook and proof: `docs/codexify-live-rehearsal.md`.
 
 ---
 
@@ -86,7 +86,7 @@ No dependencies beyond the base install. Always available for testing.
 pip install -e ".[mlx]"
 WHOOSHD_ADAPTER=mlx \
   WHOOSHD_MLX_MODEL=mlx-community/Llama-3.2-3B-Instruct-4bit \
-  python -m uvicorn whooshd.app:app --host 127.0.0.1 --port 8000
+  python -m uvicorn whooshd.app:app --host 0.0.0.0 --port 8000
 
 # Warm model
 curl -X POST http://localhost:8000/runtime/model/warmup
@@ -114,7 +114,7 @@ python -m whooshd.bench.runner \
 
 ## How To Resume Codexify Integration
 
-When Codexify runtime is available:
+When re-running against a fresh Codexify environment:
 
 1. Start Whoosh'd with MLX (see above).
 2. Warm model.
@@ -122,7 +122,7 @@ When Codexify runtime is available:
 4. Follow the rehearsal runbook in `docs/codexify-live-rehearsal.md`.
 5. Record results and decide next action.
 
-**Next allowed phase: Phase 5C — Live Codexify ↔ Whoosh'd integration rehearsal.**
+**Live integration status: completed. Re-run the runbook only if the environment changes.**
 
 ---
 

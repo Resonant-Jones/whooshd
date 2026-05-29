@@ -25,12 +25,13 @@
 
 ### Verified
 
-- 329 automated tests passing without `mlx-lm` installed
+- 343 automated tests passing without `mlx-lm` installed
 - Real MLX non-streaming smoke validated (Llama-3.2-3B-Instruct-4bit, 4-bit)
 - Real MLX streaming smoke validated (token-by-token → `[DONE]`)
 - Real MLX benchmarks: concurrency 1 (4/4, 370ms), concurrency 2 (8/8, 672ms)
 - Admission control validated under real MLX load (concurrency 4: 7/12 rejected)
 - `active_jobs` returns to 0 after all benchmark runs
+- Live Codexify rehearsal completed end to end with `provider id=local`, `displayName=Whoosh'd`, and persisted assistant message `12412`
 - `mlx-lm` remains optional via `pip install -e ".[mlx]"`
 
 ### Documentation
@@ -38,6 +39,7 @@
 - Codexify integration guide
 - Codexify runtime contract review
 - Live integration rehearsal runbook
+- Live Codexify integration proof recorded
 - MLX environment setup guide
 - Benchmark profiles and report template
 - Queue policy design spec
@@ -46,7 +48,7 @@
 
 ### Known Limitations
 
-- Live Codexify integration not yet completed (Codexify runtime unavailable)
+- Live Codexify integration completed and documented
 - Queue not implemented (not yet justified by burst evidence)
 - MLX requires Apple Silicon and macOS 14+
 - Non-streaming MLX cancellation is cooperative/best-effort
