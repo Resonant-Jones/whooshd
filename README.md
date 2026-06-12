@@ -63,6 +63,7 @@ Open http://127.0.0.1:8000/docs for the auto-generated Swagger UI.
 - **[Codexify Integration Guide](docs/codexify-integration.md)** — configuration, health vs readiness, streaming
 - **[Codexify Live Rehearsal Runbook](docs/codexify-live-rehearsal.md)** — step-by-step integration test
 - **[MLX Environment Setup](docs/mlx-environment.md)** — Apple Silicon MLX backend
+- **[Model Management](docs/model-management.md)** — downloading, storing, and switching models
 - **[Benchmarking](docs/benchmarking.md)** — throughput measurement harness
 - **[Release Notes](docs/releases/v0.1-rc.md)** — v0.1 release candidate
 - **[Queue Policy](docs/queue-policy.md)** — future queue design (not implemented)

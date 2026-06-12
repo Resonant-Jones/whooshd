@@ -72,6 +72,25 @@ def get_mlx_trust_remote_code() -> bool:
     return _env_bool("WHOOSHD_MLX_TRUST_REMOTE_CODE", False)
 
 
+def get_mlx_context_window() -> int:
+    """Model context window in tokens.
+
+    Optional override — when unset, Whoosh'd tries to read the value
+    from the model's config.json at startup.  Falls back to 32768.
+    """
+    return _env_int("WHOOSHD_MLX_CONTEXT_WINDOW", 0)
+
+
+def get_mlx_quantization() -> str | None:
+    """Human-readable quantization label (e.g. '3bit-mixed', '4bit').
+
+    Optional override — when unset, Whoosh'd tries to detect it from
+    config.json or the model directory name.
+    """
+    val = _env("WHOOSHD_MLX_QUANTIZATION", "")
+    return val if val else None
+
+
 # ── Admission control ───────────────────────────────────────────────────────
 
 

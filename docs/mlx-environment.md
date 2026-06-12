@@ -72,6 +72,9 @@ If that model is unavailable or too large for the machine:
 - Use any MLX-format model from HuggingFace
 - Convert models using `mlx_lm.convert`
 
+For downloading models locally and switching between them, see
+**[Model Management](model-management.md)**.
+
 Rules:
 
 - **Do not silently substitute models in reports.**

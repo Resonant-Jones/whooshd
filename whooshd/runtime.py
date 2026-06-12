@@ -9,6 +9,8 @@ Owns:
 
 from __future__ import annotations
 
+import json
+import os
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -34,7 +36,12 @@ from whooshd.contracts import (
     RunnerStatus,
     RuntimeResponse,
 )
-from whooshd.config import get_advertised_model_id
+from whooshd.config import (
+    get_advertised_model_id,
+    get_mlx_context_window,
+    get_mlx_model_path,
+    get_mlx_quantization,
+)
 
 # Synthetic creation timestamp for inventory entries.
 _STUB_MODEL_CREATED = 1700000000
@@ -144,21 +151,36 @@ class RuntimeState:
     # ── API builders ────────────────────────────────────────────────────
 
     def _build_model_info(self) -> ModelInfo:
-        """Build the single advertised model entry from current config."""
+        """Build the single advertised model entry from current config.
+
+        Tries to read model metadata (context window, quantization) from
+        the model's config.json when the model path is a local directory.
+        Falls back to WHOOSHD_MLX_CONTEXT_WINDOW / WHOOSHD_MLX_QUANTIZATION
+        env vars, then to sensible defaults.
+        """
         from whooshd.app import get_inference_adapter
 
         adapter = get_inference_adapter()
         model_id = get_advertised_model_id()
         loaded_model_id = adapter.model_id()
         loaded = bool(adapter.is_loaded() and loaded_model_id == model_id)
+
+        model_path = get_mlx_model_path()
+        metadata = _read_model_metadata(model_path)
+
+        context_window = metadata.get("context_window") or 32768
+        quantization = metadata.get("quantization") or None
+        memory_class = metadata.get("memory_class") or "small"
+        max_concurrent = metadata.get("max_concurrent_jobs") or 2
+
         return ModelInfo(
             id=model_id,
             loaded=loaded,
             capabilities=list(_DEFAULT_MODEL_CAPABILITIES),
-            max_concurrent_jobs=2,
-            context_window=32768,
-            quantization=None,
-            memory_class="small",
+            max_concurrent_jobs=max_concurrent,
+            context_window=context_window,
+            quantization=quantization,
+            memory_class=memory_class,
         )
 
     def build_runtime_response(self) -> RuntimeResponse:
@@ -436,6 +458,102 @@ class RuntimeState:
             requests=snapshots,
             active_count=self.active_jobs,
         )
+
+
+# ── Model metadata detection ────────────────────────────────────────────────
+
+
+def _read_model_metadata(model_path: str) -> dict:
+    """Try to read model metadata from config.json, env vars, and heuristics.
+
+    Resolution order:
+      1. WHOOSHD_MLX_CONTEXT_WINDOW / WHOOSHD_MLX_QUANTIZATION env vars
+      2. config.json from the model directory (local paths only)
+      3. Sensible defaults (context_window=32768, quantization=None)
+
+    Returns a dict with keys: context_window, quantization, memory_class,
+    max_concurrent_jobs.
+    """
+    metadata: dict = {}
+
+    # ── Context window ─────────────────────────────────────────────────
+    env_cw = get_mlx_context_window()
+    if env_cw > 0:
+        metadata["context_window"] = env_cw
+    else:
+        # Try config.json
+        config = _try_read_model_config(model_path)
+        if config:
+            tc = config.get("text_config", {})
+            cw = tc.get("max_position_embeddings") or config.get("max_position_embeddings")
+            if cw:
+                metadata["context_window"] = int(cw)
+
+    # ── Quantization label ────────────────────────────────────────────
+    env_q = get_mlx_quantization()
+    if env_q:
+        metadata["quantization"] = env_q
+    else:
+        config = _try_read_model_config(model_path)
+        if config:
+            qc = config.get("quantization", {})
+            if isinstance(qc, dict):
+                bits = qc.get("bits")
+                mode = qc.get("mode")
+                if bits:
+                    label = f"{bits}bit"
+                    if mode:
+                        label += f"-{mode}"
+                    metadata["quantization"] = label
+            elif isinstance(qc, str):
+                metadata["quantization"] = qc
+
+    # ── Memory class (heuristic from file size) ────────────────────────
+    metadata["memory_class"] = _guess_memory_class(model_path)
+
+    # ── Max concurrent jobs (small models can handle more) ────────────
+    metadata["max_concurrent_jobs"] = 2  # safe default; can be tuned later
+
+    return metadata
+
+
+def _try_read_model_config(model_path: str) -> dict | None:
+    """Read config.json from a local model directory, or None."""
+    if not model_path or not os.path.isdir(model_path):
+        return None
+    config_file = os.path.join(model_path, "config.json")
+    if not os.path.isfile(config_file):
+        return None
+    try:
+        with open(config_file, "r") as f:
+            return json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return None
+
+
+def _guess_memory_class(model_path: str) -> str:
+    """Guess memory class from safetensors file size.
+
+    small  — < 8 GB
+    medium — 8–24 GB
+    large  — > 24 GB
+    """
+    try:
+        if os.path.isdir(model_path):
+            total = 0
+            for name in os.listdir(model_path):
+                if name.endswith(".safetensors"):
+                    total += os.path.getsize(os.path.join(model_path, name))
+            gb = total / (1024 ** 3)
+            if gb < 8:
+                return "small"
+            elif gb < 24:
+                return "medium"
+            else:
+                return "large"
+    except OSError:
+        pass
+    return "small"
 
 
 # Module-level singleton for the app layer to import.
