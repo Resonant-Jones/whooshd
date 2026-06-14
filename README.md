@@ -1,6 +1,32 @@
 # Whoosh'd
 
-Memory-aware local inference broker for Apple Silicon.
+**Standalone local inference gateway for MLX, MLX-VLM, and GGUF runtimes.**
+
+Whoosh'd is a self-contained local inference orchestration layer that
+supervises and routes across multiple model runtimes behind a single
+OpenAI-compatible API.
+
+- **No Ollama required.** Whoosh'd manages runtimes directly.
+- **Use with Codexify** as a managed local sidecar, or
+- **Use standalone** with any OpenAI-compatible client, or
+- **Use with any LLM tool** that speaks `/v1/chat/completions`.
+
+Whoosh'd does not require Codexify, Ollama, or any specific client
+to run.
+
+## Architecture
+
+```
+Client / Codexify / OpenCode / Xcode
+        |
+Whoosh'd OpenAI-compatible API
+        |
+Runtime Router
+        +-- llama.cpp runtime for GGUF models
+        +-- mlx_lm.server runtime for MLX models
+        +-- mlx_lm in-process runtime (legacy)
+        +-- stub adapter (testing)
+```
 
 ## Quick Start
 
@@ -13,7 +39,12 @@ pip install -e ".[dev]"
 # Run with stub adapter (no models needed)
 WHOOSHD_ADAPTER=stub python -m uvicorn whooshd.app:app --reload
 
-# Run with MLX (requires mlx-lm and a converted model)
+# Run with MLX-LM Server (subprocess-supervised)
+WHOOSHD_MLX_ENABLED=true \
+  WHOOSHD_MLX_MODEL=mlx-community/Llama-3.2-3B-Instruct-4bit \
+  python -m uvicorn whooshd.app:app --reload
+
+# Run with MLX in-process (legacy, requires mlx-lm)
 WHOOSHD_ADAPTER=mlx \
   WHOOSHD_MLX_MODEL=mlx-community/Llama-3.2-3B-Instruct-4bit \
   python -m uvicorn whooshd.app:app --reload
@@ -34,29 +65,62 @@ See **[docs/codexify-integration.md](docs/codexify-integration.md)** for the ful
 | Method | Path                           | Description                               |
 |--------|--------------------------------|-------------------------------------------|
 | GET    | `/health`                      | Process liveness + runtime state          |
+| GET    | `/health/runtime`              | Per-runtime health snapshot               |
 | GET    | `/ready`                       | Inference readiness (200/503)             |
 | GET    | `/runtime`                     | Full runtime snapshot                     |
 | GET    | `/runtime/model`               | Model lifecycle snapshot                  |
-| POST   | `/runtime/model/warmup`        | Trigger model warmup                      |
-| POST   | `/runtime/model/unload`        | Unload model from memory                  |
+| POST   | `/runtime/model/warmup`        | Trigger model warmup on all runtimes      |
+| POST   | `/runtime/model/unload`        | Unload models from all runtimes           |
 | GET    | `/runtime/requests`            | Request lifecycle list                    |
 | POST   | `/runtime/requests/{id}/cancel` | Cancel an active request                  |
-| GET    | `/v1/models`                   | OpenAI-compatible model inventory         |
-| GET    | `/api/tags`                    | Ollama-compatible model inventory         |
-| POST   | `/v1/chat/completions`         | OpenAI-compatible chat (streaming + non)  |
-| POST   | `/v1/generate`                 | Codexify-style generation                 |
+| GET    | `/v1/models`                   | OpenAI-compatible model inventory (aggregated) |
+| GET    | `/api/tags`                    | Ollama-compatible model inventory (aggregated) |
+| POST   | `/v1/chat/completions`         | OpenAI-compatible chat (routed, streaming + non) |
+| POST   | `/v1/generate`                 | Codexify-style generation (routed)        |
 | GET    | `/models`                      | Internal model registry                   |
 
 Open http://127.0.0.1:8000/docs for the auto-generated Swagger UI.
 
 ## Configuration
 
+### General
+
+| Variable                        | Default | Purpose                              |
+|---------------------------------|---------|--------------------------------------|
+| `WHOOSHD_ADAPTER`               | `stub`  | Backend: `stub`, `mlx`, or `llama_cpp` |
+| `WHOOSHD_MODEL_REGISTRY_PATH`   | (none)  | Path to model registry YAML          |
+
+### MLX-LM Server (subprocess-supervised)
+
+| Variable                          | Default                                          | Purpose                         |
+|-----------------------------------|--------------------------------------------------|---------------------------------|
+| `WHOOSHD_MLX_ENABLED`             | `false`                                          | Enable the MLX-LM Server runtime |
+| `WHOOSHD_MLX_MODEL`               | (none)                                           | HF repo or local model path     |
+| `WHOOSHD_MLX_HOST`                | `127.0.0.1`                                      | Bind host                       |
+| `WHOOSHD_MLX_PORT`                | `8081`                                           | Bind port                       |
+| `WHOOSHD_MLX_EXTRA_ARGS`          | (none)                                           | Extra CLI args for mlx_lm.server |
+| `WHOOSHD_MLX_STARTUP_TIMEOUT_SECONDS` | `30.0`                                       | Startup timeout                 |
+| `WHOOSHD_MLX_HEALTH_TIMEOUT_SECONDS`  | `2.0`                                        | Health probe timeout            |
+
+### MLX in-process (legacy)
+
 | Variable                        | Default                                          | Purpose                       |
 |---------------------------------|--------------------------------------------------|-------------------------------|
-| `WHOOSHD_ADAPTER`               | `stub`                                           | Backend: `stub` or `mlx`      |
 | `WHOOSHD_MLX_MODEL`             | `mlx-community/Llama-3.2-3B-Instruct-4bit`       | HF repo or local model path   |
 | `WHOOSHD_MLX_MAX_TOKENS_DEFAULT`| `256`                                            | Fallback max_tokens           |
 | `WHOOSHD_MLX_TRUST_REMOTE_CODE` | `false`                                          | Allow custom model code       |
+
+### llama.cpp (GGUF)
+
+| Variable                              | Default      | Purpose                          |
+|---------------------------------------|--------------|----------------------------------|
+| `WHOOSHD_LLAMA_CPP_SERVER_URL`        | (none)       | External llama.cpp server URL    |
+| `WHOOSHD_LLAMA_CPP_MODEL_PATH`        | (none)       | GGUF model file path             |
+| `WHOOSHD_LLAMA_CPP_HOST`              | `127.0.0.1`  | Managed server bind host         |
+| `WHOOSHD_LLAMA_CPP_PORT`              | `8080`       | Managed server bind port         |
+| `WHOOSHD_LLAMA_CPP_AUTO_START`        | `false`      | Auto-start managed server        |
+| `WHOOSHD_LLAMA_CPP_STARTUP_TIMEOUT_SECONDS` | `30.0` | Startup timeout               |
+| `WHOOSHD_LLAMA_CPP_HEALTH_TIMEOUT_SECONDS`  | `2.0`  | Health probe timeout            |
 
 ## Documentation
 
