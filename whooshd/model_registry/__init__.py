@@ -4,8 +4,8 @@ This package provides the filesystem-backed model-store layer:
   - bootstrap_model_store(): creates the directory layout and manifest
   - inspect_model_candidate(): classify a model artifact path
   - write_candidate_record(): persist candidate metadata
-  - contract types: ModelStoreLayout, ModelRegistryManifest, ModelRegistryState,
-    ModelCandidate, ModelCandidateInspectionResult
+  - register_model_candidate(): promote a candidate into a registered model
+  - contract types for store layout, manifest, candidates, registration
 
 Separate from the runtime model registry (``whooshd/registry.py``) which
 describes *configured* models for inference routing.
@@ -21,20 +21,30 @@ from whooshd.model_registry.contracts import (
     ModelCandidateFormat,
     ModelCandidateInspectionResult,
     ModelCandidateStatus,
+    ModelRegistrationResult,
     ModelRegistryManifest,
     ModelRegistryState,
     ModelStoreLayout,
+    RegisteredModel,
+    RegisteredModelStatus,
+    RegisteredModelStorageMode,
 )
+from whooshd.model_registry.registration import register_model_candidate
 
 __all__ = [
     "bootstrap_model_store",
     "inspect_model_candidate",
+    "register_model_candidate",
     "write_candidate_record",
     "ModelCandidate",
     "ModelCandidateFormat",
     "ModelCandidateInspectionResult",
     "ModelCandidateStatus",
+    "ModelRegistrationResult",
     "ModelRegistryManifest",
     "ModelRegistryState",
     "ModelStoreLayout",
+    "RegisteredModel",
+    "RegisteredModelStatus",
+    "RegisteredModelStorageMode",
 ]

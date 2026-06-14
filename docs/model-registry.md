@@ -117,10 +117,67 @@ runtime promises.
 
 ### Future phases
 
-- Registration from candidate → `registry/models.json` entry
-- Managed copy into `models/mlx`, `models/gguf`, or `models/vlm`
+- Registration from candidate → `registry/models.json` entry (✅ implemented)
+- Managed copy into `models/mlx`, `models/gguf`, or `models/vlm` (✅ implemented)
+- Runtime advertisement from registered models
+- Adapter compatibility validation
 - Drag/drop UI intake
-- Optional advanced external-path registration
+- Optional advanced external-reference registration
+
+---
+
+## Managed candidate registration
+
+The `register_model_candidate()` function promotes an inspected candidate
+into the durable managed model registry.
+
+### Registration flow
+
+1. Load the candidate record from `registry/candidates/<id>.json`
+2. Validate the candidate is registrable (status=candidate, format known)
+3. Sanitize the model ID (no path traversal, control chars, or empty strings)
+4. Copy the artifact into the managed store:
+   - MLX text → `models/mlx/<model_id>/`
+   - MLX vision → `models/vlm/<model_id>/`
+   - GGUF → `models/gguf/<model_id>/<filename>.gguf`
+5. Append a `RegisteredModel` entry to `registry/models.json`
+6. Return structured registration metadata
+
+### Managed storage
+
+| Format | Modalities | Destination |
+|--------|-----------|-------------|
+| MLX | text only | `models/mlx/<id>/` |
+| MLX | text + vision | `models/vlm/<id>/` |
+| GGUF | text | `models/gguf/<id>/<file>` |
+
+Copies are managed by Whoosh'd.  Original source files are never modified
+or deleted.  External-reference storage is intentionally deferred.
+
+### Why registration ≠ runtime visibility
+
+A registered model is *known* to Whoosh'd but not yet *advertised* or
+*runnable*.  Those transitions require:
+- Runtime adapter compatibility validation
+- Explicit advertisement into `/v1/models`
+- Adapter health confirmation that the model can actually be loaded
+
+Registration is the first durable lifecycle gate, not the last.
+
+### Problem codes
+
+| Code | Meaning |
+|------|---------|
+| `store_not_bootstrapped` | Store root has no `registry/` dir |
+| `candidate_missing` | Candidate record not found |
+| `candidate_not_registrable` | Candidate status is not `candidate` |
+| `unsupported_format` | Detected format is `unknown` |
+| `unsafe_model_id` | Model ID contains path traversal or invalid chars |
+| `duplicate_model_id` | A different model already uses this ID |
+| `managed_destination_exists` | Destination path already exists |
+| `copy_failed` | Filesystem copy operation failed |
+| `manifest_unreadable` | `registry/models.json` is corrupt |
+| `manifest_schema_unsupported` | Manifest schema_version is not 1 |
 
 ---
 
