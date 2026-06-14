@@ -120,6 +120,8 @@ class ModelCapability(str, Enum):
     JSON = "json"
     TOOLS = "tools"
     EMBEDDINGS = "embeddings"
+    REASONING = "reasoning"
+    VISION = "vision"
 
 
 class ModelInfo(BaseModel):
@@ -210,24 +212,71 @@ class GenerateResponse(BaseModel):
 
 
 class ChatMessage(BaseModel):
-    """A single message in a chat completion conversation."""
+    """A single message in a chat completion conversation.
+
+    Supports multimodal content (text + image_url) for vision models,
+    and tool_call / tool_call_id for tool-use conversations.
+    """
 
     role: Literal["system", "user", "assistant", "tool"]
-    content: str = Field(..., min_length=1, description="Text content of the message")
+    content: str | list[dict] = Field("", description="Text content of the message, or a list of content parts (text + image_url for multimodal)")
     name: Optional[str] = Field(None, description="Optional speaker name")
+    tool_calls: Optional[list[dict]] = Field(None, description="Tool calls made by the assistant (for tool-use conversations)")
+    tool_call_id: Optional[str] = Field(None, description="Tool call ID this message responds to (role=tool)")
 
 
 class ChatCompletionRequest(BaseModel):
-    """OpenAI-compatible POST /v1/chat/completions request body."""
+    """OpenAI-compatible POST /v1/chat/completions request body.
+
+    Fields not explicitly listed here are captured in ``extra_fields``
+    and forwarded to the upstream runtime without validation.
+    This ensures Whoosh'd never silently discards an OpenAI-compatible field.
+    """
+
+    model_config = {"extra": "allow"}
 
     model: str = Field(..., min_length=1, description="Model ID to use for completion")
     messages: list[ChatMessage] = Field(..., min_length=1, description="Conversation messages")
-    temperature: float = Field(0.7, ge=0.0, le=2.0, description="Sampling temperature")
-    top_p: float = Field(0.95, ge=0.0, le=1.0, description="Nucleus sampling threshold")
+    temperature: Optional[float] = Field(0.7, ge=0.0, le=2.0, description="Sampling temperature")
+    top_p: Optional[float] = Field(0.95, ge=0.0, le=1.0, description="Nucleus sampling threshold")
     max_tokens: Optional[int] = Field(256, ge=1, le=32768, description="Maximum tokens to generate")
+    max_completion_tokens: Optional[int] = Field(None, ge=1, le=32768, description="Maximum completion tokens (alias for max_tokens)")
     stream: bool = Field(False, description="Whether to stream response tokens via SSE")
     stop: Optional[list[str]] = Field(None, description="Stop sequences")
     user: Optional[str] = Field(None, description="End-user identifier for abuse monitoring")
+
+    # Tool / function calling fields.
+    tools: Optional[list[dict]] = Field(None, description="List of available tools for the model")
+    tool_choice: Optional[str | dict] = Field(None, description="Tool choice: 'auto', 'none', 'required', or a specific tool")
+    parallel_tool_calls: Optional[bool] = Field(None, description="Whether to allow parallel tool calls")
+
+    # Structured output / response format.
+    response_format: Optional[dict] = Field(None, description="Response format specification (e.g. json_object, json_schema)")
+
+    # Sampling parameters.
+    seed: Optional[int] = Field(None, description="Random seed for deterministic sampling")
+    presence_penalty: Optional[float] = Field(None, ge=-2.0, le=2.0, description="Presence penalty")
+    frequency_penalty: Optional[float] = Field(None, ge=-2.0, le=2.0, description="Frequency penalty")
+    logit_bias: Optional[dict[str, float]] = Field(None, description="Token-level logit bias map")
+    logprobs: Optional[bool] = Field(None, description="Whether to return log probabilities")
+    top_logprobs: Optional[int] = Field(None, ge=0, le=20, description="Number of top log probabilities to return")
+
+    # Reasoning / extended thinking fields.
+    reasoning_effort: Optional[str] = Field(None, description="Reasoning effort level (e.g. 'low', 'medium', 'high')")
+
+    # Metadata.
+    metadata: Optional[dict] = Field(None, description="User-supplied metadata for the request")
+
+    # Extra fields captured by model_config extra=allow, forwarded to upstream.
+    extra_fields: dict = Field(default_factory=dict, description="Additional fields captured from the request body, forwarded to upstream")
+
+    def model_post_init(self, __context) -> None:
+        """Capture any extra fields not explicitly declared in the model."""
+        # Pydantic v2 stores extra fields in __pydantic_extra__ when
+        # model_config extra='allow' is set.
+        extras = getattr(self, "__pydantic_extra__", None) or {}
+        if extras:
+            self.extra_fields = dict(extras)
 
 
 class ChatCompletionChoice(BaseModel):
@@ -302,6 +351,10 @@ class OpenAIModelEntry(BaseModel):
     object: str = Field("model", description="Object type")
     created: int = Field(..., description="Unix timestamp when model was registered")
     owned_by: str = Field("whooshd", description="Owning entity")
+    metadata: Optional[dict] = Field(
+        None,
+        description="Internal engine/format metadata — not part of OpenAI spec but useful for clients",
+    )
 
 
 class OpenAIModelListResponse(BaseModel):
@@ -418,6 +471,69 @@ class ModelRuntimeSnapshot(BaseModel):
     last_error_message: Optional[str] = Field(None, description="Short error message (no tracebacks)")
 
 
+# ── Runtime Backend Metadata ────────────────────────────────────────────────
+
+
+class RuntimeKind(str, Enum):
+    """Well-known runtime backend identifiers."""
+    STUB = "stub"
+    MLX_LM = "mlx_lm"
+    MLX_LM_SERVER = "mlx_lm_server"
+    MLX_VLM = "mlx_vlm"
+    LLAMA_CPP = "llama_cpp"
+
+
+class RuntimeHealthState(str, Enum):
+    """Per-runtime health state.
+
+    Distinguishes process-alive from model-ready so orchestrators
+    never collapse warmup into offline.
+    """
+    OFFLINE = "offline"
+    STARTING = "starting"
+    RUNTIME_AVAILABLE = "runtime_available"
+    MODEL_WARMING = "model_warming"
+    READY = "ready"
+    GENERATING = "generating"
+    DEGRADED = "degraded"
+    ERROR = "error"
+
+
+class RuntimeModel(BaseModel):
+    """Normalized model descriptor exposed across all runtimes."""
+
+    id: str = Field(..., description="Unique model identifier")
+    display_name: str = Field("", description="Human-readable display name")
+    runtime: str = Field(..., description="Runtime backend kind (e.g. llama_cpp, mlx_lm_server)")
+    format: str = Field("unknown", description="Model format: gguf, mlx, or unknown")
+    path: Optional[str] = Field(None, description="Filesystem path or HF repo id")
+    context_window: Optional[int] = Field(None, ge=0, description="Max context window in tokens")
+    supports_tools: Optional[bool] = Field(None, description="Whether the model supports structured tool calling")
+    supports_vision: Optional[bool] = Field(None, description="Whether the model supports vision / multimodal")
+    supports_reasoning: Optional[bool] = Field(None, description="Whether the model supports reasoning / chain-of-thought")
+    loaded: bool = Field(False, description="Whether the model is currently loaded in its runtime")
+    state: str = Field("offline", description="Current runtime state for this model")
+
+
+class RuntimeHealth(BaseModel):
+    """Per-runtime health snapshot."""
+
+    kind: str = Field(..., description="Runtime kind identifier")
+    enabled: bool = Field(False, description="Whether this runtime is enabled")
+    state: RuntimeHealthState = Field(RuntimeHealthState.OFFLINE, description="Current health state")
+    active_model: Optional[str] = Field(None, description="Currently loaded/active model ID")
+    configured_model: Optional[str] = Field(None, description="Model path from adapter configuration")
+    detail: Optional[str] = Field(None, description="Human-readable state detail")
+
+
+class MultiRuntimeHealthResponse(BaseModel):
+    """Aggregated health across all runtimes."""
+
+    status: str = Field("ok", description="Aggregate status: ok, degraded, or error")
+    runtimes: dict[str, RuntimeHealth] = Field(default_factory=dict, description="Per-runtime health keyed by kind")
+    session: dict = Field(default_factory=dict, description="Whoosh'd process/session identity")
+
+
 # ── Readiness ───────────────────────────────────────────────────────────────
 
 
@@ -445,8 +561,13 @@ class OllamaTagEntry(BaseModel):
     """A single model entry in an Ollama-style /api/tags response."""
 
     name: str = Field(..., description="Model name with optional tag suffix")
+    model: str = Field("", description="Canonical model identifier")
     modified_at: str = Field(..., description="ISO-8601 timestamp of last modification")
     size: int = Field(..., ge=0, description="Model size in bytes")
+    details: Optional[dict] = Field(
+        None,
+        description="Format/family metadata for Ollama-compatible clients",
+    )
 
 
 class OllamaTagsResponse(BaseModel):

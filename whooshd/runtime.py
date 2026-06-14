@@ -41,6 +41,7 @@ from whooshd.config import (
     get_mlx_context_window,
     get_mlx_model_path,
     get_mlx_quantization,
+    get_model_registry_path,
 )
 
 # Synthetic creation timestamp for inventory entries.
@@ -128,6 +129,9 @@ class RuntimeState:
         self.queue_depth: int = 0
         self.active_model: Optional[str] = None
 
+        # ── Model registry (loaded lazily or from YAML) ────────────────
+        self._registry: object | None = None
+
     # ── Computed properties ─────────────────────────────────────────────
 
     @property
@@ -158,12 +162,17 @@ class RuntimeState:
         Falls back to WHOOSHD_MLX_CONTEXT_WINDOW / WHOOSHD_MLX_QUANTIZATION
         env vars, then to sensible defaults.
         """
-        from whooshd.app import get_inference_adapter
+        from whooshd.routing import get_router
 
-        adapter = get_inference_adapter()
+        router = get_router()
         model_id = get_advertised_model_id()
-        loaded_model_id = adapter.model_id()
-        loaded = bool(adapter.is_loaded() and loaded_model_id == model_id)
+        # Check if any adapter has this model loaded.
+        loaded = False
+        for adapter in router._adapters.values():
+            loaded_model_id = adapter.model_id()
+            if adapter.is_loaded() and loaded_model_id == model_id:
+                loaded = True
+                break
 
         model_path = get_mlx_model_path()
         metadata = _read_model_metadata(model_path)
@@ -196,15 +205,23 @@ class RuntimeState:
         self, *, adapter_name: str, configured_model: Optional[str]
     ) -> ModelRuntimeSnapshot:
         """Build a public-safe model lifecycle snapshot."""
-        from whooshd.app import get_inference_adapter
+        from whooshd.routing import get_router
 
-        adapter = get_inference_adapter()
+        router = get_router()
+        # Check if any adapter has a loaded model.
+        loaded_model: str | None = None
+        is_loaded = False
+        for adapter in router._adapters.values():
+            if adapter.is_loaded():
+                loaded_model = adapter.model_id()
+                is_loaded = True
+                break
         return ModelRuntimeSnapshot(
             adapter=adapter_name,
             configured_model=configured_model,
-            loaded_model=adapter.model_id() if adapter.is_loaded() else None,
+            loaded_model=loaded_model,
             lifecycle_state=self.model_lifecycle,
-            loaded=adapter.is_loaded(),
+            loaded=is_loaded,
             warming=self.model_lifecycle == ModelLifecycleState.WARMING,
             last_load_started_at=self._last_load_started_at,
             last_load_completed_at=self._last_load_completed_at,
@@ -278,41 +295,244 @@ class RuntimeState:
             },
         }
 
+    # ── Model registry accessor ──────────────────────────────────────
+
+    def _load_registry(self) -> object | None:
+        """Load the model registry, or None if no registry file is present.
+
+        The registry is loaded at most once and cached.
+        """
+        if self._registry is not None:
+            return self._registry
+        try:
+            from whooshd.registry import load_model_registry
+
+            explicit = get_model_registry_path()
+            reg = load_model_registry(explicit)
+            self._registry = reg
+            return reg
+        except Exception:
+            # Swallow — registry is optional; fall back to env-var behaviour.
+            self._registry = False  # sentinel: tried and not found
+            return None
+
+    def _has_registry(self) -> bool:
+        """Return True if a model registry file was found and loaded."""
+        reg = self._load_registry()
+        return reg is not None and reg is not False and bool(reg)
+
     def list_models(self) -> list[ModelInfo]:
+        """Synchronous model list (backward-compatible).
+
+        Prefer ``list_models_async()`` in async contexts so adapter
+        model lists can be fetched from live runtimes.
+        """
+        reg = self._load_registry()
+        if reg and reg is not False and reg:
+            return self._models_from_registry(reg)
         return [self._build_model_info()]
 
+    async def list_models_async(self) -> list[ModelInfo]:
+        """List models from the registry or from all registered adapters.
+
+        When a registry is present, registry entries are authoritative.
+        Otherwise each non-stub adapter contributes its configured model(s).
+        """
+        reg = self._load_registry()
+        if reg and reg is not False and reg:
+            return self._models_from_registry(reg)
+        return await self._models_from_adapters()
+
+    async def _models_from_adapters(self) -> list[ModelInfo]:
+        """Build ModelInfo entries from all registered runtime adapters.
+
+        Each non-stub adapter contributes one or more ModelInfo entries
+        describing its configured model.  The stub adapter is excluded
+        unless it is the only registered adapter.
+
+        When only the stub adapter is registered, falls back to the
+        legacy single-model behaviour driven by WHOOSHD_ADAPTER / WHOOSHD_MLX_MODEL.
+        """
+        from whooshd.routing import get_router
+
+        router = get_router()
+        results: list[ModelInfo] = []
+
+        non_stub_adapters = [
+            a for k, a in router._adapters.items() if k != "stub"
+        ]
+
+        if not non_stub_adapters:
+            # No real runtimes registered — use legacy single-model path.
+            return [self._build_model_info()]
+
+        for adapter in non_stub_adapters:
+            try:
+                runtime_models = await adapter.list_models()
+            except Exception:
+                runtime_models = []
+
+            for rm in runtime_models:
+                loaded = adapter.is_loaded() if hasattr(adapter, "is_loaded") else False
+                capabilities: list[ModelCapability] = list(_DEFAULT_MODEL_CAPABILITIES)
+
+                if rm.supports_vision:
+                    capabilities.append(ModelCapability.VISION)
+                if rm.supports_reasoning:
+                    capabilities.append(ModelCapability.REASONING)
+                if rm.supports_tools:
+                    capabilities.append(ModelCapability.TOOLS)
+
+                results.append(ModelInfo(
+                    id=rm.id,
+                    loaded=loaded,
+                    capabilities=capabilities,
+                    max_concurrent_jobs=2,
+                    context_window=rm.context_window or 32768,
+                    quantization=None,
+                    memory_class="small",
+                ))
+
+        if not results:
+            return [self._build_model_info()]
+
+        return results
+
+    def _models_from_registry(self, registry: object) -> list[ModelInfo]:
+        """Build ModelInfo entries from registry."""
+        from whooshd.routing import get_router
+
+        router = get_router()
+        # Check if any adapter has a model loaded.
+        loaded_model_id: str | None = None
+        for adapter in router._adapters.values():
+            if adapter.is_loaded():
+                loaded_model_id = adapter.model_id()
+                break
+        results: list[ModelInfo] = []
+
+        from whooshd.registry import ModelModality, RegistryModelEntry
+
+        for model_id, entry in registry.enabled_models():
+            loaded = bool(loaded_model_id and loaded_model_id == model_id)
+
+            # Map registry modalities → ModelCapability enums.
+            capabilities: list[ModelCapability] = []
+            if ModelModality.TEXT in entry.modalities:
+                capabilities.extend([
+                    ModelCapability.CHAT,
+                    ModelCapability.STREAMING,
+                    ModelCapability.JSON,
+                ])
+            if ModelModality.EMBEDDING in entry.modalities:
+                capabilities.append(ModelCapability.EMBEDDINGS)
+            # Tools capability can be added later for tool-calling models.
+
+            # Memory class heuristic based on model size tags.
+            memory_class = "small"
+            tags_lower = [t.lower() for t in entry.tags]
+            if "large" in tags_lower or "70b" in tags_lower:
+                memory_class = "large"
+            elif "medium" in tags_lower or "30b" in tags_lower:
+                memory_class = "medium"
+
+            results.append(ModelInfo(
+                id=model_id,
+                loaded=loaded,
+                capabilities=capabilities,
+                max_concurrent_jobs=2,
+                context_window=entry.context_window,
+                quantization=None,  # registry does not carry quantization yet
+                memory_class=memory_class,
+            ))
+        return results
+
     def get_model(self, model_id: str) -> Optional[ModelInfo]:
-        model = self._build_model_info()
-        return model if model.id == model_id else None
+        for m in self.list_models():
+            if m.id == model_id:
+                return m
+        return None
 
     # ── OpenAI-compatible model list ────────────────────────────────────
 
-    def build_openai_model_list(self) -> OpenAIModelListResponse:
-        """Return registered models in OpenAI /v1/models format."""
+    async def build_openai_model_list(self) -> OpenAIModelListResponse:
+        """Return registered models in OpenAI /v1/models format.
+
+        When a registry is present, each entry includes engine/format/modality
+        metadata.  Otherwise models are aggregated from all registered
+        runtime adapters.
+        """
         entries: list[OpenAIModelEntry] = []
-        for m in self.list_models():
-            entries.append(
-                OpenAIModelEntry(
-                    id=m.id,
-                    created=_STUB_MODEL_CREATED,
-                    owned_by="whooshd",
+        reg = self._load_registry()
+
+        if reg and reg is not False and reg:
+            for model_id, entry in reg.enabled_models():
+                entries.append(
+                    OpenAIModelEntry(
+                        id=model_id,
+                        created=_STUB_MODEL_CREATED,
+                        owned_by="whooshd",
+                        metadata={
+                            "engine": entry.engine.value,
+                            "format": entry.format.value,
+                            "modalities": [m.value for m in entry.modalities],
+                            "context_window": entry.context_window,
+                            "display_name": entry.display_name,
+                            "priority": entry.priority,
+                            "warm_policy": entry.warm_policy.value,
+                        },
+                    )
                 )
-            )
+        else:
+            # Aggregate from adapters.
+            models = await self.list_models_async()
+            for m in models:
+                entries.append(
+                    OpenAIModelEntry(
+                        id=m.id,
+                        created=_STUB_MODEL_CREATED,
+                        owned_by="whooshd",
+                    )
+                )
         return OpenAIModelListResponse(data=entries)
 
     # ── Ollama-compatible tags ──────────────────────────────────────────
 
-    def build_ollama_tags(self) -> OllamaTagsResponse:
-        """Return registered models in Ollama /api/tags format."""
+    async def build_ollama_tags(self) -> OllamaTagsResponse:
+        """Return registered models in Ollama /api/tags format.
+
+        When a registry is present, each entry includes format/family details.
+        Otherwise models are aggregated from all registered adapters.
+        """
         entries: list[OllamaTagEntry] = []
-        for m in self.list_models():
-            entries.append(
-                OllamaTagEntry(
-                    name=m.id,
-                    modified_at="2024-01-01T00:00:00Z",
-                    size=_STUB_MODEL_SIZE,
+        reg = self._load_registry()
+
+        if reg and reg is not False and reg:
+            for model_id, entry in reg.enabled_models():
+                entries.append(
+                    OllamaTagEntry(
+                        name=model_id,
+                        model=model_id,
+                        modified_at="2024-01-01T00:00:00Z",
+                        size=_STUB_MODEL_SIZE,
+                        details={
+                            "format": entry.format.value,
+                            "family": entry.engine.value,
+                            "context_window": entry.context_window,
+                            "modalities": [m.value for m in entry.modalities],
+                        },
+                    )
                 )
-            )
+        else:
+            for m in await self.list_models_async():
+                entries.append(
+                    OllamaTagEntry(
+                        name=m.id,
+                        model=m.id,
+                        modified_at="2024-01-01T00:00:00Z",
+                        size=_STUB_MODEL_SIZE,
+                    )
+                )
         return OllamaTagsResponse(models=entries)
 
     # ── Request lifecycle bookkeeping ───────────────────────────────────

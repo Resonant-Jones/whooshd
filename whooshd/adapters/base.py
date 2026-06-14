@@ -1,12 +1,12 @@
 """Inference adapter protocol.
 
-All inference backends (stub, mlx-lm, etc.) implement this interface
-so the HTTP layer stays thin and testable.
+All inference backends (stub, mlx-lm, mlx-lm-server, llama-cpp, etc.)
+implement this interface so the HTTP layer stays thin and testable.
 """
 
 from __future__ import annotations
 
-from typing import AsyncIterator, Protocol
+from typing import AsyncIterator, Optional, Protocol
 
 from whooshd.contracts import (
     ChatCompletionChunk,
@@ -15,6 +15,8 @@ from whooshd.contracts import (
     GenerateRequest,
     GenerateResponse,
     RequestExecutionContext,
+    RuntimeHealth,
+    RuntimeModel,
 )
 
 
@@ -31,11 +33,20 @@ class InferenceAdapter(Protocol):
     Each adapter is responsible for accepting inference requests,
     running inference (or producing stub output), and returning
     typed responses.
+
+    Multi-runtime support: every adapter exposes its ``kind``
+    (e.g. ``"llama_cpp"``, ``"mlx_lm_server"``) so the router
+    can dispatch requests to the correct backend.
     """
 
     @property
     def name(self) -> str:
         """Human-readable adapter identifier (e.g. 'stub', 'mlx-lm')."""
+        ...
+
+    @property
+    def kind(self) -> str:
+        """Runtime kind identifier for routing (e.g. 'llama_cpp', 'mlx_lm_server')."""
         ...
 
     @property
@@ -79,4 +90,14 @@ class InferenceAdapter(Protocol):
 
     async def unload(self) -> None:
         """Release the model from memory (subject to active-request checks)."""
+        ...
+
+    # ── Multi-runtime introspection ──────────────────────────────────
+
+    async def health(self) -> RuntimeHealth:
+        """Return the current health state of this runtime."""
+        ...
+
+    async def list_models(self) -> list[RuntimeModel]:
+        """Return the list of models managed by this runtime."""
         ...

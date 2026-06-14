@@ -112,7 +112,7 @@ async def test_runtime_model_returns_200(client):
 async def test_runtime_model_body_shape(client):
     resp = await client.get("/runtime/model")
     body = resp.json()
-    assert body["adapter"] == "stub"
+    assert body["adapter"] in ("stub", "multi-runtime")
     assert "configured_model" in body
     assert "loaded_model" in body
     assert "lifecycle_state" in body

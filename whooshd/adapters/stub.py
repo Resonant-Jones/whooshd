@@ -22,6 +22,10 @@ from whooshd.contracts import (
     GenerateRequest,
     GenerateResponse,
     ResponseRuntimeInfo,
+    RuntimeHealth,
+    RuntimeHealthState,
+    RuntimeKind,
+    RuntimeModel,
     TokenUsage,
 )
 
@@ -44,6 +48,10 @@ class StubInferenceAdapter:
     @property
     def name(self) -> str:
         return "stub"
+
+    @property
+    def kind(self) -> str:
+        return RuntimeKind.STUB.value
 
     @property
     def supports_streaming(self) -> bool:
@@ -204,3 +212,31 @@ class StubInferenceAdapter:
     async def unload(self) -> None:
         """No-op — stub does not hold resources."""
         pass
+
+    # ── Multi-runtime introspection ──────────────────────────────────
+
+    async def health(self) -> RuntimeHealth:
+        return RuntimeHealth(
+            kind=self.kind,
+            enabled=True,
+            state=RuntimeHealthState.READY,
+            active_model="stub-model",
+            detail="Stub adapter is always ready.",
+        )
+
+    async def list_models(self) -> list[RuntimeModel]:
+        return [
+            RuntimeModel(
+                id="stub-model",
+                display_name="Stub Model",
+                runtime=self.kind,
+                format="unknown",
+                path=None,
+                context_window=32768,
+                supports_tools=False,
+                supports_vision=False,
+                supports_reasoning=False,
+                loaded=True,
+                state=RuntimeHealthState.READY.value,
+            )
+        ]

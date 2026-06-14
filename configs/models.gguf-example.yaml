@@ -1,0 +1,26 @@
+# Whoosh'd GGUF Registry Example
+#
+# Clean client-facing aliases for validated GGUF models.
+# Load with: WHOOSHD_MODEL_REGISTRY_PATH=configs/models.gguf-example.yaml
+
+models:
+  # ── Validated Qwen 2.5 0.5B GGUF model ──────────────────────────────
+  qwen2.5-0.5b-gguf:
+    display_name: "Qwen 2.5 0.5B GGUF (Q4_K_M)"
+    engine: llama_cpp
+    format: gguf
+    path: "models/gguf/qwen2.5-0.5b-instruct-q4_k_m.gguf"
+    modalities:
+      - text
+    context_window: 32768
+    preferred_hardware:
+      - metal
+      - cpu
+    warm_policy: warm_on_first_use
+    priority: chat
+    enabled: true
+    tags:
+      - gguf
+      - local
+      - small
+      - qwen

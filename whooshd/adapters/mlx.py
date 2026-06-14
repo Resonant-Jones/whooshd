@@ -30,6 +30,10 @@ from whooshd.contracts import (
     ModelLifecycleState,
     ResponseRuntimeInfo,
     RunnerStatus,
+    RuntimeHealth,
+    RuntimeHealthState,
+    RuntimeKind,
+    RuntimeModel,
     TokenUsage,
 )
 
@@ -54,6 +58,10 @@ class MLXInferenceAdapter:
     @property
     def name(self) -> str:
         return "mlx-lm"
+
+    @property
+    def kind(self) -> str:
+        return RuntimeKind.MLX_LM.value
 
     @property
     def supports_streaming(self) -> bool:
@@ -368,6 +376,49 @@ class MLXInferenceAdapter:
         self._model_path = None
         import gc
         gc.collect()
+
+    # ── Multi-runtime introspection ──────────────────────────────────
+
+    async def health(self) -> RuntimeHealth:
+        """Return the current health state of this MLX runtime."""
+        if not self._loaded:
+            return RuntimeHealth(
+                kind=self.kind,
+                enabled=True,
+                state=RuntimeHealthState.OFFLINE,
+                active_model=None,
+                detail="Model not loaded.",
+            )
+        return RuntimeHealth(
+            kind=self.kind,
+            enabled=True,
+            state=RuntimeHealthState.READY,
+            active_model=self._model_path,
+            detail="Model loaded and ready.",
+        )
+
+    async def list_models(self) -> list[RuntimeModel]:
+        """Return models managed by this MLX runtime."""
+        model_path = self._model_path or get_mlx_model_path()
+        runtime = self.kind
+        loaded = self._loaded
+        state = RuntimeHealthState.READY.value if loaded else RuntimeHealthState.OFFLINE.value
+
+        return [
+            RuntimeModel(
+                id=model_path,
+                display_name=model_path.rsplit("/", 1)[-1] if "/" in model_path else model_path,
+                runtime=runtime,
+                format="mlx",
+                path=model_path,
+                context_window=None,
+                supports_tools=False,
+                supports_vision=False,
+                supports_reasoning=False,
+                loaded=loaded,
+                state=state,
+            )
+        ]
 
 
 # ── Internal helpers ────────────────────────────────────────────────────────

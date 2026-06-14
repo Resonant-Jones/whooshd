@@ -115,3 +115,217 @@ def get_max_messages() -> int:
 def get_max_request_max_tokens() -> int:
     """Server-side cap on max_tokens, even if the contract allows more."""
     return _env_int("WHOOSHD_MAX_REQUEST_MAX_TOKENS", 32768)
+
+
+# ── llama.cpp settings ───────────────────────────────────────────────────
+
+
+def get_llama_cpp_server_url() -> str | None:
+    """Base URL of an existing llama.cpp server (e.g. http://127.0.0.1:8080).
+
+    When set, the llama.cpp adapter probes this server for health.
+    When unset, the adapter reports offline/no-server state.
+    """
+    val = _env("WHOOSHD_LLAMA_CPP_SERVER_URL", "")
+    return val if val else None
+
+
+def get_llama_cpp_binary_path() -> str | None:
+    """Path to the llama-server binary (for future managed mode).
+
+    Not used in the current scaffolding phase.
+    """
+    val = _env("WHOOSHD_LLAMA_CPP_BINARY_PATH", "")
+    return val if val else None
+
+
+def get_llama_cpp_host() -> str:
+    """Host for a future locally-managed llama.cpp server."""
+    return _env("WHOOSHD_LLAMA_CPP_HOST", "127.0.0.1")
+
+
+def get_llama_cpp_port() -> int:
+    """Port for a future locally-managed llama.cpp server."""
+    return _env_int("WHOOSHD_LLAMA_CPP_PORT", 8080)
+
+
+def get_llama_cpp_auto_start() -> bool:
+    """Whether to auto-start a managed llama.cpp server.  Off by default."""
+    return _env_bool("WHOOSHD_LLAMA_CPP_AUTO_START", False)
+
+
+def get_llama_cpp_startup_timeout_seconds() -> float:
+    """Max seconds to wait for a managed llama.cpp server to start."""
+    try:
+        return float(_env("WHOOSHD_LLAMA_CPP_STARTUP_TIMEOUT_SECONDS", "30.0"))
+    except ValueError:
+        return 30.0
+
+
+def get_llama_cpp_health_timeout_seconds() -> float:
+    """Max seconds for a llama.cpp health probe HTTP request."""
+    try:
+        return float(_env("WHOOSHD_LLAMA_CPP_HEALTH_TIMEOUT_SECONDS", "2.0"))
+    except ValueError:
+        return 2.0
+
+
+def get_llama_cpp_model_path() -> str | None:
+    """Path to the GGUF model file for managed llama.cpp mode.
+
+    Required when ``auto_start=true``.
+    """
+    val = _env("WHOOSHD_LLAMA_CPP_MODEL_PATH", "")
+    return val if val else None
+
+
+# ── MLX-LM Server settings ──────────────────────────────────────────────
+
+
+def get_mlx_lm_server_enabled() -> bool:
+    """Whether the MLX-LM Server runtime lane is enabled."""
+    return _env_bool("WHOOSHD_MLX_ENABLED", False)
+
+
+def get_mlx_lm_server_host() -> str:
+    """Host for the supervised mlx_lm.server process."""
+    return _env("WHOOSHD_MLX_HOST", "127.0.0.1")
+
+
+def get_mlx_lm_server_port() -> int:
+    """Port for the supervised mlx_lm.server process."""
+    return _env_int("WHOOSHD_MLX_PORT", 8081)
+
+
+def get_mlx_lm_server_model() -> str | None:
+    """HF repo id or local path for the MLX-LM Server model.
+
+    When unset, the MLX-LM Server runtime is effectively disabled
+    (no model to serve).
+    """
+    val = _env("WHOOSHD_MLX_MODEL", "")
+    return val if val else None
+
+
+def get_mlx_lm_server_extra_args() -> list[str]:
+    """Extra CLI arguments for mlx_lm.server."""
+    val = _env("WHOOSHD_MLX_EXTRA_ARGS", "")
+    if val:
+        return val.split()
+    return []
+
+
+def get_mlx_lm_server_startup_timeout_seconds() -> float:
+    """Max seconds to wait for mlx_lm.server to start."""
+    try:
+        return float(_env("WHOOSHD_MLX_STARTUP_TIMEOUT_SECONDS", "30.0"))
+    except ValueError:
+        return 30.0
+
+
+def get_mlx_lm_server_health_timeout_seconds() -> float:
+    """Max seconds for an mlx_lm.server health probe HTTP request."""
+    try:
+        return float(_env("WHOOSHD_MLX_HEALTH_TIMEOUT_SECONDS", "2.0"))
+    except ValueError:
+        return 2.0
+
+
+# ── Model registry ─────────────────────────────────────────────────────────
+
+
+def get_model_registry_path() -> str | None:
+    """Return the explicit model registry YAML path, or None.
+
+    When set, Whoosh'd loads the model registry from this file.
+    When unset, the default search path is used (configs/models.yaml,
+    whooshd/config/models.yaml).  If no registry file is found at all,
+    Whoosh'd falls back to the single-model environment-variable behaviour.
+    """
+    val = _env("WHOOSHD_MODEL_REGISTRY_PATH", "")
+    return val if val else None
+
+
+# ── Runtime concurrency guardrails ──────────────────────────────────────────
+
+
+def get_mlx_max_concurrent_requests() -> int:
+    """Maximum concurrent requests the MLX-LM Server runtime will accept.
+
+    Requests beyond this limit are rejected with 429 immediately
+    rather than hanging.
+    """
+    return _env_int("WHOOSHD_MLX_MAX_CONCURRENT_REQUESTS", 2)
+
+
+def get_mlx_vlm_max_concurrent_requests() -> int:
+    """Maximum concurrent requests the MLX-VLM runtime will accept.
+
+    Vision models are typically larger — default to 1.
+    """
+    return _env_int("WHOOSHD_MLX_VLM_MAX_CONCURRENT_REQUESTS", 1)
+
+
+def get_llama_cpp_max_concurrent_requests() -> int:
+    """Maximum concurrent requests the llama.cpp runtime will accept."""
+    return _env_int("WHOOSHD_LLAMA_CPP_MAX_CONCURRENT_REQUESTS", 2)
+
+
+def get_runtime_acquire_timeout_seconds() -> float:
+    """Max seconds to wait for a runtime concurrency slot.
+
+    If the slot cannot be acquired within this timeout, the request
+    is rejected with 429.
+    """
+    try:
+        return float(_env("WHOOSHD_RUNTIME_ACQUIRE_TIMEOUT_SECONDS", "5.0"))
+    except ValueError:
+        return 5.0
+
+
+# ── MLX-VLM settings ──────────────────────────────────────────────────────
+
+
+def get_mlx_vlm_enabled() -> bool:
+    """Whether the MLX-VLM vision runtime lane is enabled."""
+    return _env_bool("WHOOSHD_MLX_VLM_ENABLED", False)
+
+
+def get_mlx_vlm_model() -> str | None:
+    """HF repo id or local path for the MLX-VLM model."""
+    val = _env("WHOOSHD_MLX_VLM_MODEL", "")
+    return val if val else None
+
+
+def get_mlx_vlm_host() -> str:
+    """Host for the supervised mlx-vlm server process."""
+    return _env("WHOOSHD_MLX_VLM_HOST", "127.0.0.1")
+
+
+def get_mlx_vlm_port() -> int:
+    """Port for the supervised mlx-vlm server process."""
+    return _env_int("WHOOSHD_MLX_VLM_PORT", 8082)
+
+
+def get_mlx_vlm_extra_args() -> list[str]:
+    """Extra CLI arguments for mlx-vlm server."""
+    val = _env("WHOOSHD_MLX_VLM_EXTRA_ARGS", "")
+    if val:
+        return val.split()
+    return []
+
+
+def get_mlx_vlm_startup_timeout_seconds() -> float:
+    """Max seconds to wait for mlx-vlm server to start."""
+    try:
+        return float(_env("WHOOSHD_MLX_VLM_STARTUP_TIMEOUT_SECONDS", "60.0"))
+    except ValueError:
+        return 60.0
+
+
+def get_mlx_vlm_health_timeout_seconds() -> float:
+    """Max seconds for an mlx-vlm health probe HTTP request."""
+    try:
+        return float(_env("WHOOSHD_MLX_VLM_HEALTH_TIMEOUT_SECONDS", "2.0"))
+    except ValueError:
+        return 2.0

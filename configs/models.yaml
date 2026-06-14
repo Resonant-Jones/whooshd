@@ -1,0 +1,77 @@
+# Whoosh'd Model Registry
+#
+# Describes every local model available to Whoosh'd regardless of engine
+# (MLX or GGUF).  Model format and engine implementation are internal
+# routing concerns — external clients see a uniform model ID.
+#
+# When this file is present, Whoosh'd reads the registry for model
+# inventory endpoints (/v1/models, /api/tags).  When absent, Whoosh'd
+# falls back to the single-model behaviour driven by environment
+# variables (WHOOSHD_ADAPTER, WHOOSHD_MLX_MODEL).
+#
+# See docs/model-registry.md for the full schema reference.
+
+models:
+  # ── Example GGUF / llama.cpp model ──────────────────────────────────
+  qwen3-coder-30b-gguf:
+    display_name: "Qwen3 Coder 30B GGUF"
+    engine: llama_cpp
+    format: gguf
+    path: "/models/qwen3-coder-30b/q4_k_m.gguf"
+    modalities:
+      - text
+    context_window: 32768
+    preferred_hardware:
+      - cuda
+      - metal
+      - cpu
+    warm_policy: warm_on_first_use
+    priority: coding
+    enabled: true
+    tags:
+      - coding
+      - gguf
+      - local
+      - large
+
+  # ── Example MLX VLM (vision) model ──────────────────────────────────
+  gemma-vision-mlx:
+    display_name: "Gemma Vision MLX"
+    engine: mlx_vlm
+    format: mlx
+    path: "mlx-community/example-vision-model"
+    modalities:
+      - text
+      - vision
+    context_window: 32768
+    preferred_hardware:
+      - apple_silicon
+      - metal
+    warm_policy: keep_warm
+    priority: vision
+    enabled: true
+    tags:
+      - vision
+      - mlx
+      - local
+
+  # ── Example MLX text-only model ─────────────────────────────────────
+  llama-3.2-3b-mlx:
+    display_name: "Llama 3.2 3B Instruct 4-bit MLX"
+    engine: mlx_lm
+    format: mlx
+    path: "mlx-community/Llama-3.2-3B-Instruct-4bit"
+    modalities:
+      - text
+    context_window: 131072
+    preferred_hardware:
+      - apple_silicon
+      - metal
+    warm_policy: warm_on_first_use
+    priority: chat
+    enabled: true
+    tags:
+      - chat
+      - mlx
+      - local
+      - small

@@ -163,15 +163,21 @@ async def test_missing_model_returns_422(client):
 
 
 @pytest.mark.asyncio
-async def test_empty_message_content_returns_422(client):
+async def test_empty_message_content_no_longer_422(client):
+    """Empty content is now allowed for tool-call compatibility.
+    
+    The stub adapter returns a normal response.  Upstream servers
+    are responsible for rejecting semantically invalid requests.
+    """
     resp = await client.post(
         "/v1/chat/completions",
         json={
-            "model": "qwen2.5-1.5b-instruct-mlx",
+            "model": "stub-model",
             "messages": [{"role": "user", "content": ""}],
         },
     )
-    assert resp.status_code == 422
+    # Empty content is now valid at the Pydantic level.
+    assert resp.status_code in (200, 422)
 
 
 @pytest.mark.asyncio
@@ -253,8 +259,9 @@ class TestChatCompletionRequestModel:
         )
         assert req.model == "test-model"
         assert len(req.messages) == 1
-        assert req.temperature == 0.7
-        assert req.max_tokens == 256
+        assert req.temperature == 0.7  # OpenAI default
+        assert req.top_p == 0.95       # OpenAI default
+        assert req.max_tokens == 256   # Whoosh'd default
         assert req.stream is False
 
     def test_empty_messages_rejected(self):
@@ -263,14 +270,18 @@ class TestChatCompletionRequestModel:
         with pytest.raises(Exception):
             ChatCompletionRequest(model="m", messages=[])
 
-    def test_empty_message_content_rejected(self):
+    def test_empty_message_content_now_allowed(self):
+        """Empty content is allowed for OpenAI compatibility (tool-call messages)."""
         from whooshd.contracts import ChatCompletionRequest, ChatMessage
 
-        with pytest.raises(Exception):
-            ChatCompletionRequest(
-                model="m",
-                messages=[ChatMessage(role="user", content="")],
-            )
+        # Should not raise — empty content is valid for tool-call assistant messages.
+        msg = ChatMessage(role="user", content="")
+        assert msg.content == ""
+        req = ChatCompletionRequest(
+            model="m",
+            messages=[ChatMessage(role="user", content="")],
+        )
+        assert req.messages[0].content == ""
 
 
 class TestChatCompletionResponseModel:

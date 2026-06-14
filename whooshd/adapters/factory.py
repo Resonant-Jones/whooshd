@@ -16,6 +16,7 @@ def create_adapter() -> InferenceAdapter:
     Selection is controlled by the ``WHOOSHD_ADAPTER`` environment variable:
       * ``"stub"`` (default) — deterministic stub for tests
       * ``"mlx"`` — real mlx-lm inference
+      * ``"llama_cpp"`` — llama.cpp adapter skeleton (GGUF models)
     """
     backend = get_adapter_backend()
 
@@ -23,6 +24,11 @@ def create_adapter() -> InferenceAdapter:
         from whooshd.adapters.mlx import MLXInferenceAdapter
 
         return MLXInferenceAdapter()
+
+    if backend == "llama_cpp":
+        from whooshd.adapters.llama_cpp import LlamaCppAdapter
+
+        return LlamaCppAdapter()
 
     # Default / unknown → stub
     from whooshd.adapters.stub import StubInferenceAdapter
