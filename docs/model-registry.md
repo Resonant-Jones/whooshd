@@ -58,6 +58,72 @@ An advertised model is not *runnable* until a runtime adapter loads it.
 
 ---
 
+## Candidate inspection
+
+The `inspect_model_candidate()` function classifies a user-provided model
+artifact path without copying, moving, or registering any files.
+
+### Candidate metadata shape
+
+```json
+{
+  "candidate_id": "3a7c341d86fd80e2",
+  "status": "candidate",
+  "source_path": "/absolute/path/to/model",
+  "detected_format": "mlx",
+  "detected_family": "gemma",
+  "modalities": ["text"],
+  "evidence": ["found_config_json", "found_tokenizer", "found_safetensors"],
+  "problems": [],
+  "created_at": "2026-06-14T..."
+}
+```
+
+### Statuses
+
+| Status | Meaning |
+|--------|---------|
+| `candidate` | Sufficient evidence of a valid model artifact |
+| `unsupported` | Recognized but not a supported model format or incomplete |
+| `invalid` | Path missing, unreadable, or fundamentally broken |
+
+### Evidence and problems
+
+Evidence strings are machine-readable tags describing what was found
+(`found_config_json`, `found_safetensors`, `model_type_gemma`, etc.).
+Problems describe issues (`path_missing`, `config_unreadable`,
+`ambiguous_candidate`, `empty_directory`).
+
+### What inspection does NOT do
+
+- Does NOT register the model as runnable.
+- Does NOT expose the candidate in `/v1/models` or `/api/tags`.
+- Does NOT write to `registry/models.json`.
+- Does NOT copy, move, or delete any files.
+- Does NOT launch or validate a runtime adapter.
+
+Candidate records are written to `registry/candidates/<id>.json`
+via `write_candidate_record()`.  They are inspection artifacts, not
+runtime promises.
+
+### Key distinctions (expanded)
+
+| Term | Meaning |
+|------|---------|
+| **Candidate** | Inspected artifact that may become a registered model |
+| **Registered model** | Entry in `registry/models.json` |
+| **Advertised model** | Visible in `/v1/models` (runtime promise) |
+| **Runnable model** | Actively loaded by a runtime adapter |
+
+### Future phases
+
+- Registration from candidate → `registry/models.json` entry
+- Managed copy into `models/mlx`, `models/gguf`, or `models/vlm`
+- Drag/drop UI intake
+- Optional advanced external-path registration
+
+---
+
 ## Why a model registry?
 
 Whoosh'd started as a single-model MLX inference server for Apple Silicon.

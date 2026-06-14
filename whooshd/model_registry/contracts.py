@@ -159,3 +159,87 @@ class ModelRegistryState:
     directories_created: list[str] = field(default_factory=list)
     schema_version: int = 1
     error: Optional[str] = None
+
+
+# ── Candidate inspection ──────────────────────────────────────────────────
+
+
+class ModelCandidateStatus:
+    """Well-known candidate inspection statuses."""
+
+    CANDIDATE = "candidate"
+    UNSUPPORTED = "unsupported"
+    INVALID = "invalid"
+
+
+class ModelCandidateFormat:
+    """Well-known detected model formats."""
+
+    MLX = "mlx"
+    GGUF = "gguf"
+    UNKNOWN = "unknown"
+
+
+@dataclass
+class ModelCandidate:
+    """A single inspected model candidate — not yet registered or advertised.
+
+    Fields:
+        candidate_id: Stable identifier derived from path + evidence.
+        status: ``candidate``, ``unsupported``, or ``invalid``.
+        source_path: Absolute path to the user-provided artifact.
+        detected_format: ``mlx``, ``gguf``, or ``unknown``.
+        detected_family: ``gemma``, ``qwen``, ``llama``, ``unknown``.
+        modalities: ``["text"]``, ``["text", "vision"]``, or ``[]``.
+        evidence: Machine-readable strings describing what was found.
+        problems: Machine-readable strings describing issues found.
+        created_at: ISO-8601 timestamp of inspection.
+    """
+
+    candidate_id: str
+    status: str = ModelCandidateStatus.CANDIDATE
+    source_path: str = ""
+    detected_format: str = ModelCandidateFormat.UNKNOWN
+    detected_family: str = "unknown"
+    modalities: list[str] = field(default_factory=list)
+    evidence: list[str] = field(default_factory=list)
+    problems: list[str] = field(default_factory=list)
+    created_at: str = ""
+
+    def to_dict(self) -> dict:
+        return {
+            "candidate_id": self.candidate_id,
+            "status": self.status,
+            "source_path": self.source_path,
+            "detected_format": self.detected_format,
+            "detected_family": self.detected_family,
+            "modalities": list(self.modalities),
+            "evidence": list(self.evidence),
+            "problems": list(self.problems),
+            "created_at": self.created_at,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "ModelCandidate":
+        return cls(
+            candidate_id=str(data.get("candidate_id", "")),
+            status=str(data.get("status", ModelCandidateStatus.CANDIDATE)),
+            source_path=str(data.get("source_path", "")),
+            detected_format=str(data.get("detected_format", ModelCandidateFormat.UNKNOWN)),
+            detected_family=str(data.get("detected_family", "unknown")),
+            modalities=list(data.get("modalities", [])),
+            evidence=list(data.get("evidence", [])),
+            problems=list(data.get("problems", [])),
+            created_at=str(data.get("created_at", "")),
+        )
+
+
+@dataclass
+class ModelCandidateInspectionResult:
+    """Result of inspecting a single model artifact path.
+
+    Carries the candidate record and any top-level error.
+    """
+
+    candidate: ModelCandidate
+    error: Optional[str] = None
