@@ -2,6 +2,60 @@
 
 Why Whoosh'd now has a model registry, how it works, and what's not built yet.
 
+## Two registries, one truth
+
+Whoosh'd uses two complementary registry layers:
+
+| Layer | Location | Purpose |
+|-------|----------|---------|
+| **Runtime registry** | `configs/models.yaml` (YAML) | Describes *configured* models for inference routing |
+| **Model-store** | `~/whooshd-models/` (filesystem) | Holds user-managed model artifacts and durable manifest |
+
+The runtime registry tells Whoosh'd *what* to serve.  The model-store
+holds *where* user models live on disk and provides intake/quarantine
+areas for future model management.
+
+---
+
+## Model-store layout
+
+The `bootstrap_model_store()` function creates this layout:
+
+```text
+~/whooshd-models/
+  incoming/         # Drop zone for new model artifacts
+  models/
+    mlx/            # MLX-format text models
+    gguf/           # GGUF-format models (llama.cpp)
+    vlm/            # MLX-format vision-language models
+  registry/
+    models.json     # Durable manifest (schema_version 1)
+  quarantine/       # Models that failed inspection
+  tmp/              # Temp workspace for atomic writes
+```
+
+### Key distinctions
+
+| Term | Meaning |
+|------|---------|
+| **Candidate** | Files found on disk that may be a model |
+| **Registered model** | Entry in `registry/models.json` |
+| **Advertised model** | Model visible in `/v1/models` (runtime promise) |
+| **Runnable model** | Model actively loaded by a runtime adapter |
+
+A file on disk is a *candidate*, not a registered model.
+A registered model is not *advertised* until the runtime registry
+picks it up.
+An advertised model is not *runnable* until a runtime adapter loads it.
+
+### Why scanning is not enough
+
+- Filesystem contents are not a model inventory — they are artifact storage.
+- A `.gguf` file may be corrupt, misconfigured, or unsupported by the current llama.cpp version.
+- A `.safetensors` directory may require a specific tokenizer that is missing.
+- Whoosh'd must validate before advertising.
+- `/v1/models` is a runtime promise, not a filesystem mirror.
+
 ---
 
 ## Why a model registry?
