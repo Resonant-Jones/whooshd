@@ -346,3 +346,60 @@ class ModelRegistrationResult:
     managed_path: str = ""
     manifest_updated: bool = False
     problem: Optional[str] = None
+
+
+# ── Compatibility validation ──────────────────────────────────────────────
+
+
+class RegisteredModelAdapterKind:
+    """Well-known adapter kinds that registered models can map to."""
+
+    MLX_LM_SERVER = "mlx_lm_server"
+    MLX_VLM = "mlx_vlm"
+    LLAMA_CPP = "llama_cpp"
+    UNKNOWN = "unknown"
+
+
+class RegisteredModelCompatibilityStatus:
+    """Well-known compatibility statuses."""
+
+    COMPATIBLE = "compatible"
+    INCOMPATIBLE = "incompatible"
+    INDETERMINATE = "indeterminate"
+
+
+@dataclass
+class RegisteredModelCompatibilityResult:
+    """Result of validating a registered model against adapter compatibility.
+
+    Fields:
+        model_id: The registered model identifier.
+        status: ``compatible``, ``incompatible``, or ``indeterminate``.
+        adapter_kind: Which adapter this model maps to.
+        advertisable: True when metadata and managed files are sufficient
+                      for future runtime advertisement.  Does NOT mean
+                      loaded, warmed, executed, or ready.
+        registered: True when the model was found in the manifest.
+        managed_path: Relative path inside the model-store.
+        absolute_managed_path: Resolved absolute path.
+        detected_format: ``mlx``, ``gguf``, or ``unknown``.
+        detected_family: ``gemma``, ``qwen``, ``llama``, ``unknown``.
+        modalities: e.g. ``["text"]`` or ``["text", "vision"]``.
+        evidence: Machine-readable evidence codes.
+        problems: Machine-readable problem codes.
+        checked_at: ISO-8601 timestamp of validation.
+    """
+
+    model_id: str
+    status: str = RegisteredModelCompatibilityStatus.INDETERMINATE
+    adapter_kind: str = RegisteredModelAdapterKind.UNKNOWN
+    advertisable: bool = False
+    registered: bool = False
+    managed_path: str = ""
+    absolute_managed_path: str = ""
+    detected_format: str = ModelCandidateFormat.UNKNOWN
+    detected_family: str = "unknown"
+    modalities: list[str] = field(default_factory=list)
+    evidence: list[str] = field(default_factory=list)
+    problems: list[str] = field(default_factory=list)
+    checked_at: str = ""

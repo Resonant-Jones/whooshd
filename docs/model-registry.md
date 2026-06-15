@@ -120,11 +120,40 @@ runtime promises.
 - Registration from candidate → `registry/models.json` entry (✅ implemented)
 - Managed copy into `models/mlx`, `models/gguf`, or `models/vlm` (✅ implemented)
 - Runtime advertisement from registered models
-- Adapter compatibility validation
+- Adapter compatibility validation (✅ implemented)
 - Drag/drop UI intake
 - Optional advanced external-reference registration
 
 ---
+## Compatibility validation
+
+The `validate_registered_model_compatibility()` function inspects a
+registered model's metadata and managed files to determine which runtime
+adapter it maps to and whether it is advertisable.
+
+### Adapter mapping
+
+| Format | Modalities | Adapter |
+|--------|-----------|---------|
+| MLX | text only | `mlx_lm_server` |
+| MLX | text + vision | `mlx_vlm` |
+| GGUF | text | `llama_cpp` |
+| unknown | any | `unknown` (incompatible) |
+
+### Advertisable vs runnable
+
+```
+registered  -> Whoosh'd knows the model exists
+compatible   -> Whoosh'd knows which adapter to use
+advertisable -> Whoosh'd can safely expose the model in /v1/models
+runnable     -> A runtime adapter has loaded and validated the model
+```
+
+Compatibility validation is a **read-only** gate.  It does not write
+to `registry/models.json`, launch adapters, or expose models in runtime
+inventory.  See `whooshd/model_registry/compatibility.py` for the full
+list of evidence and problem codes.
+
 
 ## Managed candidate registration
 
