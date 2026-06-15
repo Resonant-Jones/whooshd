@@ -177,6 +177,43 @@ class TestCollectAdvertisableModels:
             assert ids[0] == "a-model"
             assert ids[1] == "b-model"
 
+    def test_gemma_text_only_advertises_text_only_metadata(self):
+        """Gemma text-only registered model advertises text-only metadata,
+        not VLM metadata."""
+        with TemporaryDirectory() as d:
+            root = Path(d) / "store"
+            gemma_dir = Path(d) / "gemma-mlx-text"
+            gemma_dir.mkdir()
+            (gemma_dir / "config.json").write_text('{"model_type":"gemma"}')
+            (gemma_dir / "tokenizer.json").write_text("{}")
+            (gemma_dir / "model.safetensors").write_text("placeholder")
+            (gemma_dir / "tokenizer_config.json").write_text("{}")
+            (gemma_dir / "processor_config.json").write_text("{}")
+            (gemma_dir / "generation_config.json").write_text("{}")
+            _setup_registered_model(root, gemma_dir, "gemma-text", "Gemma Text")
+
+            models = collect_advertisable_registered_models(root)
+            assert len(models) == 1
+            assert models[0].model_id == "gemma-text"
+            assert models[0].modalities == ["text"]
+            assert "vision" not in models[0].modalities
+
+    def test_vlm_advertises_text_vision_metadata(self):
+        """Explicit VLM model advertises text+vision metadata."""
+        with TemporaryDirectory() as d:
+            root = Path(d) / "store"
+            fake = _fake_mlx_dir(Path(d), {
+                "model_type": "qwen2_vl",
+                "architectures": ["Qwen2VLForConditionalGeneration"],
+            })
+            _setup_registered_model(root, fake, "qwen-vl", "Qwen VL")
+
+            models = collect_advertisable_registered_models(root)
+            assert len(models) == 1
+            assert models[0].model_id == "qwen-vl"
+            assert "vision" in models[0].modalities
+            assert "text" in models[0].modalities
+
 
 # ── HTTP route integration ─────────────────────────────────────────────────
 

@@ -165,6 +165,9 @@ def _inspect_directory(
         status = ModelCandidateStatus.UNSUPPORTED
         fmt = ModelCandidateFormat.UNKNOWN
 
+    # ── Enforce invariant: vision requires explicit vision evidence ─────
+    modalities = _normalize_modalities(modalities, evidence)
+
     return ModelCandidateInspectionResult(
         candidate=ModelCandidate(
             candidate_id=_make_candidate_id(str(directory), evidence),
@@ -246,6 +249,62 @@ _VLM_ARTIFACT_NAMES: set[str] = {
     "vision_tower",
     "image_newline",
 }
+
+# ── Explicit vision evidence codes ────────────────────────────────────────
+# Every evidence code that proves vision capability.  Used by the invariant
+# helper to gate whether "vision" may appear in modalities.
+
+_EXPLICIT_VISION_EVIDENCE: frozenset[str] = frozenset({
+    # Produced by _detect_modalities when config.json has non-empty vision_config.
+    "found_vision_config",
+    # model_type markers for well-known VLM families.
+    "model_type_qwen2_vl",
+    "model_type_qwen2-vl",
+    "model_type_llava",
+    "model_type_paligemma",
+    # Architecture markers.
+    "architecture_qwen2vlforconditionalgeneration",
+    "architecture_qwen2vl",
+    "architecture_llavaforconditionalgeneration",
+    "architecture_paligemmaforconditionalgeneration",
+    # Multimodal directory artifacts.
+    "found_mm_projector",
+    "found_vision_tower",
+    "found_image_newline",
+})
+
+
+def _has_explicit_vision_evidence(evidence: list[str]) -> bool:
+    """Return True if *evidence* contains at least one explicit vision marker.
+
+    Safe evidence codes (e.g. ``found_processor_config``, ``found_tokenizer``,
+    ``found_config_json``, ``model_type_gemma``) do NOT satisfy this check.
+    """
+    return any(ev in _EXPLICIT_VISION_EVIDENCE for ev in evidence)
+
+
+def _normalize_modalities(
+    modalities: list[str],
+    evidence: list[str],
+) -> list[str]:
+    """Enforce the invariant: vision requires explicit vision evidence.
+
+    - Preserves ``text`` when text evidence exists.
+    - Removes ``vision`` when no explicit vision evidence exists.
+    - Keeps ``vision`` only when explicit vision evidence is present.
+    - Returns deterministic ordering: ``["text"]`` or ``["text", "vision"]``.
+    """
+    has_vision = "vision" in modalities
+    has_text = "text" in modalities
+
+    if has_vision and not _has_explicit_vision_evidence(evidence):
+        # Safety net: strip ghost vision.
+        return ["text"] if has_text else []
+
+    if has_vision:
+        return ["text", "vision"] if has_text else ["vision"]
+
+    return ["text"] if has_text else []
 
 
 def _detect_modalities(

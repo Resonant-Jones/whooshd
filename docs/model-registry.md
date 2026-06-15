@@ -117,6 +117,21 @@ Acceptable strong vision evidence (at least one required):
 When in doubt, the inspector classifies the model as **text-only**.
 Vision over-claiming is worse than vision under-claiming.
 
+### Invariant: vision requires explicit vision evidence
+
+Whoosh'd enforces a **hard invariant** at the inspection return path:
+
+> ``vision`` may appear in ``modalities`` **only** when ``evidence``
+> contains at least one explicit vision evidence code.
+
+This invariant is enforced by a safety-net helper that sanitizes
+modalities immediately before constructing the candidate result.
+
+If a previously registered local model was misclassified as vision-capable
+before this correction, the user should **delete and re-register** that
+local store entry manually.  Migration of existing user stores is out of
+scope; the invariant only applies to new inspections.
+
 ### What inspection does NOT do
 
 - Does NOT register the model as runnable.

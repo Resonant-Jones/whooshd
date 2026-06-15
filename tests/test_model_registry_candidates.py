@@ -70,6 +70,28 @@ def _fake_gemma_mlx_with_processor(base: Path) -> Path:
     return d
 
 
+def _fake_gemma_observed_shape(base: Path) -> Path:
+    """Exact observed Gemma MLX folder shape from live manual proof.
+
+    Contains: config.json (model_type: gemma), tokenizer.json,
+    tokenizer_config.json, model.safetensors, model.safetensors.index.json,
+    processor_config.json, generation_config.json, chat_template.jinja.
+
+    Expected: text-only, despite processor_config.json being present.
+    """
+    d = base / "gemma-observed-shape"
+    d.mkdir(parents=True)
+    (d / "config.json").write_text('{"model_type":"gemma"}')
+    (d / "tokenizer.json").write_text("{}")
+    (d / "tokenizer_config.json").write_text("{}")
+    (d / "model.safetensors").write_text("placeholder")
+    (d / "model.safetensors.index.json").write_text("{}")
+    (d / "processor_config.json").write_text("{}")
+    (d / "generation_config.json").write_text("{}")
+    (d / "chat_template.jinja").write_text("{{ messages }}")
+    return d
+
+
 def _fake_qwen_vlm(base: Path) -> Path:
     return _fake_mlx_dir(base, {
         "model_type": "qwen2_vl",
@@ -198,6 +220,38 @@ class TestInspectFamilyDetection:
                 )
             assert result.candidate.problems == []
 
+    def test_gemma_observed_shape_is_text_only(self):
+        """Exact observed Gemma MLX folder shape classified as text-only.
+
+        Matches the shape from the live manual proof:
+        config.json (model_type: gemma), tokenizer.json,
+        tokenizer_config.json, model.safetensors,
+        model.safetensors.index.json, processor_config.json,
+        generation_config.json, chat_template.jinja.
+        """
+        with TemporaryDirectory() as d:
+            gemma = _fake_gemma_observed_shape(Path(d))
+            result = inspect_model_candidate(gemma)
+
+            assert result.candidate.detected_format == ModelCandidateFormat.MLX
+            assert result.candidate.detected_family == "gemma"
+            assert result.candidate.modalities == ["text"]
+
+            # Standard MLX evidence.
+            assert "found_config_json" in result.candidate.evidence
+            assert "found_tokenizer" in result.candidate.evidence
+            assert "found_safetensors" in result.candidate.evidence
+            assert "model_type_gemma" in result.candidate.evidence
+
+            # No explicit vision evidence codes.
+            from whooshd.model_registry.candidates import _EXPLICIT_VISION_EVIDENCE
+            for vcode in _EXPLICIT_VISION_EVIDENCE:
+                assert vcode not in result.candidate.evidence, (
+                    f"{vcode} should not appear for text-only Gemma"
+                )
+
+            assert result.candidate.problems == []
+
     def test_qwen_vlm_modalities(self):
         with TemporaryDirectory() as d:
             qwen = _fake_qwen_vlm(Path(d))
@@ -270,6 +324,67 @@ class TestInspectCandidateId:
             inspect_model_candidate(mlx)
             mtime_after = os.path.getmtime(mlx / "config.json")
             assert mtime_before == mtime_after
+
+
+# ── Invariant: vision requires explicit vision evidence ────────────────────
+
+
+class TestVisionEvidenceInvariant:
+    def test_helper_no_vision_evidence_returns_false(self):
+        from whooshd.model_registry.candidates import _has_explicit_vision_evidence
+        # Typical text-only Gemma evidence.
+        evidence = [
+            "found_config_json",
+            "found_tokenizer",
+            "found_safetensors",
+            "model_type_gemma",
+        ]
+        assert _has_explicit_vision_evidence(evidence) is False
+
+    def test_helper_with_vision_evidence_returns_true(self):
+        from whooshd.model_registry.candidates import _has_explicit_vision_evidence
+        evidence = ["found_vision_config", "found_config_json"]
+        assert _has_explicit_vision_evidence(evidence) is True
+
+    def test_normalize_strips_vision_without_evidence(self):
+        """Invariant: when modalities include vision but evidence lacks
+        explicit vision markers, vision is stripped."""
+        from whooshd.model_registry.candidates import _normalize_modalities
+        modalities = ["text", "vision"]
+        evidence = ["found_config_json", "found_tokenizer", "model_type_gemma"]
+        result = _normalize_modalities(modalities, evidence)
+        assert result == ["text"]
+
+    def test_normalize_preserves_vision_with_evidence(self):
+        """When explicit vision evidence exists, vision is kept."""
+        from whooshd.model_registry.candidates import _normalize_modalities
+        modalities = ["text", "vision"]
+        evidence = ["found_config_json", "found_vision_config"]
+        result = _normalize_modalities(modalities, evidence)
+        assert result == ["text", "vision"]
+
+    def test_normalize_ordering_is_deterministic(self):
+        """Output ordering is always ['text'] or ['text', 'vision']."""
+        from whooshd.model_registry.candidates import _normalize_modalities
+        # Vision first in input — still text-first in output.
+        result = _normalize_modalities(["vision", "text"], ["found_vision_config"])
+        assert result == ["text", "vision"]
+
+    def test_observed_shape_via_normalize_is_text_only(self):
+        """Direct test: the observed Gemma evidence + ghost vision → text-only."""
+        from whooshd.model_registry.candidates import _normalize_modalities
+        # Simulate the observed failure: modalities includes vision,
+        # but evidence has no explicit vision marker.
+        modalities = ["text", "vision"]
+        evidence = [
+            "found_config_json",
+            "found_tokenizer",
+            "found_safetensors",
+            "model_type_gemma",
+        ]
+        result = _normalize_modalities(modalities, evidence)
+        assert result == ["text"]
+        assert "vision" not in result
 
 
 # ── Candidate record writing ───────────────────────────────────────────────
