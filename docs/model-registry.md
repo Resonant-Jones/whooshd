@@ -119,7 +119,7 @@ runtime promises.
 
 - Registration from candidate → `registry/models.json` entry (✅ implemented)
 - Managed copy into `models/mlx`, `models/gguf`, or `models/vlm` (✅ implemented)
-- Runtime advertisement from registered models
+- Runtime advertisement from registered models (**✅ implemented**)
 - Adapter compatibility validation (✅ implemented)
 - Drag/drop UI intake
 - Optional advanced external-reference registration
@@ -154,6 +154,41 @@ to `registry/models.json`, launch adapters, or expose models in runtime
 inventory.  See `whooshd/model_registry/compatibility.py` for the full
 list of evidence and problem codes.
 
+## Runtime advertisement
+
+The `collect_advertisable_registered_models()` function scans the model-store
+and returns only registered models that pass compatibility validation with
+`advertisable=true`.
+
+### How it works
+
+1. `WHOOSHD_MODEL_STORE_ROOT` is set to the model-store path
+2. `/v1/models` and `/api/tags` collect compatible registered models
+3. Each advertisable model is appended to the inventory response
+4. Incompatible, indeterminate, or invalid models are skipped
+5. Duplicate model IDs that conflict with built-in/static models are skipped
+
+### Configuration
+
+```bash
+export WHOOSHD_MODEL_STORE_ROOT=~/whooshd-models
+```
+
+When unset, registered models are not advertised and only built-in/static
+models appear in inventory.
+
+### Advertisement ≠ execution
+
+```text
+registered   -> in registry/models.json
+compatible   -> mapped to an adapter kind
+advertisable -> appears in /v1/models and /api/tags
+runnable     -> loaded by a runtime adapter and proven by generation
+```
+
+Advertisement puts the model in the catalog.  It does NOT mean the model
+is loaded, warmed, or ready to serve inference.  Those are separate
+runtime lifecycle transitions.
 
 ## Managed candidate registration
 

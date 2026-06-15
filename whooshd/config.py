@@ -329,3 +329,17 @@ def get_mlx_vlm_health_timeout_seconds() -> float:
         return float(_env("WHOOSHD_MLX_VLM_HEALTH_TIMEOUT_SECONDS", "2.0"))
     except ValueError:
         return 2.0
+
+
+# ── Model-store settings ──────────────────────────────────────────────────
+
+
+def get_model_store_root() -> str | None:
+    """Root path for the persistent Whoosh'd model-store.
+
+    When set, Whoosh'd can discover and advertise compatible registered
+    models from ``registry/models.json`` in addition to built-in/static
+    model inventory.  When unset, only built-in/static models are advertised.
+    """
+    val = _env("WHOOSHD_MODEL_STORE_ROOT", "")
+    return val if val else None

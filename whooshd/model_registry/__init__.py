@@ -20,6 +20,9 @@ from whooshd.model_registry.candidates import (
 from whooshd.model_registry.compatibility import (
     validate_registered_model_compatibility,
 )
+from whooshd.model_registry.inventory import (
+    collect_advertisable_registered_models,
+)
 from whooshd.model_registry.contracts import (
     ModelCandidate,
     ModelCandidateFormat,
@@ -40,6 +43,7 @@ from whooshd.model_registry.registration import register_model_candidate
 
 __all__ = [
     "bootstrap_model_store",
+    "collect_advertisable_registered_models",
     "inspect_model_candidate",
     "register_model_candidate",
     "validate_registered_model_compatibility",

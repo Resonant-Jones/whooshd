@@ -461,6 +461,9 @@ class RuntimeState:
         When a registry is present, each entry includes engine/format/modality
         metadata.  Otherwise models are aggregated from all registered
         runtime adapters.
+
+        Compatible registered models from the durable model-store are
+        appended after built-in/static entries.
         """
         entries: list[OpenAIModelEntry] = []
         reg = self._load_registry()
@@ -494,6 +497,10 @@ class RuntimeState:
                         owned_by="whooshd",
                     )
                 )
+
+        # ── Append compatible registered models from the model-store ──
+        entries = await _append_registered_models_openai(entries)
+
         return OpenAIModelListResponse(data=entries)
 
     # ── Ollama-compatible tags ──────────────────────────────────────────
@@ -503,6 +510,9 @@ class RuntimeState:
 
         When a registry is present, each entry includes format/family details.
         Otherwise models are aggregated from all registered adapters.
+
+        Compatible registered models from the durable model-store are
+        appended after built-in/static entries.
         """
         entries: list[OllamaTagEntry] = []
         reg = self._load_registry()
@@ -533,6 +543,10 @@ class RuntimeState:
                         size=_STUB_MODEL_SIZE,
                     )
                 )
+
+        # ── Append compatible registered models from the model-store ──
+        entries = await _append_registered_models_ollama(entries)
+
         return OllamaTagsResponse(models=entries)
 
     # ── Request lifecycle bookkeeping ───────────────────────────────────
@@ -785,3 +799,122 @@ def get_runtime() -> RuntimeState:
     if _runtime is None:
         _runtime = RuntimeState()
     return _runtime
+
+
+# ── Registered model inventory helpers ────────────────────────────────────
+
+
+async def _append_registered_models_openai(
+    entries: list[OpenAIModelEntry],
+) -> list[OpenAIModelEntry]:
+    """Append advertisable registered models from the model-store to an
+    OpenAI-compatible model list.  Skips models whose id duplicates an
+    existing built-in/static entry.
+    """
+    store_root = _get_store_root()
+    if store_root is None:
+        return entries
+
+    from whooshd.model_registry.inventory import (
+        collect_advertisable_registered_models,
+    )
+
+    existing_ids = {e.id for e in entries}
+
+    try:
+        registered = collect_advertisable_registered_models(store_root)
+    except Exception:
+        return entries
+
+    for rm in registered:
+        if rm.model_id in existing_ids:
+            continue
+        existing_ids.add(rm.model_id)
+
+        meta: dict = {
+            "engine": _adapter_to_engine(rm),
+            "format": rm.detected_format,
+            "modalities": list(rm.modalities),
+            "display_name": rm.display_name or rm.model_id,
+            "priority": "chat",
+            "warm_policy": "warm_on_first_use",
+            "source": "registered",
+            "storage_mode": rm.storage_mode,
+        }
+        if rm.detected_family and rm.detected_family != "unknown":
+            meta["family"] = rm.detected_family
+
+        entries.append(
+            OpenAIModelEntry(
+                id=rm.model_id,
+                created=_STUB_MODEL_CREATED,
+                owned_by="whooshd",
+                metadata=meta,
+            )
+        )
+
+    return entries
+
+
+async def _append_registered_models_ollama(
+    entries: list[OllamaTagEntry],
+) -> list[OllamaTagEntry]:
+    """Append advertisable registered models from the model-store to an
+    Ollama-compatible tag list.  Skips models whose name duplicates an
+    existing built-in/static entry.
+    """
+    store_root = _get_store_root()
+    if store_root is None:
+        return entries
+
+    from whooshd.model_registry.inventory import (
+        collect_advertisable_registered_models,
+    )
+
+    existing_names = {e.name for e in entries}
+
+    try:
+        registered = collect_advertisable_registered_models(store_root)
+    except Exception:
+        return entries
+
+    for rm in registered:
+        if rm.model_id in existing_names:
+            continue
+        existing_names.add(rm.model_id)
+
+        details: dict = {
+            "format": rm.detected_format,
+            "family": _adapter_to_engine(rm),
+            "modalities": list(rm.modalities),
+        }
+
+        entries.append(
+            OllamaTagEntry(
+                name=rm.model_id,
+                model=rm.model_id,
+                modified_at="2024-01-01T00:00:00Z",
+                size=_STUB_MODEL_SIZE,
+                details=details,
+            )
+        )
+
+    return entries
+
+
+def _get_store_root() -> str | None:
+    """Return the configured model-store root, or None."""
+    from whooshd.config import get_model_store_root
+
+    return get_model_store_root()
+
+
+def _adapter_to_engine(rm) -> str:
+    """Map a RegisteredModel's detected_format to an engine label."""
+    fmt = rm.detected_format
+    is_vision = "vision" in (rm.modalities or [])
+    if fmt == "mlx":
+        return "mlx_vlm" if is_vision else "mlx_lm_server"
+    if fmt == "gguf":
+        return "llama_cpp"
+    return fmt
