@@ -156,3 +156,38 @@ class ExternalWeightRouteStatus:
     available: bool = False
     status: str = ExternalRouteStatus.DISABLED.value
     reason: str | None = None
+
+
+# ── External inventory entry ──────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class ExternalModelInventoryEntry:
+    """A model discovered through an external weight route.
+
+    Fields:
+        id: Public model id exposed through inventory endpoints.
+        model_id: Publisher/Repo model id (e.g. ``Qwen/Qwen3-14B-GGUF``).
+        source: Always ``"external"``.
+        route_id: The external route that supplied the model.
+        format: ``gguf``, ``mlx``, or ``safetensors``.
+        runtime: Runtime hint (``llama_cpp``, ``mlx_lm``, ``unsupported``).
+        path: Resolved absolute filesystem path.
+        registry_managed: Always ``False`` for external entries.
+        path_available: ``True`` when route exists and model path validates.
+        servable: ``True`` when enough metadata exists to eventually serve
+                  the model.  Does NOT mean it is executable in Phase 3.
+        metadata: Extra details (quant, matched_file, route_priority, etc.).
+    """
+
+    id: str
+    model_id: str
+    source: str = "external"
+    route_id: str = ""
+    format: str = ""
+    runtime: str | None = None
+    path: str = ""
+    registry_managed: bool = False
+    path_available: bool = True
+    servable: bool = False
+    metadata: dict[str, Any] = field(default_factory=dict)

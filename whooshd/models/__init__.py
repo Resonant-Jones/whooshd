@@ -4,6 +4,7 @@ These modules are standalone.  They do not depend on runtime adapters,
 API handlers, Hugging Face libraries, or Codexify integration.
 """
 
+from whooshd.models.inventory import list_external_model_inventory
 from whooshd.models.resolver import resolve_model
 from whooshd.models.routes import (
     ExternalWeightRoute,
@@ -16,6 +17,7 @@ from whooshd.models.routes import (
     validate_route_status,
 )
 from whooshd.models.types import (
+    ExternalModelInventoryEntry,
     ModelFormat,
     ModelResolutionRequest,
     ModelResolutionResult,
@@ -25,6 +27,7 @@ from whooshd.models.types import (
 __all__ = [
     "resolve_model",
     "resolve_model_from_routes",
+    "list_external_model_inventory",
     "load_external_weight_routes",
     "validate_route_status",
     "validate_all_routes",
@@ -32,6 +35,7 @@ __all__ = [
     "ExternalWeightRoute",
     "ExternalWeightRouteStatus",
     "ExternalRouteStatus",
+    "ExternalModelInventoryEntry",
     "ModelFormat",
     "ModelResolutionRequest",
     "ModelResolutionResult",
