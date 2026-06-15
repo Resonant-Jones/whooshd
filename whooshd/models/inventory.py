@@ -10,15 +10,20 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+from whooshd.models.resolver import resolve_model
 from whooshd.models.routes import (
     ExternalWeightRoute,
     get_available_route_paths,
+    load_external_weight_routes,
     validate_all_routes,
 )
 from whooshd.models.types import (
     ExternalModelInventoryEntry,
     ExternalRouteStatus,
+    ExternalRuntimeResolution,
     ModelFormat,
+    ModelResolutionRequest,
+    ResolutionStatus,
 )
 
 
@@ -387,3 +392,150 @@ def _safe_id_component(name: str) -> str:
 def _is_hidden(name: str) -> bool:
     """Check if a directory name should be skipped."""
     return name.startswith(".") or name in _SKIP_DIRS
+
+
+# ── External model public ID parsing ──────────────────────────────────────
+
+
+def parse_external_model_public_id(model: str) -> dict[str, str | None]:
+    """Parse a public external model ID into its components.
+
+    GGUF: ``Publisher/Repo:QUANT`` → model_id, gguf, quant
+    MLX:  ``Publisher/Repo``       → model_id, mlx, None
+    Safetensors: ``Publisher/Repo`` → model_id, safetensors, None
+
+    Returns a dict with keys: ``model_id``, ``format``, ``quant``.
+    """
+    model = model.strip()
+
+    # GGUF: check for colon-separated quant suffix.
+    if ":" in model and "/" in model:
+        parts = model.rsplit(":", 1)
+        candidate_id = parts[0]
+        suffix = parts[1]
+        # Heuristic: if the part before colon has a slash, it looks like Publisher/Repo.
+        # The suffix is the quant or file stem.
+        upper = candidate_id.upper()
+        if "GGUF" in upper:
+            return {"model_id": candidate_id, "format": "gguf", "quant": suffix}
+        # Could be an MLX model with colon in name — check heuristics.
+        if upper.endswith("-GGUF"):
+            return {"model_id": candidate_id, "format": "gguf", "quant": suffix}
+
+    # MLX heuristic.
+    lower = model.lower()
+    if lower.startswith("mlx-community/") or lower.endswith("-mlx"):
+        return {"model_id": model, "format": "mlx", "quant": None}
+
+    # Safetensors default.
+    if "/" in model:
+        return {"model_id": model, "format": "safetensors", "quant": None}
+
+    # Fallback: treat as safetensors.
+    return {"model_id": model, "format": "safetensors", "quant": None}
+
+
+# ── External runtime resolution ───────────────────────────────────────────
+
+
+def resolve_external_runtime_model(
+    requested_model: str,
+    routes: list[ExternalWeightRoute],
+) -> ExternalRuntimeResolution:
+    """Resolve an external model ID for runtime handoff.
+
+    1. Parses the public ID.
+    2. Scans external inventory for a matching entry.
+    3. If found and servable, resolves the path via Phase 1 resolver.
+    4. Returns a structured resolution result.
+
+    Args:
+        requested_model: Public model ID from the API request.
+        routes: Configured external weight routes.
+
+    Returns:
+        ``ExternalRuntimeResolution`` with found/servable/path/runtime.
+    """
+    parsed = parse_external_model_public_id(requested_model)
+    fmt = parsed["format"]
+    _, quant = parsed.get("model_id"), parsed.get("quant")
+
+    # Scan inventory for a matching entry.
+    inventory = list_external_model_inventory(routes)
+    match: ExternalModelInventoryEntry | None = None
+    for entry in inventory:
+        if entry.id == requested_model:
+            match = entry
+            break
+
+    if match is None:
+        return ExternalRuntimeResolution(
+            found=False,
+            public_id=requested_model,
+            format=fmt,
+            reason="not_external",
+        )
+
+    if not match.servable:
+        return ExternalRuntimeResolution(
+            found=True,
+            servable=False,
+            model_id=match.model_id,
+            public_id=requested_model,
+            format=match.format,
+            runtime=match.runtime,
+            route_id=match.route_id,
+            reason="not_servable",
+        )
+
+    # Resolve the path through Phase 1 resolver with route paths.
+    from whooshd.models.routes import get_available_route_paths
+
+    available_paths = get_available_route_paths(routes)
+    if not available_paths:
+        return ExternalRuntimeResolution(
+            found=True,
+            servable=False,
+            model_id=match.model_id,
+            public_id=requested_model,
+            format=match.format,
+            runtime=match.runtime,
+            route_id=match.route_id,
+            reason="route_unavailable",
+        )
+
+    req = ModelResolutionRequest(
+        model_id=match.model_id if match.model_id else requested_model,
+        format=match.format,
+        quant=quant if quant else None,
+        search_paths=available_paths,
+    )
+    result = resolve_model(req)
+
+    if result.status != ResolutionStatus.FOUND.value:
+        return ExternalRuntimeResolution(
+            found=True,
+            servable=False,
+            model_id=match.model_id,
+            public_id=requested_model,
+            format=match.format,
+            runtime=match.runtime,
+            route_id=match.route_id,
+            reason="invalid_layout",
+            metadata={"resolution_status": result.status, "reason": result.reason},
+        )
+
+    return ExternalRuntimeResolution(
+        found=True,
+        servable=True,
+        model_id=match.model_id,
+        public_id=requested_model,
+        format=match.format,
+        runtime=match.runtime,
+        path=result.path,
+        route_id=match.route_id,
+        metadata={
+            "quant": quant,
+            "matched_file": result.metadata.get("matched_file"),
+        },
+    )

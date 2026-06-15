@@ -191,3 +191,35 @@ class ExternalModelInventoryEntry:
     path_available: bool = True
     servable: bool = False
     metadata: dict[str, Any] = field(default_factory=dict)
+
+
+# ── External runtime resolution ──────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class ExternalRuntimeResolution:
+    """Result of resolving an external model for runtime handoff.
+
+    Fields:
+        found: ``True`` when the model was found in external inventory.
+        servable: ``True`` when the model can be served by an adapter.
+        model_id: Publisher/Repo model id.
+        public_id: The public id used in API requests.
+        format: ``gguf``, ``mlx``, or ``safetensors``.
+        runtime: Runtime hint (``llama_cpp``, ``mlx_lm``, ``unsupported``).
+        path: Resolved absolute filesystem path, or ``None``.
+        route_id: The external route that supplied the model.
+        reason: Human-readable reason when not ``found`` or ``servable``.
+        metadata: Extra details.
+    """
+
+    found: bool = False
+    servable: bool = False
+    model_id: str = ""
+    public_id: str = ""
+    format: str | None = None
+    runtime: str | None = None
+    path: str | None = None
+    route_id: str | None = None
+    reason: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
