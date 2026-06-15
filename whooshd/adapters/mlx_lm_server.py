@@ -21,6 +21,7 @@ import signal
 import subprocess
 import time
 from typing import AsyncIterator, Optional
+from pathlib import Path
 
 from pydantic import BaseModel, Field
 
@@ -374,6 +375,7 @@ class MlxLmServerAdapter:
     def __init__(self, config: MlxLmServerConfig | None = None) -> None:
         self._config = config or _build_config_from_env()
         self._managed_process: ManagedMlxLmServer | None = None
+        self._external_model_path: Path | None = None
 
         # Per-runtime concurrency guard.
         from whooshd.config import get_mlx_max_concurrent_requests
@@ -381,7 +383,22 @@ class MlxLmServerAdapter:
         self._max_concurrent = get_mlx_max_concurrent_requests()
         self._concurrency_semaphore = _asyncio.Semaphore(self._max_concurrent)
 
-    # ── Protocol properties ────────────────────────────────────────────
+    # ── External path binding (Phase 4B) ─────────────────────────────
+
+    def set_external_model_path(self, path: str) -> None:
+        """Bind an external model directory path for the next request."""
+        self._external_model_path = Path(path)
+
+    def _clear_external_model_path(self) -> None:
+        """Clear external path state after a request completes."""
+        self._external_model_path = None
+
+    @property
+    def _effective_model_path(self) -> str | None:
+        """Return the active model path: external if set, otherwise config."""
+        if self._external_model_path is not None:
+            return str(self._external_model_path)
+        return self._config.model
 
     @property
     def name(self) -> str:
@@ -429,7 +446,7 @@ class MlxLmServerAdapter:
                 detail="MLX-LM Server runtime is not enabled (set WHOOSHD_MLX_ENABLED=true).",
             )
 
-        if not self._config.model:
+        if not self._effective_model_path:
             return _MlxLmServerHealthStatus(
                 reachable=False,
                 runner_status="ready",
@@ -506,8 +523,8 @@ class MlxLmServerAdapter:
         return False
 
     def model_id(self) -> Optional[str]:
-        """Return the configured model path, or None."""
-        return self._config.model
+        """Return the active model path (external if set, otherwise config)."""
+        return self._effective_model_path
 
     async def warmup(self) -> None:
         """Ensure the mlx_lm.server is reachable.
@@ -521,7 +538,7 @@ class MlxLmServerAdapter:
                 "MLX-LM Server runtime is not enabled (set WHOOSHD_MLX_ENABLED=true)."
             )
 
-        if not self._config.model:
+        if not self._effective_model_path:
             raise MlxLmServerConfigError(
                 "No model configured for MLX-LM Server (set WHOOSHD_MLX_MODEL)."
             )
@@ -588,13 +605,13 @@ class MlxLmServerAdapter:
             kind=self.kind,
             enabled=True,
             state=state,
-            active_model=self._config.model if self.is_loaded() else None,
+            active_model=self._effective_model_path if self.is_loaded() else None,
             detail=status.detail,
         )
 
     async def list_models(self) -> list[RuntimeModel]:
         """Return models managed by this MLX-LM Server runtime."""
-        if not self._config.model:
+        if not self._effective_model_path:
             return []
 
         loaded = self.is_loaded()
@@ -608,7 +625,7 @@ class MlxLmServerAdapter:
         }
         model_state = state_map.get(status.model_lifecycle, RuntimeHealthState.OFFLINE.value)
 
-        model_id = self._config.model
+        model_id = self._effective_model_path
         display_name = model_id.rsplit("/", 1)[-1] if "/" in model_id else model_id
 
         return [
@@ -637,7 +654,7 @@ class MlxLmServerAdapter:
             forward_non_streaming,
         )
 
-        if not self._config.enabled or not self._config.model:
+        if not self._config.enabled or not self._effective_model_path:
             raise RuntimeUnavailable(
                 "MLX-LM Server runtime is not enabled or no model configured."
             )
@@ -655,7 +672,7 @@ class MlxLmServerAdapter:
 
         # Convert generate request to chat completion.
         chat_req = ChatCompletionRequest(
-            model=self._config.model,
+            model=self._effective_model_path,
             messages=[ChatMessage(role="user", content=request.prompt)],
             temperature=request.temperature,
             max_tokens=request.max_tokens,
@@ -666,7 +683,7 @@ class MlxLmServerAdapter:
 
         chat_resp = await forward_non_streaming(
             self._server_url, chat_req, timeout=300.0,
-            model_override=self._config.model,
+            model_override=self._effective_model_path,
         )
 
         # Map ChatCompletionResponse → GenerateResponse.
@@ -714,7 +731,7 @@ class MlxLmServerAdapter:
         )
         from whooshd.config import get_runtime_acquire_timeout_seconds
 
-        if not self._config.enabled or not self._config.model:
+        if not self._config.enabled or not self._effective_model_path:
             raise RuntimeUnavailable(
                 "MLX-LM Server runtime is not enabled or no model configured."
             )
@@ -742,7 +759,7 @@ class MlxLmServerAdapter:
 
             return await forward_non_streaming(
                 self._server_url, request, timeout=300.0,
-                model_override=self._config.model,
+                model_override=self._effective_model_path,
             )
         finally:
             self._concurrency_semaphore.release()
@@ -765,7 +782,7 @@ class MlxLmServerAdapter:
         )
         from whooshd.config import get_runtime_acquire_timeout_seconds
 
-        if not self._config.enabled or not self._config.model:
+        if not self._config.enabled or not self._effective_model_path:
             raise RuntimeUnavailable(
                 "MLX-LM Server runtime is not enabled or no model configured."
             )
@@ -794,12 +811,13 @@ class MlxLmServerAdapter:
             cancellation_token = context.cancellation_token if context else None
             async for chunk in forward_streaming(
                 self._server_url, request, timeout=300.0,
-                model_override=self._config.model,
+                model_override=self._effective_model_path,
                 cancellation_token=cancellation_token,
             ):
                 yield chunk
         finally:
             self._concurrency_semaphore.release()
+            self._clear_external_model_path()
 
 
 # ── Internal helpers ────────────────────────────────────────────────────────
