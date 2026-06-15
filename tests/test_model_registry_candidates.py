@@ -51,6 +51,25 @@ def _fake_gemma_mlx(base: Path) -> Path:
     return _fake_mlx_dir(base, {"model_type": "gemma"})
 
 
+def _fake_gemma_mlx_with_processor(base: Path) -> Path:
+    """Observed local Gemma MLX folder shape with processor metadata.
+
+    Represents the shape that was incorrectly classified as text+vision.
+    Contains: config.json, tokenizer.json, model.safetensors,
+    processor_config.json, generation_config.json.
+
+    Expected: text-only, because processor metadata alone is not vision evidence.
+    """
+    d = base / "gemma-mlx-text"
+    d.mkdir(parents=True)
+    (d / "config.json").write_text('{"model_type":"gemma"}')
+    (d / "tokenizer.json").write_text("{}")
+    (d / "model.safetensors").write_text("placeholder")
+    (d / "processor_config.json").write_text("{}")
+    (d / "generation_config.json").write_text("{}")
+    return d
+
+
 def _fake_qwen_vlm(base: Path) -> Path:
     return _fake_mlx_dir(base, {
         "model_type": "qwen2_vl",
@@ -153,6 +172,31 @@ class TestInspectFamilyDetection:
             result = inspect_model_candidate(gemma)
             assert result.candidate.detected_family == "gemma"
             assert "model_type_gemma" in result.candidate.evidence
+            # Text-only — no vision.
+            assert result.candidate.modalities == ["text"]
+
+    def test_gemma_text_only_with_processor_metadata(self):
+        """Processor metadata alone does not imply vision capability."""
+        with TemporaryDirectory() as d:
+            gemma = _fake_gemma_mlx_with_processor(Path(d))
+            result = inspect_model_candidate(gemma)
+            assert result.candidate.detected_format == ModelCandidateFormat.MLX
+            assert result.candidate.detected_family == "gemma"
+            assert result.candidate.modalities == ["text"]
+            # Standard MLX evidence.
+            assert "found_config_json" in result.candidate.evidence
+            assert "found_tokenizer" in result.candidate.evidence
+            assert "found_safetensors" in result.candidate.evidence
+            assert "model_type_gemma" in result.candidate.evidence
+            # No vision evidence codes.
+            for vcode in ("found_vision_config", "model_type_qwen2_vl",
+                          "model_type_qwen2-vl", "architecture_qwen2vl",
+                          "found_mm_projector", "found_vision_tower",
+                          "found_image_newline"):
+                assert vcode not in result.candidate.evidence, (
+                    f"{vcode} should not appear for text-only Gemma"
+                )
+            assert result.candidate.problems == []
 
     def test_qwen_vlm_modalities(self):
         with TemporaryDirectory() as d:
@@ -160,6 +204,9 @@ class TestInspectFamilyDetection:
             result = inspect_model_candidate(qwen)
             assert result.candidate.detected_family == "qwen"
             assert "vision" in result.candidate.modalities
+            assert "text" in result.candidate.modalities
+            # Vision evidence code present.
+            assert "model_type_qwen2_vl" in result.candidate.evidence
 
     def test_llama_default_from_config(self):
         with TemporaryDirectory() as d:

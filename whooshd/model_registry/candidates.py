@@ -149,7 +149,7 @@ def _inspect_directory(
         if family != "unknown":
             evidence.append(f"model_type_{family}")
 
-        modalities = _detect_modalities(config, evidence)
+        modalities = _detect_modalities(config, evidence, directory)
     else:
         family = _detect_family(directory)
 
@@ -221,34 +221,107 @@ def _detect_family_from_config(config: dict) -> str:
     return "unknown"
 
 
-def _detect_modalities(config: dict, evidence: list[str]) -> list[str]:
-    """Detect supported modalities from config.json."""
+# ── Explicit VLM model_type markers ──────────────────────────────────────
+
+_VLM_MODEL_TYPES: set[str] = {
+    "qwen2_vl",
+    "qwen2-vl",
+    "llava",
+    "paligemma",
+}
+
+# ── Explicit VLM architecture markers ────────────────────────────────────
+
+_VLM_ARCHITECTURES: set[str] = {
+    "qwen2vlforconditionalgeneration",
+    "qwen2vl",
+    "llavaforconditionalgeneration",
+    "paligemmaforconditionalgeneration",
+}
+
+# ── Multimodal artifact filenames ────────────────────────────────────────
+
+_VLM_ARTIFACT_NAMES: set[str] = {
+    "mm_projector",
+    "vision_tower",
+    "image_newline",
+}
+
+
+def _detect_modalities(
+    config: dict,
+    evidence: list[str],
+    directory: Path | None = None,
+) -> list[str]:
+    """Detect supported modalities from config.json and directory contents.
+
+    Vision detection is **conservative**.  The following are *not* sufficient
+    alone to add ``vision``:
+      - ``processor_config.json``
+      - ``preprocessor_config.json``
+      - ``tokenizer_config.json``
+      - ``generation_config.json``
+      - generic ``processor`` metadata
+      - a model path containing only ``gemma``
+      - a model path containing only ``mlx``
+
+    Acceptable strong vision evidence (at least one required):
+      - ``config.json`` contains a top-level ``vision_config``
+      - ``config.json`` contains both ``text_config`` and ``vision_config``
+      - Explicit VLM ``model_type`` (qwen2_vl, qwen2-vl, llava, paligemma)
+      - Explicit VLM architecture markers (Qwen2VL, Llava, PaliGemma)
+      - ``ForConditionalGeneration`` combined with ``vision_config``
+      - Managed directory contains ``mm_projector``, ``vision_tower``, or
+        ``image_newline``
+
+    Adds a corresponding evidence code for every vision trigger.
+    """
     model_type = str(config.get("model_type", "")).lower()
-    text_config = config.get("text_config", {})
     vision_config = config.get("vision_config", {})
+    text_config = config.get("text_config", {})
 
     modalities: list[str] = ["text"]
 
-    # Check for vision hints.
-    if "vl" in model_type or "vision" in model_type:
+    # ── Explicit VLM model_type markers ────────────────────────────────
+    if model_type in _VLM_MODEL_TYPES:
         modalities.append("vision")
+        # Map to a specific evidence code.
+        mt_key = model_type.replace("-", "_")
+        evidence.append(f"model_type_{mt_key}")
         return modalities
 
-    if vision_config:
+    # ── vision_config present (strong signal) ──────────────────────────
+    if isinstance(vision_config, dict) and vision_config:
         modalities.append("vision")
+        evidence.append("found_vision_config")
+        if isinstance(text_config, dict) and text_config:
+            evidence.append("found_text_config")
         return modalities
 
-    # Check for mm_projector (common in LLaVA-style VLMs).
-    if "mm_projector" in str(config).lower():
-        modalities.append("vision")
-        return modalities
-
-    # Check architectures for multimodal hints.
+    # ── Explicit VLM architecture markers ──────────────────────────────
     for arch in config.get("architectures", []):
         arch_lower = str(arch).lower()
-        if any(hint in arch_lower for hint in ("vl", "vision", "multimodal")):
+        if arch_lower in _VLM_ARCHITECTURES:
             modalities.append("vision")
+            evidence.append(f"architecture_{arch_lower}")
             return modalities
+        if (
+            "forconditionalgeneration" in arch_lower
+            and isinstance(vision_config, dict)
+            and vision_config
+        ):
+            modalities.append("vision")
+            evidence.append("found_vision_config")
+            evidence.append(f"architecture_{arch_lower}")
+            return modalities
+
+    # ── Directory artifacts (mm_projector, vision_tower, etc.) ─────────
+    if directory is not None and directory.is_dir():
+        for artifact in _VLM_ARTIFACT_NAMES:
+            if (directory / artifact).exists():
+                modalities.append("vision")
+                evidence.append(f"found_{artifact}")
+                return modalities
 
     return modalities
 

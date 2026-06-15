@@ -132,6 +132,31 @@ class TestRegisterHappyPath:
             assert result.registered_model.model_id != ""
             assert "fake-mlx-model" in result.registered_model.model_id
 
+    def test_gemma_text_only_registers_under_mlx_not_vlm(self):
+        """Gemma text-only (even with processor metadata) registers
+        under models/mlx/, not models/vlm/."""
+        with TemporaryDirectory() as d:
+            root = Path(d) / "store"
+            # Create the observed Gemma shape with processor_config.json
+            gemma_dir = Path(d) / "gemma-mlx-text"
+            gemma_dir.mkdir()
+            (gemma_dir / "config.json").write_text('{"model_type":"gemma"}')
+            (gemma_dir / "tokenizer.json").write_text("{}")
+            (gemma_dir / "model.safetensors").write_text("placeholder")
+            (gemma_dir / "processor_config.json").write_text("{}")
+            (gemma_dir / "generation_config.json").write_text("{}")
+
+            cid = _setup_candidate(root, gemma_dir)
+            result = register_model_candidate(root, cid, model_id="gemma-text-only")
+
+            assert result.problem is None
+            assert result.registered_model.detected_format == "mlx"
+            assert result.registered_model.detected_family == "gemma"
+            assert result.registered_model.modalities == ["text"]
+            # Managed path is under models/mlx/, not models/vlm/.
+            assert "models/mlx/gemma-text-only" in result.managed_path
+            assert "models/vlm" not in result.managed_path
+
 
 # ── Registration: idempotency ──────────────────────────────────────────────
 

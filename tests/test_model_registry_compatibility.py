@@ -68,6 +68,27 @@ class TestAdapterMapping:
             assert "found_config_json" in result.evidence
             assert "format_mlx" in result.evidence
 
+    def test_gemma_text_only_maps_to_mlx_lm_server_not_vlm(self):
+        """Gemma text-only (with processor metadata) maps to mlx_lm_server."""
+        with TemporaryDirectory() as d:
+            root = Path(d) / "store"
+            gemma_dir = Path(d) / "gemma-mlx-text"
+            gemma_dir.mkdir()
+            (gemma_dir / "config.json").write_text('{"model_type":"gemma"}')
+            (gemma_dir / "tokenizer.json").write_text("{}")
+            (gemma_dir / "model.safetensors").write_text("placeholder")
+            (gemma_dir / "processor_config.json").write_text("{}")
+            (gemma_dir / "generation_config.json").write_text("{}")
+            _setup_registered_model(root, gemma_dir, "gemma-text-only")
+
+            result = validate_registered_model_compatibility(root, "gemma-text-only")
+            assert result.adapter_kind == RegisteredModelAdapterKind.MLX_LM_SERVER
+            assert "adapter_mlx_lm_server" in result.evidence
+            # Must NOT claim vlm.
+            assert result.adapter_kind != RegisteredModelAdapterKind.MLX_VLM
+            assert "modalities_vision" not in result.evidence
+            assert result.advertisable is True
+
     def test_mlx_vision_maps_to_mlx_vlm(self):
         with TemporaryDirectory() as d:
             root = Path(d) / "store"

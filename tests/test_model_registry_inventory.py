@@ -312,3 +312,43 @@ class TestV1ModelsWithRegistered:
                 ids = [m["id"] for m in data]
                 # stub-model appears exactly once.
                 assert ids.count("stub-model") == 1
+
+    @pytest.mark.asyncio
+    async def test_gemma_text_only_inventory_metadata(self, monkeypatch):
+        """Gemma text-only registered model shows text-only metadata
+        and mlx_lm_server engine, not mlx_vlm."""
+        with TemporaryDirectory() as d:
+            root = Path(d) / "store"
+            gemma_dir = Path(d) / "gemma-mlx-text"
+            gemma_dir.mkdir()
+            (gemma_dir / "config.json").write_text('{"model_type":"gemma"}')
+            (gemma_dir / "tokenizer.json").write_text("{}")
+            (gemma_dir / "model.safetensors").write_text("placeholder")
+            (gemma_dir / "processor_config.json").write_text("{}")
+            (gemma_dir / "generation_config.json").write_text("{}")
+            _setup_registered_model(root, gemma_dir, "gemma-text", "Gemma Text")
+
+            monkeypatch.setenv("WHOOSHD_MODEL_STORE_ROOT", str(root))
+
+            from httpx import ASGITransport, AsyncClient
+            from whooshd.app import app
+
+            transport = ASGITransport(app=app)
+            async with AsyncClient(transport=transport, base_url="http://test") as client:
+                # /v1/models
+                resp = await client.get("/v1/models")
+                assert resp.status_code == 200
+                gemma = next(
+                    m for m in resp.json()["data"] if m["id"] == "gemma-text"
+                )
+                assert gemma["metadata"]["source"] == "registered"
+                assert gemma["metadata"]["format"] == "mlx"
+                assert gemma["metadata"]["engine"] == "mlx_lm_server"
+                # Must not claim vision.
+                assert gemma["metadata"]["engine"] != "mlx_vlm"
+
+                # /api/tags
+                resp2 = await client.get("/api/tags")
+                assert resp2.status_code == 200
+                names = [m["name"] for m in resp2.json()["models"]]
+                assert "gemma-text" in names
