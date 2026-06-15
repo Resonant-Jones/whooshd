@@ -218,7 +218,7 @@ class ChatMessage(BaseModel):
     and tool_call / tool_call_id for tool-use conversations.
     """
 
-    role: Literal["system", "user", "assistant", "tool"]
+    role: Literal["system", "developer", "user", "assistant", "tool"]
     content: str | list[dict] = Field("", description="Text content of the message, or a list of content parts (text + image_url for multimodal)")
     name: Optional[str] = Field(None, description="Optional speaker name")
     tool_calls: Optional[list[dict]] = Field(None, description="Tool calls made by the assistant (for tool-use conversations)")
@@ -266,6 +266,7 @@ class ChatCompletionRequest(BaseModel):
 
     # Metadata.
     metadata: Optional[dict] = Field(None, description="User-supplied metadata for the request")
+    threadwake: Optional[dict] = Field(None, description="Optional ThreadWake observe-mode request config")
 
     # Extra fields captured by model_config extra=allow, forwarded to upstream.
     extra_fields: dict = Field(default_factory=dict, description="Additional fields captured from the request body, forwarded to upstream")

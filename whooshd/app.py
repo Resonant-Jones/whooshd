@@ -22,6 +22,7 @@ Runtime support:
 from __future__ import annotations
 
 import json
+import logging
 
 from fastapi import FastAPI, HTTPException
 from fastapi.exceptions import RequestValidationError
@@ -55,6 +56,11 @@ from whooshd.config import (
 from whooshd.routing import ModelResolutionError, get_router, reset_router
 from whooshd.runtime import get_runtime
 from whooshd.http_forwarding import UpstreamRuntimeError
+from whooshd.runtime.threadwake import ThreadWakeManager
+
+
+logger = logging.getLogger(__name__)
+_threadwake_manager = ThreadWakeManager()
 
 app = FastAPI(
     title="Whoosh'd",
@@ -474,6 +480,27 @@ async def chat_completions(req: ChatCompletionRequest):
                 ).model_dump(),
             )
 
+    # ── ThreadWake observe-mode metadata ──────────────────────────────
+    threadwake_observation = _threadwake_manager.observe_request(
+        req,
+        backend=getattr(adapter, "kind", None),
+    )
+    if threadwake_observation.enabled:
+        logger.info(
+            "threadwake.observe mode=%s eligible=%s reason=%s "
+            "stable_prefix_hash=%s stable_prefix_tokens=%s dynamic_tokens=%s "
+            "estimated_prefill_reuse_tokens=%s cache_hit=%s cache_scope=%s",
+            threadwake_observation.mode.value,
+            threadwake_observation.eligible,
+            threadwake_observation.reason,
+            threadwake_observation.stable_prefix_hash,
+            threadwake_observation.stable_prefix_tokens,
+            threadwake_observation.dynamic_tokens,
+            threadwake_observation.estimated_prefill_reuse_tokens,
+            threadwake_observation.cache_hit,
+            threadwake_observation.cache_scope,
+        )
+
     # ── Non-streaming path ────────────────────────────────────────────
     if not req.stream:
         request_id = rt.begin_request(model=req.model, stream=False)
@@ -738,3 +765,49 @@ async def runtime_admission():
     """Current admission limits and counters."""
     rt = get_runtime()
     return rt.build_admission_config()
+
+
+# ── ThreadWake health ──────────────────────────────────────────────────────
+
+
+@app.get("/health/threadwake")
+async def health_threadwake():
+    """ThreadWake cache health and metrics.
+
+    Returns enabled status, mode, entry counts, memory estimates,
+    hit/miss/eviction counters, and backend capability summary.
+    No raw prompt content or opaque KV refs are exposed.
+    """
+    return _threadwake_manager.get_health()
+
+
+# ── ThreadWake admin flush ─────────────────────────────────────────────────
+
+
+@app.post("/runtime/threadwake/flush")
+async def runtime_threadwake_flush(req: dict | None = None):
+    """Flush ThreadWake cache metadata entries.
+
+    Request body (optional):
+      {"scope": "all"|"thread"|"project"|"user"|"global",
+       "scope_id": "...",
+       "model_id": "..."}
+
+    Omit the body to flush all entries.
+    """
+    body = req or {}
+    scope = body.get("scope")
+    # "all" means flush everything (scope=None)
+    if scope == "all":
+        scope = None
+    model_id = body.get("model_id")
+    scope_id = body.get("scope_id")
+
+    result = _threadwake_manager.flush_cache(
+        scope=scope,
+        model_id=model_id,
+        scope_id=scope_id,
+    )
+    # Record evictions in metrics
+    _threadwake_manager.metrics.record_eviction(result["flushed"])
+    return result

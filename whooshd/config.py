@@ -283,6 +283,58 @@ def get_runtime_acquire_timeout_seconds() -> float:
         return 5.0
 
 
+# ── ThreadWake observe-mode settings ──────────────────────────────────────
+
+
+def get_threadwake_enabled() -> bool:
+    """Whether ThreadWake observe-mode analysis is enabled by default."""
+    return _env_bool("WHOOSHD_THREADWAKE_ENABLED", False)
+
+
+def get_threadwake_mode() -> str:
+    """Default ThreadWake mode. Phase A only implements ``observe``."""
+    return _env("WHOOSHD_THREADWAKE_MODE", "off")
+
+
+def get_threadwake_min_prefix_tokens() -> int:
+    """Minimum stable prefix token estimate for ThreadWake eligibility."""
+    return _env_int("WHOOSHD_THREADWAKE_MIN_PREFIX_TOKENS", 1024)
+
+
+def get_threadwake_default_scope() -> str:
+    """Default ThreadWake cacheability scope for observations."""
+    val = _env("WHOOSHD_THREADWAKE_DEFAULT_SCOPE", "thread")
+    if val in {"request", "thread", "project", "user", "global"}:
+        return val
+    return "thread"
+
+
+def get_threadwake_max_entries() -> int:
+    """Maximum number of entries in the ThreadWake metadata index."""
+    return _env_int("WHOOSHD_THREADWAKE_MAX_ENTRIES", 16)
+
+
+def get_threadwake_max_memory_mb() -> int:
+    """Maximum estimated memory (MiB) for the ThreadWake metadata index."""
+    return _env_int("WHOOSHD_THREADWAKE_MAX_MEMORY_MB", 1024)
+
+
+def get_threadwake_bytes_per_token() -> int:
+    """Estimated bytes per token for KV cache memory modelling.
+
+    Set to 0 to disable memory-based eviction entirely.
+    """
+    return _env_int("WHOOSHD_THREADWAKE_BYTES_PER_TOKEN", 0)
+
+
+def get_threadwake_allow_global() -> bool:
+    """Whether global-scope ThreadWake cache is permitted.
+
+    Must be explicitly enabled.  Disabled by default for safety.
+    """
+    return _env_bool("WHOOSHD_THREADWAKE_ALLOW_GLOBAL", False)
+
+
 # ── MLX-VLM settings ──────────────────────────────────────────────────────
 
 
