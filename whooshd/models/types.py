@@ -78,13 +78,14 @@ class ModelResolutionResult:
         model_id: Echoed from the request.
         format: Detected or explicit format.
         path: Resolved absolute path, or ``None``.
-        source: ``local_filesystem`` when found.  Reserved for future
-                sources (e.g. ``huggingface``).
+        source: ``local_filesystem`` when found through direct search paths,
+                ``external`` when found through an external weight route.
+                Reserved for future sources (e.g. ``huggingface``).
         runtime: Runtime metadata hint (``llama_cpp``, ``mlx_lm``,
                  ``unsupported``).
         reason: Human-readable reason when not ``found``.
         metadata: Additional structured metadata (checked_paths, matched_file,
-                  quant, etc.).
+                  quant, route_ids_checked, etc.).
     """
 
     status: str = ResolutionStatus.MISSING.value
@@ -95,3 +96,63 @@ class ModelResolutionResult:
     runtime: str | None = None
     reason: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
+
+
+# ── External weight routes ─────────────────────────────────────────────────
+
+
+class ExternalRouteStatus(str, Enum):
+    """Well-known external route availability statuses.
+
+    ``available``: route is enabled and path exists as a directory.
+    ``disabled``: route is configured but disabled.
+    ``mount_unavailable``: route path is under a missing mounted volume.
+    ``invalid_path``: route path exists but is not a directory, or the
+                     path shape is unusable.
+    """
+
+    AVAILABLE = "available"
+    DISABLED = "disabled"
+    MOUNT_UNAVAILABLE = "mount_unavailable"
+    INVALID_PATH = "invalid_path"
+
+
+@dataclass(frozen=True)
+class ExternalWeightRoute:
+    """A configured external weight route.
+
+    Fields:
+        id: Unique route identifier (e.g. ``vaultnode``).
+        path: Filesystem root for this route's model layout.
+        enabled: Whether the route is active.
+        read_only: Whether the route forbids writes.
+        priority: Lower numbers win when ordering routes.
+    """
+
+    id: str
+    path: Path
+    enabled: bool = True
+    read_only: bool = True
+    priority: int = 100
+
+
+@dataclass(frozen=True)
+class ExternalWeightRouteStatus:
+    """The validated status of an external weight route.
+
+    Fields:
+        id: Route identifier (echoed from config).
+        path: Route path (echoed from config).
+        enabled: Whether the route is enabled.
+        available: True when the route is usable for resolution.
+        status: One of ``available``, ``disabled``, ``mount_unavailable``,
+                ``invalid_path``.
+        reason: Human-readable reason when not available.
+    """
+
+    id: str
+    path: Path
+    enabled: bool
+    available: bool = False
+    status: str = ExternalRouteStatus.DISABLED.value
+    reason: str | None = None

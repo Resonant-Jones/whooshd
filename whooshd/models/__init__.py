@@ -5,6 +5,16 @@ API handlers, Hugging Face libraries, or Codexify integration.
 """
 
 from whooshd.models.resolver import resolve_model
+from whooshd.models.routes import (
+    ExternalWeightRoute,
+    ExternalWeightRouteStatus,
+    ExternalRouteStatus,
+    get_available_route_paths,
+    load_external_weight_routes,
+    resolve_model_from_routes,
+    validate_all_routes,
+    validate_route_status,
+)
 from whooshd.models.types import (
     ModelFormat,
     ModelResolutionRequest,
@@ -14,6 +24,14 @@ from whooshd.models.types import (
 
 __all__ = [
     "resolve_model",
+    "resolve_model_from_routes",
+    "load_external_weight_routes",
+    "validate_route_status",
+    "validate_all_routes",
+    "get_available_route_paths",
+    "ExternalWeightRoute",
+    "ExternalWeightRouteStatus",
+    "ExternalRouteStatus",
     "ModelFormat",
     "ModelResolutionRequest",
     "ModelResolutionResult",
