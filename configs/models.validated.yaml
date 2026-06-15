@@ -6,6 +6,7 @@
 # These aliases are tested against real runtimes:
 #   qwen2.5-0.5b-gguf  → llama.cpp / GGUF
 #   llama-3.2-3b-mlx   → mlx_lm.server / MLX text
+#   gemma-4-e2b-mlx    → mlx_lm.server / MLX text
 #   qwen2-vl-2b-mlx    → mlx-vlm / MLX vision
 
 models:
@@ -50,6 +51,28 @@ models:
       - mlx
       - local
       - small
+
+  # ── Validated MLX text (mlx_lm.server) Gemma E2B model ─────────────
+  gemma-4-e2b-mlx:
+    display_name: "Gemma 4 E2B Instruct 4-bit MLX"
+    engine: mlx_lm
+    format: mlx
+    path: "mlx-community/gemma-4-e2b-it-4bit"
+    modalities:
+      - text
+    context_window: 131072
+    preferred_hardware:
+      - apple_silicon
+      - metal
+    warm_policy: warm_on_first_use
+    priority: chat
+    enabled: true
+    tags:
+      - chat
+      - mlx
+      - local
+      - small
+      - gemma
 
   # ── Validated MLX-VLM (vision) model ────────────────────────────────
   qwen2-vl-2b-mlx:

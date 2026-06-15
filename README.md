@@ -83,6 +83,12 @@ WHOOSHD_MLX_ENABLED=true \
   WHOOSHD_MLX_MODEL=mlx-community/Llama-3.2-3B-Instruct-4bit \
   python -m uvicorn whooshd.app:app --reload
 
+# Run Gemma E2B with the stable public registry alias
+WHOOSHD_MLX_ENABLED=true \
+  WHOOSHD_MLX_MODEL=mlx-community/gemma-4-e2b-it-4bit \
+  WHOOSHD_MODEL_REGISTRY_PATH=configs/models.validated.yaml \
+  python -m uvicorn whooshd.app:app --reload
+
 # Run with MLX in-process (legacy, requires mlx-lm)
 WHOOSHD_ADAPTER=mlx \
   WHOOSHD_MLX_MODEL=mlx-community/Llama-3.2-3B-Instruct-4bit \
@@ -270,6 +276,12 @@ See **[docs/threadwake/README.md](docs/threadwake/README.md)** for the full docu
 | `WHOOSHD_MLX_EXTRA_ARGS`          | (none)                                           | Extra CLI args for mlx_lm.server |
 | `WHOOSHD_MLX_STARTUP_TIMEOUT_SECONDS` | `30.0`                                       | Startup timeout                 |
 | `WHOOSHD_MLX_HEALTH_TIMEOUT_SECONDS`  | `2.0`                                        | Health probe timeout            |
+
+The validated registry maps `WHOOSHD_MLX_MODEL=mlx-community/gemma-4-e2b-it-4bit`
+to the public alias `gemma-4-e2b-mlx`. With
+`WHOOSHD_MODEL_REGISTRY_PATH=configs/models.validated.yaml`, `/v1/models` and
+`/api/tags` expose the active MLX text alias that matches `WHOOSHD_MLX_MODEL`.
+Codexify can use `LOCAL_CHAT_MODEL=gemma-4-e2b-mlx` for the stable Gemma alias.
 
 ### MLX in-process (legacy)
 

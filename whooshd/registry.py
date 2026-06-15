@@ -156,6 +156,41 @@ class ModelRegistryConfig(BaseModel):
         """Return all enabled model entries as (model_id, entry) pairs."""
         return [(mid, e) for mid, e in self.models.items() if e.enabled]
 
+    def enabled_models_for_runtime(
+        self, *, configured_mlx_model: str | None = None
+    ) -> list[tuple[str, RegistryModelEntry]]:
+        """Return enabled entries compatible with the active runtime config.
+
+        The registry may carry multiple validated MLX text aliases, but a
+        running Whoosh'd process serves one configured MLX-LM Server model at a
+        time.  When ``WHOOSHD_MLX_MODEL`` is set, only the MLX text entry whose
+        runtime path matches that configured model is advertised/routable.
+        Non-MLX-text lanes remain visible so GGUF and VLM inventory is not
+        hidden by text-model switching.
+        """
+        configured = (configured_mlx_model or "").strip()
+        results: list[tuple[str, RegistryModelEntry]] = []
+        for model_id, entry in self.enabled_models():
+            if (
+                configured
+                and entry.engine == EngineType.MLX_LM
+                and entry.path.strip() != configured
+            ):
+                continue
+            results.append((model_id, entry))
+        return results
+
+    def get_for_runtime(
+        self, model_id: str, *, configured_mlx_model: str | None = None
+    ) -> Optional[RegistryModelEntry]:
+        """Look up a model by ID after active-runtime filtering."""
+        for mid, entry in self.enabled_models_for_runtime(
+            configured_mlx_model=configured_mlx_model
+        ):
+            if mid == model_id:
+                return entry
+        return None
+
     def get(self, model_id: str) -> Optional[RegistryModelEntry]:
         """Look up a model by ID."""
         return self.models.get(model_id)

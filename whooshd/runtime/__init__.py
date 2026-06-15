@@ -39,6 +39,7 @@ from whooshd.contracts import (
 from whooshd.config import (
     get_advertised_model_id,
     get_mlx_context_window,
+    get_mlx_lm_server_model,
     get_mlx_model_path,
     get_mlx_quantization,
     get_model_registry_path,
@@ -413,7 +414,7 @@ class RuntimeState:
 
         from whooshd.registry import ModelModality, RegistryModelEntry
 
-        for model_id, entry in registry.enabled_models():
+        for model_id, entry in self._runtime_registry_models(registry):
             loaded = bool(loaded_model_id and loaded_model_id == model_id)
 
             # Map registry modalities → ModelCapability enums.
@@ -447,6 +448,15 @@ class RuntimeState:
             ))
         return results
 
+    def _runtime_registry_models(self, registry: object) -> list:
+        """Return registry models aligned with the active runtime config."""
+        configured_mlx = get_mlx_lm_server_model()
+        if hasattr(registry, "enabled_models_for_runtime"):
+            return registry.enabled_models_for_runtime(
+                configured_mlx_model=configured_mlx
+            )
+        return registry.enabled_models()
+
     def get_model(self, model_id: str) -> Optional[ModelInfo]:
         for m in self.list_models():
             if m.id == model_id:
@@ -469,7 +479,7 @@ class RuntimeState:
         reg = self._load_registry()
 
         if reg and reg is not False and reg:
-            for model_id, entry in reg.enabled_models():
+            for model_id, entry in self._runtime_registry_models(reg):
                 entries.append(
                     OpenAIModelEntry(
                         id=model_id,
@@ -521,7 +531,7 @@ class RuntimeState:
         reg = self._load_registry()
 
         if reg and reg is not False and reg:
-            for model_id, entry in reg.enabled_models():
+            for model_id, entry in self._runtime_registry_models(reg):
                 entries.append(
                     OllamaTagEntry(
                         name=model_id,

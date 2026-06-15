@@ -21,6 +21,13 @@ WHOOSHD_MLX_ENABLED=true \
   WHOOSHD_MLX_PORT=8081 \
   python -m uvicorn whooshd.app:app --host 127.0.0.1 --port 8000
 
+# With Gemma E2B through MLX-LM Server and validated aliases
+WHOOSHD_MLX_ENABLED=true \
+  WHOOSHD_MLX_MODEL=mlx-community/gemma-4-e2b-it-4bit \
+  WHOOSHD_MLX_PORT=8081 \
+  WHOOSHD_MODEL_REGISTRY_PATH=configs/models.validated.yaml \
+  python -m uvicorn whooshd.app:app --host 127.0.0.1 --port 8000
+
 # With llama.cpp (external server)
 WHOOSHD_ADAPTER=llama_cpp \
   WHOOSHD_LLAMA_CPP_SERVER_URL=http://127.0.0.1:8080 \
@@ -93,6 +100,13 @@ WHOOSHD_MODEL_REGISTRY_PATH=configs/models.yaml \
 curl http://127.0.0.1:8000/v1/models
 # Should show both GGUF and MLX models from the registry.
 ```
+
+When the validated registry is used with
+`WHOOSHD_MLX_MODEL=mlx-community/gemma-4-e2b-it-4bit`, `/v1/models` and
+`/api/tags` should show `gemma-4-e2b-mlx` for the active MLX text lane. Use
+`model: "gemma-4-e2b-mlx"` in OpenAI-compatible chat requests. `/health/runtime`
+continues to report the raw configured model id
+`mlx-community/gemma-4-e2b-it-4bit`.
 
 ## Chat Completions
 

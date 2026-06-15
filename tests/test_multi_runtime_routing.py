@@ -204,6 +204,161 @@ class TestModelResolution:
         finally:
             rt._registry = original_registry
 
+    def test_router_uses_gemma_alias_for_configured_mlx_text(
+        self, clean_router, mock_llama_adapter, mock_mlx_server_adapter, monkeypatch
+    ):
+        """Gemma alias routes to MLX text and inactive Llama alias is rejected."""
+        from whooshd.registry import (
+            EngineType,
+            ModelFormat,
+            ModelModality,
+            ModelRegistryConfig,
+            RegistryModelEntry,
+        )
+
+        monkeypatch.setenv("WHOOSHD_MLX_MODEL", "mlx-community/gemma-4-e2b-it-4bit")
+        registry = ModelRegistryConfig(
+            models={
+                "llama-3.2-3b-mlx": RegistryModelEntry(
+                    display_name="Llama MLX",
+                    engine=EngineType.MLX_LM,
+                    format=ModelFormat.MLX,
+                    path="mlx-community/Llama-3.2-3B-Instruct-4bit",
+                    modalities=[ModelModality.TEXT],
+                ),
+                "gemma-4-e2b-mlx": RegistryModelEntry(
+                    display_name="Gemma 4 E2B MLX",
+                    engine=EngineType.MLX_LM,
+                    format=ModelFormat.MLX,
+                    path="mlx-community/gemma-4-e2b-it-4bit",
+                    modalities=[ModelModality.TEXT],
+                ),
+                "qwen2-vl-2b-mlx": RegistryModelEntry(
+                    display_name="Qwen VL",
+                    engine=EngineType.MLX_VLM,
+                    format=ModelFormat.MLX,
+                    path="mlx-community/Qwen2-VL-2B-Instruct-4bit",
+                    modalities=[ModelModality.TEXT, ModelModality.VISION],
+                ),
+                "qwen2.5-0.5b-gguf": RegistryModelEntry(
+                    display_name="Qwen GGUF",
+                    engine=EngineType.LLAMA_CPP,
+                    format=ModelFormat.GGUF,
+                    path="models/gguf/qwen2.5.gguf",
+                    modalities=[ModelModality.TEXT],
+                ),
+            }
+        )
+
+        rt = get_runtime()
+        original_registry = rt._registry
+        rt._registry = registry
+
+        try:
+            mock_vlm_adapter = MagicMock()
+            mock_vlm_adapter.kind = RuntimeKind.MLX_VLM.value
+            mock_vlm_adapter.name = "mlx-vlm"
+            mock_vlm_adapter.supports_streaming = True
+            mock_vlm_adapter.model_id.return_value = "mlx-community/Qwen2-VL-2B-Instruct-4bit"
+            mock_vlm_adapter.is_loaded.return_value = False
+
+            clean_router.register(mock_llama_adapter)
+            clean_router.register(mock_mlx_server_adapter)
+            clean_router.register(mock_vlm_adapter)
+
+            async def _run():
+                gemma = await clean_router._resolve_model_runtime("gemma-4-e2b-mlx")
+                assert gemma.kind == RuntimeKind.MLX_LM_SERVER.value
+
+                vision = await clean_router._resolve_model_runtime("qwen2-vl-2b-mlx")
+                assert vision.kind == RuntimeKind.MLX_VLM.value
+
+                gguf = await clean_router._resolve_model_runtime("qwen2.5-0.5b-gguf")
+                assert gguf.kind == RuntimeKind.LLAMA_CPP.value
+
+                with pytest.raises(ModelResolutionError):
+                    await clean_router._resolve_model_runtime("llama-3.2-3b-mlx")
+
+            import asyncio
+            asyncio.run(_run())
+        finally:
+            rt._registry = original_registry
+
+    def test_inactive_registry_alias_does_not_fall_back_to_single_runtime(
+        self, clean_router, mock_mlx_server_adapter, monkeypatch
+    ):
+        """A registry-known inactive alias is rejected even with one runtime."""
+        from whooshd.registry import (
+            EngineType,
+            ModelFormat,
+            ModelModality,
+            ModelRegistryConfig,
+            RegistryModelEntry,
+        )
+
+        monkeypatch.setenv("WHOOSHD_MLX_MODEL", "mlx-community/gemma-4-e2b-it-4bit")
+        registry = ModelRegistryConfig(
+            models={
+                "llama-3.2-3b-mlx": RegistryModelEntry(
+                    display_name="Llama MLX",
+                    engine=EngineType.MLX_LM,
+                    format=ModelFormat.MLX,
+                    path="mlx-community/Llama-3.2-3B-Instruct-4bit",
+                    modalities=[ModelModality.TEXT],
+                ),
+                "gemma-4-e2b-mlx": RegistryModelEntry(
+                    display_name="Gemma 4 E2B MLX",
+                    engine=EngineType.MLX_LM,
+                    format=ModelFormat.MLX,
+                    path="mlx-community/gemma-4-e2b-it-4bit",
+                    modalities=[ModelModality.TEXT],
+                ),
+            }
+        )
+
+        rt = get_runtime()
+        original_registry = rt._registry
+        rt._registry = registry
+
+        try:
+            clean_router.register(mock_mlx_server_adapter)
+
+            async def _run():
+                with pytest.raises(
+                    ModelResolutionError,
+                    match="not active for the current runtime configuration",
+                ):
+                    await clean_router._resolve_model_runtime("llama-3.2-3b-mlx")
+
+            import asyncio
+            asyncio.run(_run())
+        finally:
+            rt._registry = original_registry
+
+    @pytest.mark.asyncio
+    async def test_health_runtime_reports_configured_gemma_model(self):
+        """MLX health reports the raw configured Gemma runtime model id."""
+        from whooshd.adapters.mlx_lm_server import MlxLmServerAdapter, MlxLmServerConfig
+
+        routing_reset()
+        router = get_router()
+        adapter = MlxLmServerAdapter(
+            config=MlxLmServerConfig(
+                enabled=True,
+                model="mlx-community/gemma-4-e2b-it-4bit",
+            )
+        )
+        adapter.check_health = AsyncMock(return_value=MagicMock(
+            reachable=True,
+            model_lifecycle="ready",
+            detail="mlx_lm.server /v1/models returned 200.",
+        ))
+        router.register(adapter)
+
+        health = await router.health()
+        mlx = health.runtimes[RuntimeKind.MLX_LM_SERVER.value]
+        assert mlx.configured_model == "mlx-community/gemma-4-e2b-it-4bit"
+
     def test_router_fallback_to_only_non_stub_adapter(self, clean_router, mock_mlx_server_adapter):
         """When only one non-stub adapter is registered, unknown models route there."""
         clean_router.register(mock_mlx_server_adapter)

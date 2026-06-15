@@ -258,6 +258,74 @@ class TestModelRegistryConfig:
         assert len(enabled) == 1
         assert enabled[0][0] == "enabled-model"
 
+    def test_enabled_models_for_runtime_filters_inactive_mlx_text(self):
+        config = ModelRegistryConfig(
+            models={
+                "llama-3.2-3b-mlx": RegistryModelEntry(
+                    display_name="Llama MLX",
+                    engine=EngineType.MLX_LM,
+                    format=ModelFormat.MLX,
+                    path="mlx-community/Llama-3.2-3B-Instruct-4bit",
+                ),
+                "gemma-4-e2b-mlx": RegistryModelEntry(
+                    display_name="Gemma 4 E2B MLX",
+                    engine=EngineType.MLX_LM,
+                    format=ModelFormat.MLX,
+                    path="mlx-community/gemma-4-e2b-it-4bit",
+                ),
+                "qwen2-vl-2b-mlx": RegistryModelEntry(
+                    display_name="Qwen VL",
+                    engine=EngineType.MLX_VLM,
+                    format=ModelFormat.MLX,
+                    path="mlx-community/Qwen2-VL-2B-Instruct-4bit",
+                    modalities=[ModelModality.TEXT, ModelModality.VISION],
+                ),
+                "qwen2.5-0.5b-gguf": RegistryModelEntry(
+                    display_name="Qwen GGUF",
+                    engine=EngineType.LLAMA_CPP,
+                    format=ModelFormat.GGUF,
+                    path="models/gguf/qwen.gguf",
+                ),
+            }
+        )
+
+        active = config.enabled_models_for_runtime(
+            configured_mlx_model="mlx-community/gemma-4-e2b-it-4bit"
+        )
+        ids = {model_id for model_id, _ in active}
+
+        assert "gemma-4-e2b-mlx" in ids
+        assert "llama-3.2-3b-mlx" not in ids
+        assert "qwen2-vl-2b-mlx" in ids
+        assert "qwen2.5-0.5b-gguf" in ids
+
+    def test_get_for_runtime_respects_configured_mlx_text(self):
+        config = ModelRegistryConfig(
+            models={
+                "llama-3.2-3b-mlx": RegistryModelEntry(
+                    display_name="Llama MLX",
+                    engine=EngineType.MLX_LM,
+                    format=ModelFormat.MLX,
+                    path="mlx-community/Llama-3.2-3B-Instruct-4bit",
+                ),
+                "gemma-4-e2b-mlx": RegistryModelEntry(
+                    display_name="Gemma 4 E2B MLX",
+                    engine=EngineType.MLX_LM,
+                    format=ModelFormat.MLX,
+                    path="mlx-community/gemma-4-e2b-it-4bit",
+                ),
+            }
+        )
+
+        assert config.get_for_runtime(
+            "gemma-4-e2b-mlx",
+            configured_mlx_model="mlx-community/gemma-4-e2b-it-4bit",
+        ) is not None
+        assert config.get_for_runtime(
+            "llama-3.2-3b-mlx",
+            configured_mlx_model="mlx-community/gemma-4-e2b-it-4bit",
+        ) is None
+
     def test_get_model(self):
         config = ModelRegistryConfig(
             models={
@@ -439,6 +507,19 @@ class TestLoadModelRegistry:
         assert gemma.engine == EngineType.MLX_VLM
         assert gemma.format == ModelFormat.MLX
         assert gemma.is_vision_capable()
+
+    def test_load_validated_registry_includes_gemma_e2b(self):
+        validated_path = Path("configs") / "models.validated.yaml"
+        registry = load_model_registry(str(validated_path))
+        assert registry is not None
+
+        gemma = registry.models.get("gemma-4-e2b-mlx")
+        assert gemma is not None
+        assert gemma.engine == EngineType.MLX_LM
+        assert gemma.format == ModelFormat.MLX
+        assert gemma.path == "mlx-community/gemma-4-e2b-it-4bit"
+        assert gemma.modalities == [ModelModality.TEXT]
+        assert gemma.is_vision_capable() is False
 
 
 # ── Backward compatibility tests ─────────────────────────────────────────

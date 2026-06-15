@@ -116,10 +116,22 @@ class RuntimeRouter:
         # ── Step 1: Consult the model registry ─────────────────────
         try:
             from whooshd.runtime import get_runtime
+            from whooshd.config import get_mlx_lm_server_model
             rt = get_runtime()
             reg = rt._load_registry()
             if reg and reg is not False and reg:
-                entry = reg.get(model_id)
+                if hasattr(reg, "get_for_runtime"):
+                    entry = reg.get_for_runtime(
+                        model_id,
+                        configured_mlx_model=get_mlx_lm_server_model(),
+                    )
+                    if entry is None and reg.get(model_id) is not None:
+                        raise ModelResolutionError(
+                            model_id,
+                            "Registry model is not active for the current runtime configuration.",
+                        )
+                else:
+                    entry = reg.get(model_id)
                 if entry:
                     engine = entry.engine.value
                     # Map registry engine → runtime kind
@@ -132,6 +144,8 @@ class RuntimeRouter:
                     if kind and kind in self._adapters:
                         return self._adapters[kind]
                     # If the mapped kind isn't registered, fall through.
+        except ModelResolutionError:
+            raise
         except Exception:
             pass  # Registry lookup is best-effort.
 

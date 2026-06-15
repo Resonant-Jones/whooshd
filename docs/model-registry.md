@@ -198,6 +198,23 @@ The `collect_advertisable_registered_models()` function scans the model-store
 and returns only registered models that pass compatibility validation with
 `advertisable=true`.
 
+The validated runtime registry also carries stable aliases for built-in
+runtime lanes. The Gemma E2B MLX text alias is:
+
+| Alias | Runtime model id | Engine | Format | Modalities |
+|-------|------------------|--------|--------|------------|
+| `gemma-4-e2b-mlx` | `mlx-community/gemma-4-e2b-it-4bit` | `mlx_lm` | `mlx` | `text` |
+
+When `WHOOSHD_MODEL_REGISTRY_PATH=configs/models.validated.yaml` is set and
+`WHOOSHD_MLX_MODEL=mlx-community/gemma-4-e2b-it-4bit`, `/v1/models` and
+`/api/tags` advertise `gemma-4-e2b-mlx` as the active MLX text model. Other
+runtime lanes such as `qwen2-vl-2b-mlx` and `qwen2.5-0.5b-gguf` remain visible.
+The inactive MLX text alias is not advertised as the active text runtime.
+
+Codexify should point `LOCAL_CHAT_MODEL` at `gemma-4-e2b-mlx` when using the
+stable public alias. The raw runtime id remains the value supplied to
+`WHOOSHD_MLX_MODEL`.
+
 ### How it works
 
 1. `WHOOSHD_MODEL_STORE_ROOT` is set to the model-store path

@@ -607,3 +607,46 @@ class TestCrossFamilyAliases:
             assert "qwen2.5-0.5b-gguf" in ids
             assert "llama-3.2-3b-mlx" in ids
             assert "qwen2-vl-2b-mlx" in ids
+
+    @pytest.mark.asyncio
+    async def test_gemma_configured_mlx_advertises_gemma_not_llama(self, monkeypatch):
+        """Gemma MLX config selects the Gemma alias as the active text model."""
+        from whooshd.registry import (
+            EngineType, ModelFormat, ModelModality,
+            ModelRegistryConfig, RegistryModelEntry,
+        )
+        monkeypatch.setenv("WHOOSHD_MLX_MODEL", "mlx-community/gemma-4-e2b-it-4bit")
+        registry = ModelRegistryConfig(models={
+            "qwen2.5-0.5b-gguf": RegistryModelEntry(
+                display_name="Qwen GGUF", engine=EngineType.LLAMA_CPP,
+                format=ModelFormat.GGUF, path="m.gguf", modalities=[ModelModality.TEXT]),
+            "llama-3.2-3b-mlx": RegistryModelEntry(
+                display_name="Llama MLX", engine=EngineType.MLX_LM,
+                format=ModelFormat.MLX, path="mlx-community/Llama-3.2-3B-Instruct-4bit",
+                modalities=[ModelModality.TEXT]),
+            "gemma-4-e2b-mlx": RegistryModelEntry(
+                display_name="Gemma 4 E2B MLX", engine=EngineType.MLX_LM,
+                format=ModelFormat.MLX, path="mlx-community/gemma-4-e2b-it-4bit",
+                modalities=[ModelModality.TEXT]),
+            "qwen2-vl-2b-mlx": RegistryModelEntry(
+                display_name="Qwen VL", engine=EngineType.MLX_VLM,
+                format=ModelFormat.MLX, path="v",
+                modalities=[ModelModality.TEXT, ModelModality.VISION]),
+        })
+        rt = get_runtime()
+        rt._registry = registry
+
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            models_resp = await client.get("/v1/models")
+            tags_resp = await client.get("/api/tags")
+
+        ids = {m["id"] for m in models_resp.json()["data"]}
+        names = {m["name"] for m in tags_resp.json()["models"]}
+
+        assert "gemma-4-e2b-mlx" in ids
+        assert "gemma-4-e2b-mlx" in names
+        assert "llama-3.2-3b-mlx" not in ids
+        assert "llama-3.2-3b-mlx" not in names
+        assert "qwen2.5-0.5b-gguf" in ids
+        assert "qwen2-vl-2b-mlx" in ids
