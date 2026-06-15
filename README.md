@@ -1,18 +1,36 @@
 # Whoosh'd
 
-**Standalone local inference gateway for MLX, MLX-VLM, and GGUF runtimes.**
+**Local-first inference broker for Apple Silicon systems.**
 
-Whoosh'd is a self-contained local inference orchestration layer that
-supervises and routes across multiple model runtimes behind a single
-OpenAI-compatible API.
+Whoosh'd coordinates local model backends such as MLX, llama.cpp, and
+related runtimes behind a unified routing surface, with support for
+memory-aware orchestration and Codexify-compatible workflows.
 
-- **No Ollama required.** Whoosh'd manages runtimes directly.
+Whoosh'd does **not** replace lower-level inference engines. It sits
+above them as a lightweight broker for local AI applications that need
+routing, task boundaries, model inventory, and model-aware execution.
+
 - **Use with Codexify** as a managed local sidecar, or
 - **Use standalone** with any OpenAI-compatible client, or
 - **Use with any LLM tool** that speaks `/v1/chat/completions`.
 
-Whoosh'd does not require Codexify, Ollama, or any specific client
-to run.
+## Core Compatibility
+
+| Surface | Format | Status |
+|---|---|---|
+| `POST /v1/chat/completions` | OpenAI-compatible (streaming + non-streaming) | ✅ |
+| `GET /v1/models` | OpenAI-compatible model inventory | ✅ |
+| `GET /api/tags` | Ollama-compatible model inventory | ✅ |
+| `GET /health` | Process liveness vs runtime state | ✅ |
+| `GET /ready` | Warmup / ready / degraded / offline distinction | ✅ |
+| Model registry + candidate inspection | Compatibility inspection | ✅ |
+| Streaming | SSE with `data:` chunks + `[DONE]` | ✅ |
+| Cancellation | Request-scoped cancellation endpoint | ✅ |
+| Concurrency | Admission control with structured 429 | ✅ |
+| Large context | Configurable max token limits | ✅ |
+| Telemetry | Off by default; local-first privacy posture | ✅ |
+| Apple Silicon / MLX orientation | Primary backend target | ✅ |
+| llama.cpp / GGUF compatibility | Subprocess-supervised adapter | ✅ |
 
 ## Architecture
 
@@ -55,6 +73,17 @@ python -m pytest -v
 # Smoke-test a running server
 python -m whooshd.compat.probe_server --base-url http://localhost:8000
 ```
+
+## Positioning
+
+Whoosh'd is **not** a replacement for Ollama, llama.cpp, or MLX. It is
+a broker that sits above those engines. Use Whoosh'd when you need:
+
+- **Routing** across multiple local runtimes from a single API surface
+- **Orchestration** with health, readiness, warmup, and lifecycle control
+- **Compatibility** with OpenAI and Codexify conventions without extra tooling
+- **Inventory** of available models with compatibility inspection
+- **Local-first defaults** with no telemetry, no cloud dependency
 
 ## Codexify Integration
 
