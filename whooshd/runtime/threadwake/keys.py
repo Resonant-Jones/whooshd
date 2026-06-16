@@ -12,6 +12,30 @@ from .types import PromptGraph, ThreadWakeScope
 THREADWAKE_KEY_VERSION = "threadwake-v0-phase-a"
 
 
+def _normalize_text(value: str) -> str:
+    """Normalize line endings without trimming meaningful whitespace."""
+    return value.replace("\r\n", "\n").replace("\r", "\n")
+
+
+def _normalize_value(value: Any) -> Any:
+    """Normalize nested JSON-like values for deterministic hashing."""
+    if isinstance(value, str):
+        return _normalize_text(value)
+    if isinstance(value, list):
+        return [_normalize_value(item) for item in value]
+    if isinstance(value, dict):
+        return {str(key): _normalize_value(value[key]) for key in sorted(value)}
+    return value
+
+
+def canonicalize_content(content: Any) -> str:
+    """Canonicalize message/tool content without dropping semantic data."""
+    normalized = _normalize_value(content)
+    if isinstance(normalized, str):
+        return normalized
+    return canonical_json(normalized)
+
+
 def canonical_json(value: Any) -> str:
     """Return stable JSON for hashing.
 
