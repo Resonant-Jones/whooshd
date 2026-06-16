@@ -54,6 +54,9 @@ class ThreadWakeMetrics:
         "threadwake_cache_misses_total": 0,
         "threadwake_cache_evictions_total": 0,
         "threadwake_prefix_tokens_matched_total": 0,
+        "threadwake_kv_events_total": 0,
+        "threadwake_kv_errors_total": 0,
+        "threadwake_kv_active_handles_estimate": 0,
     })
 
     # Labeled counters: (metric_name, label_dict) → count

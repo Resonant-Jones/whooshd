@@ -12,6 +12,7 @@ from .index import (
     ThreadWakeStats,
 )
 from .keys import build_threadwake_cache_key
+from .kv_lifecycle import KVEvent, KVLifecycleObserver, KVLifecycleStats
 from .manager import ThreadWakeManager
 from .mlx_tokenizer import MLXInProcessTokenizerAdapter
 from .metrics import ThreadWakeMetrics, get_threadwake_metrics
@@ -55,7 +56,10 @@ __all__ = [
     "ForwardingTokenizerAdapterStub",
     "KVCapability",
     "KVCapableBackend",
+    "KVEvent",
     "KVHandle",
+    "KVLifecycleObserver",
+    "KVLifecycleStats",
     "LlamaCppTokenizerAdapterStub",
     "MLXInProcessTokenizerAdapter",
     "MlxLmServerTokenizerAdapterStub",

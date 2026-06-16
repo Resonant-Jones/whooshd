@@ -28,6 +28,7 @@ from .index import EntryStatus, ScopeContext, ThreadWakeIndex
 from .keys import build_threadwake_cache_key
 from .metrics import ThreadWakeMetrics, get_threadwake_metrics
 from .policy import evaluate_threadwake_policy
+from .kv_lifecycle import KVEvent, KVLifecycleObserver
 from .tokenization import (
     BackendTokenizerAdapterRegistry,
     NoOpTokenizerAdapter,
@@ -103,11 +104,13 @@ class ThreadWakeManager:
         metrics: ThreadWakeMetrics | None = None,
         backend_registry: BackendKVAdapterRegistry | None = None,
         tokenizer_registry: BackendTokenizerAdapterRegistry | None = None,
+        kv_observer: KVLifecycleObserver | None = None,
         index: ThreadWakeIndex | None = None,
     ) -> None:
         self.metrics = metrics or get_threadwake_metrics()
         self._backend_registry = backend_registry or BackendKVAdapterRegistry()
         self._tokenizer_registry = tokenizer_registry or BackendTokenizerAdapterRegistry()
+        self._kv_observer = kv_observer or KVLifecycleObserver(enabled=False)
         self._index = index or self._build_default_index()
 
     @staticmethod
@@ -208,6 +211,7 @@ class ThreadWakeManager:
 
         capability = self._backend_registry.capability(backend)
         observation.backend_kv_capability = capability.value
+        self._kv_observer.record_capability(backend=backend, capability=capability.value)
 
         if capability.value == "unsupported":
             observation.can_reuse_kv = False
@@ -414,6 +418,14 @@ class ThreadWakeManager:
             cloned = kv_adapter.clone_kv(kv_handle)
             dynamic_tokens = [str(t) for t in tokenized.dynamic_tail_token_ids]
             output = list(kv_adapter.generate_from_kv(cloned, dynamic_tokens, gen_params))
+            self._kv_observer.record_cloned(
+                backend=index_entry.backend, model_id=index_entry.model_id,
+                kv_handle_id=index_entry.kv_handle_id,
+            )
+            self._kv_observer.record_reused(
+                backend=index_entry.backend, model_id=index_entry.model_id,
+                token_count=len(dynamic_tokens),
+            )
             observation.cache_hit = True
             observation.estimated_prefill_reuse_tokens = graph.stable_prefix_tokens
             self.metrics.record(observation)
@@ -447,6 +459,11 @@ class ThreadWakeManager:
                     scope_context=scope_context, kv_handle_id=kv_handle.id,
                 )
                 self._index.mark_ready(cache_key)
+                self._kv_observer.record_created(
+                    backend=backend, model_id=graph.model_id or "",
+                    token_count=len(stable_tokens), kv_handle_id=kv_handle.id,
+                    cache_key=cache_key,
+                )
 
                 # ── Store thread tip for session continuation ──────────
                 thread_id = scope_context.thread_id
@@ -577,6 +594,7 @@ class ThreadWakeManager:
         total_hits = stats.hit_count
         total_misses = stats.miss_count
 
+        kv_stats = self._kv_observer.stats()
         return {
             "enabled": get_threadwake_enabled(),
             "mode": mode,
@@ -592,6 +610,17 @@ class ThreadWakeManager:
             "total_evictions": stats.evictions,
             "global_allowed": stats.global_allowed,
             "backend_capabilities": self._backend_capability_summary(),
+            "kv_observability": {
+                "enabled": self._kv_observer.enabled,
+                "events_total": kv_stats.events_total,
+                "events_by_type": kv_stats.events_by_type,
+                "active_handles_estimate": kv_stats.active_handles_estimate,
+                "created_total": kv_stats.created_total,
+                "cloned_total": kv_stats.cloned_total,
+                "reused_total": kv_stats.reused_total,
+                "released_total": kv_stats.released_total,
+                "errors_total": kv_stats.errors_total,
+            },
             "entries_by_status": stats.entries_by_status,
             "entries_by_scope": stats.entries_by_scope,
         }
