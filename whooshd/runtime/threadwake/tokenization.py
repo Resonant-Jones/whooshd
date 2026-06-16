@@ -225,12 +225,12 @@ class MLXTokenizerAdapterStub:
     """MLX in-process backend stub.
 
     MLX has a real tokenizer (via ``mlx_lm.load``) and
-    ``apply_chat_template`` for prompt rendering.  This stub
-    reports ``estimates_only`` until exact segment-span mapping
-    and chat-template fidelity are proven in tests.
+    ``apply_chat_template`` for prompt rendering.
 
-    Phase M3 candidate — the adapter with the clearest path to
-    real ``token_ids_with_spans`` support.
+    A real ``MLXInProcessTokenizerAdapter`` exists in
+    ``mlx_tokenizer.py`` with ``token_ids`` capability.
+    This stub reports ``estimates_only`` and is the default
+    when no tokenizer object is wired.
     """
 
     def supports_tokenization(self) -> ThreadWakeTokenizerCapability:
