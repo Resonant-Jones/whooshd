@@ -490,13 +490,29 @@ class MlxLmServerAdapter:
             async with httpx.AsyncClient(timeout=timeout) as client:
                 resp = await client.get(f"{url}/v1/models")
                 if resp.status_code == 200:
+                    models_data = resp.json()
+                    # Extract model IDs from upstream inventory.
+                    upstream_models: list[str] = []
+                    if isinstance(models_data, dict):
+                        data_list = models_data.get("data", [])
+                        for entry in data_list:
+                            if isinstance(entry, dict) and "id" in entry:
+                                upstream_models.append(entry["id"])
+                    # Check if the configured model appears in upstream inventory.
+                    configured_model = self._effective_model_path
+                    configured_available = (
+                        configured_model in upstream_models
+                        if (configured_model and upstream_models) else None
+                    )
                     return _MlxLmServerHealthStatus(
                         reachable=True,
                         runner_status="ready",
                         model_lifecycle="ready",
                         detail="mlx_lm.server /v1/models returned 200.",
                         raw_status=resp.status_code,
-                        models_data=resp.json(),
+                        models_data=models_data,
+                        upstream_models=upstream_models,
+                        configured_model_available=configured_available,
                     )
                 # Non-200 — server is reachable but not fully ready.
                 return _MlxLmServerHealthStatus(
@@ -587,7 +603,10 @@ class MlxLmServerAdapter:
                 enabled=False,
                 state=RuntimeHealthState.OFFLINE,
                 active_model=None,
+                configured_model=self._effective_model_path,
                 detail="MLX-LM Server runtime is disabled.",
+                upstream_reachable=False,
+                readiness_reason="runtime_disabled",
             )
 
         status = await self.check_health()
@@ -601,12 +620,32 @@ class MlxLmServerAdapter:
         }
         state = state_map.get(status.model_lifecycle, RuntimeHealthState.OFFLINE)
 
+        # Derive readiness reason.
+        readiness_reason: str | None = None
+        if status.reachable and status.configured_model_available:
+            readiness_reason = "configured_model_advertised"
+        elif status.reachable and status.configured_model_available is False:
+            readiness_reason = "configured_model_not_advertised"
+        elif status.reachable:
+            readiness_reason = "upstream_reachable_model_unknown"
+        elif status.model_lifecycle == "warming":
+            readiness_reason = "model_warming"
+        elif status.model_lifecycle == "failed":
+            readiness_reason = "upstream_health_probe_failed"
+        else:
+            readiness_reason = "upstream_unreachable"
+
         return RuntimeHealth(
             kind=self.kind,
             enabled=True,
             state=state,
             active_model=self._effective_model_path if self.is_loaded() else None,
+            configured_model=self._effective_model_path,
             detail=status.detail,
+            configured_model_available=status.configured_model_available,
+            upstream_reachable=status.reachable,
+            upstream_models=status.upstream_models if status.upstream_models else None,
+            readiness_reason=readiness_reason,
         )
 
     async def list_models(self) -> list[RuntimeModel]:
@@ -839,6 +878,8 @@ class _MlxLmServerHealthStatus:
         detail: str,
         raw_status: int | None = None,
         models_data: dict | None = None,
+        upstream_models: list[str] | None = None,
+        configured_model_available: bool | None = None,
     ) -> None:
         self.reachable = reachable
         self.runner_status = runner_status
@@ -846,6 +887,8 @@ class _MlxLmServerHealthStatus:
         self.detail = detail
         self.raw_status = raw_status
         self.models_data = models_data
+        self.upstream_models = upstream_models or []
+        self.configured_model_available = configured_model_available
 
     def __repr__(self) -> str:
         return (

@@ -525,6 +525,10 @@ class RuntimeHealth(BaseModel):
     active_model: Optional[str] = Field(None, description="Currently loaded/active model ID")
     configured_model: Optional[str] = Field(None, description="Model path from adapter configuration")
     detail: Optional[str] = Field(None, description="Human-readable state detail")
+    configured_model_available: Optional[bool] = Field(None, description="Whether the configured model appears in upstream inventory")
+    upstream_reachable: Optional[bool] = Field(None, description="Whether the upstream server responded to health probe")
+    upstream_models: Optional[list[str]] = Field(None, description="Model IDs reported by the upstream /v1/models endpoint")
+    readiness_reason: Optional[str] = Field(None, description="Why the runtime is classified as its current state")
 
 
 class MultiRuntimeHealthResponse(BaseModel):
