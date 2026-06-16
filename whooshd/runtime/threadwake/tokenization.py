@@ -218,6 +218,131 @@ class FakeTokenizerAdapter:
         )
 
 
+# ── Backend-family stubs (safe, no token IDs) ─────────────────────────────
+
+
+class MLXTokenizerAdapterStub:
+    """MLX in-process backend stub.
+
+    MLX has a real tokenizer (via ``mlx_lm.load``) and
+    ``apply_chat_template`` for prompt rendering.  This stub
+    reports ``estimates_only`` until exact segment-span mapping
+    and chat-template fidelity are proven in tests.
+
+    Phase M3 candidate — the adapter with the clearest path to
+    real ``token_ids_with_spans`` support.
+    """
+
+    def supports_tokenization(self) -> ThreadWakeTokenizerCapability:
+        return ThreadWakeTokenizerCapability.ESTIMATES_ONLY
+
+    def tokenize_prompt(
+        self, graph: Any, request: Any, *, model_id: str,
+    ) -> TokenizedPrompt:
+        return TokenizedPrompt(
+            model_id=model_id,
+            real_tokenization=False,
+            unavailable_reason="mlx_real_tokenization_not_implemented",
+        )
+
+
+class LlamaCppTokenizerAdapterStub:
+    """llama.cpp / GGUF backend stub.
+
+    llama.cpp is accessed via HTTP and has no local tokenizer.
+    The server may expose a tokenize endpoint, but it is not
+    currently consumed by Whoosh'd.  Chat template rendering
+    happens server-side and is opaque to the adapter.
+
+    Status: BLOCKED until prompt rendering and tokenization
+    can be unified on the Whoosh'd side.
+    """
+
+    def supports_tokenization(self) -> ThreadWakeTokenizerCapability:
+        return ThreadWakeTokenizerCapability.UNSUPPORTED
+
+    def tokenize_prompt(
+        self, graph: Any, request: Any, *, model_id: str,
+    ) -> TokenizedPrompt:
+        return TokenizedPrompt(
+            model_id=model_id,
+            real_tokenization=False,
+            unavailable_reason="llama_cpp_no_local_tokenizer",
+        )
+
+
+class MlxLmServerTokenizerAdapterStub:
+    """MLX-LM Server backend stub.
+
+    Managed as a subprocess.  Prompt rendering and tokenization
+    happen inside the subprocess and are opaque to Whoosh'd.
+    The server may expose a tokenize endpoint, but it is not
+    currently consumed.
+
+    Status: BLOCKED until prompt rendering and tokenization
+    can be unified.
+    """
+
+    def supports_tokenization(self) -> ThreadWakeTokenizerCapability:
+        return ThreadWakeTokenizerCapability.UNSUPPORTED
+
+    def tokenize_prompt(
+        self, graph: Any, request: Any, *, model_id: str,
+    ) -> TokenizedPrompt:
+        return TokenizedPrompt(
+            model_id=model_id,
+            real_tokenization=False,
+            unavailable_reason="mlx_lm_server_no_local_tokenizer",
+        )
+
+
+class MlxVlmTokenizerAdapterStub:
+    """MLX-VLM vision backend stub.
+
+    HTTP-only, no local tokenizer.  Multimodal rendering is
+    even more complex — image tokens must be interleaved with
+    text tokens.
+
+    Status: BLOCKED.  Do not attempt until MLX text path is
+    proven working.
+    """
+
+    def supports_tokenization(self) -> ThreadWakeTokenizerCapability:
+        return ThreadWakeTokenizerCapability.UNSUPPORTED
+
+    def tokenize_prompt(
+        self, graph: Any, request: Any, *, model_id: str,
+    ) -> TokenizedPrompt:
+        return TokenizedPrompt(
+            model_id=model_id,
+            real_tokenization=False,
+            unavailable_reason="mlx_vlm_no_local_tokenizer",
+        )
+
+
+class ForwardingTokenizerAdapterStub:
+    """OpenAI-compatible forwarding stub.
+
+    Requests are forwarded to an external server.  Tokenization
+    is opaque.  ThreadWake cannot trust that the forwarded
+    server uses the same prompt rendering or tokenizer.
+
+    Status: NOT_APPLICABLE.
+    """
+
+    def supports_tokenization(self) -> ThreadWakeTokenizerCapability:
+        return ThreadWakeTokenizerCapability.UNSUPPORTED
+
+    def tokenize_prompt(
+        self, graph: Any, request: Any, *, model_id: str,
+    ) -> TokenizedPrompt:
+        return TokenizedPrompt(
+            model_id=model_id,
+            real_tokenization=False,
+            unavailable_reason="forwarding_no_tokenizer_access",
+        )
+
+
 # ── Registry ────────────────────────────────────────────────────────────────
 
 
