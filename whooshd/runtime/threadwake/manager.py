@@ -74,6 +74,15 @@ def _extract_all_tokens(graph: PromptGraph) -> list[str]:
     return tokens
 
 
+def _extract_dynamic_tail_tokens_from_segments(segments) -> list[str]:
+    """Extract synthetic token representation from a list of segments."""
+    tokens: list[str] = []
+    for segment in segments:
+        for i in range(segment.token_count):
+            tokens.append(f"{segment.name}:{i}")
+    return tokens
+
+
 class ThreadWakeManager:
     """ThreadWake facade for Phase D.
 
@@ -153,6 +162,7 @@ class ThreadWakeManager:
         chat_template_hash: str | None = None,
         scope: str = "thread",
     ) -> PromptGraph:
+        codexify_segments = getattr(request, "threadwake_segments", None)
         return compile_prompt_graph(
             messages=list(getattr(request, "messages", [])),
             model_id=getattr(request, "model", None),
@@ -162,6 +172,8 @@ class ThreadWakeManager:
             tokenizer_hash=tokenizer_hash,
             chat_template_hash=chat_template_hash,
             scope=scope,  # type: ignore[arg-type]
+            codexify_segments=codexify_segments,
+            allow_global=self._index.allow_global if hasattr(self, '_index') else False,
         )
 
     def evaluate_policy(
@@ -194,8 +206,8 @@ class ThreadWakeManager:
             observation.kv_reuse_reason = (
                 f"backend_capable_but_ineligible: {observation.reason}"
             )
-        elif observation.mode == ThreadWakeMode.EPHEMERAL:
-            # Ephemeral mode with resumable-or-better backend → KV reuse active
+        elif observation.mode in (ThreadWakeMode.EPHEMERAL, ThreadWakeMode.SESSION):
+            # Ephemeral/session mode with resumable-or-better backend → KV reuse active
             observation.can_reuse_kv = True
             observation.kv_reuse_reason = None
         else:
@@ -301,6 +313,19 @@ class ThreadWakeManager:
             self.metrics.record(observation)
             return self._full_generation_result(generate_fn, request, gen_params, observation)
 
+        # ── Session continuation: try thread-tip monotonic append ───────
+        thread_id = scope_context.thread_id
+        if thread_id and graph.continuation_candidate:
+            session_result = self._try_session_continuation(
+                graph=graph, thread_id=thread_id, scope_context=scope_context,
+                kv_adapter=kv_adapter, backend=backend,
+                observation=observation, generate_fn=generate_fn,
+                request=request, gen_params=gen_params,
+            )
+            if session_result is not None:
+                return session_result
+
+        # ── Ephemeral exact-prefix hit ──────────────────────────────────
         index_entry = self._index.get(cache_key, scope_context)
         if index_entry is not None and index_entry.status == EntryStatus.READY:
             return self._ephemeral_hit(
@@ -357,9 +382,99 @@ class ThreadWakeManager:
                     scope_context=scope_context, kv_handle_id=kv_handle.id,
                 )
                 self._index.mark_ready(cache_key)
+
+                # ── Store thread tip for session continuation ──────────
+                thread_id = scope_context.thread_id
+                if thread_id and graph.continuation_candidate:
+                    self._index.store_thread_tip(
+                        thread_id=thread_id,
+                        model_id=graph.model_id or "",
+                        backend=backend,
+                        chain_hash=graph.full_prefix_chain_hash,
+                        ordered_segment_hashes=graph.ordered_segment_hashes,
+                        kv_handle_id=kv_handle.id,
+                    )
         except Exception as exc:
             logger.warning("ThreadWake ephemeral MISS store failed: %s", exc)
         return result
+
+    def _try_session_continuation(
+        self, *, graph, thread_id, scope_context, kv_adapter, backend,
+        observation, generate_fn, request, gen_params,
+    ) -> EphemeralResult | None:
+        """Attempt session continuation via thread-tip monotonic append.
+
+        Returns an EphemeralResult on success, or None if continuation
+        is not possible (caller should fall through to ephemeral hit/miss).
+        """
+        model_id = graph.model_id or ""
+        tip = self._index.get_latest_for_thread(thread_id, model_id, backend)
+        if tip is None:
+            # No previous tip — store one after generation
+            return None
+
+        if not self._index.validate_monotonic_append(
+            tip.ordered_segment_hashes, graph.ordered_segment_hashes,
+        ):
+            # Non-monotonic: history was edited or truncated
+            observation.kv_reuse_reason = "non_monotonic_or_changed_prefix"
+            # Clear stale tip so next request can start fresh
+            self._index.clear_thread_tip(thread_id, model_id, backend)
+            return None
+
+        # Valid continuation: compute appended segments only
+        prev_count = tip.segment_count
+        appended_segments = graph.segments[prev_count:]
+        appended_tokens = sum(seg.token_count for seg in appended_segments)
+
+        logger.debug(
+            "ThreadWake session CONTINUATION thread=%s prev_segments=%d new_segments=%d appended_tokens=%d",
+            thread_id[:8] if len(thread_id) > 8 else thread_id,
+            prev_count, len(appended_segments), appended_tokens,
+        )
+
+        try:
+            # Build a KV handle from the previous tip
+            opaque = {"tip_key": tip.chain_hash, "handle_id": tip.kv_handle_id}
+            kv_handle = KVHandle(
+                backend=backend, model_id=model_id,
+                token_count=tip.segment_count,
+                opaque_ref=opaque,
+            )
+            cloned = kv_adapter.clone_kv(kv_handle)
+            # Generate from appended dynamic tokens only
+            append_token_list = _extract_dynamic_tail_tokens_from_segments(appended_segments)
+            output = list(kv_adapter.generate_from_kv(cloned, append_token_list, gen_params))
+
+            observation.cache_hit = True
+            observation.estimated_prefill_reuse_tokens = sum(
+                seg.token_count for seg in graph.segments[:prev_count]
+            )
+            self.metrics.record(observation)
+
+            # Update the thread tip with new chain hash
+            self._index.store_thread_tip(
+                thread_id=thread_id, model_id=model_id, backend=backend,
+                chain_hash=graph.full_prefix_chain_hash,
+                ordered_segment_hashes=graph.ordered_segment_hashes,
+                kv_handle_id=tip.kv_handle_id,
+            )
+
+            return EphemeralResult(
+                output_tokens=output, cache_hit=True,
+                matched_tokens=observation.estimated_prefill_reuse_tokens,
+                observation=observation,
+                metadata=ThreadWakeMetadata(
+                    cache_hit=True,
+                    matched_tokens=observation.estimated_prefill_reuse_tokens,
+                    mode="session", scope=observation.cache_scope,
+                    backend_kv_capability=observation.backend_kv_capability,
+                ),
+            )
+        except Exception as exc:
+            logger.warning("ThreadWake session continuation failed: %s — falling back", exc)
+            self._index.clear_thread_tip(thread_id, model_id, backend)
+            return None  # Fall through to ephemeral hit/miss
 
     def _full_generation_result(self, generate_fn, request, gen_params, observation) -> EphemeralResult:
         output = generate_fn(request, gen_params)

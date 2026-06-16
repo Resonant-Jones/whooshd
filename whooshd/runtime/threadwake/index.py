@@ -145,6 +145,29 @@ class ThreadWakeStats:
 # ── Index ────────────────────────────────────────────────────────────────────
 
 
+# ── Thread tip (session continuation) ─────────────────────────────────────
+
+
+@dataclass
+class ThreadTip:
+    """A pointer to the latest KV handle for a thread session.
+
+    Stores the chain hash and ordered segment hashes so subsequent
+    requests can validate monotonic append.  ``thread_id_hash`` is
+    SHA-256 of the raw thread_id for privacy.
+    """
+
+    thread_id_hash: str
+    model_id: str
+    backend: str
+    chain_hash: str
+    segment_count: int
+    ordered_segment_hashes: list[str] = field(default_factory=list)
+    kv_handle_id: str | None = None
+    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+
+
 class ThreadWakeIndex:
     """In-memory LRU cache metadata index.
 
@@ -176,6 +199,9 @@ class ThreadWakeIndex:
         self._hit_count: int = 0
         self._miss_count: int = 0
         self._evictions: int = 0
+
+        # Session tips: maps "{thread_id_hash}:{model_id}:{backend}" → ThreadTip
+        self._thread_tips: dict[str, ThreadTip] = {}
 
     # ── Public API ─────────────────────────────────────────────────────────
 
@@ -369,6 +395,85 @@ class ThreadWakeIndex:
             ]
             entries.sort(key=lambda e: e.last_used_at, reverse=True)
             return [e.public_snapshot() for e in entries[:limit]]
+
+    # ── Session continuation ────────────────────────────────────────────
+
+    def _tip_key(self, thread_id: str, model_id: str, backend: str) -> str:
+        """Build a compound key for thread tip lookup."""
+        tid_hash = sha256_hex(thread_id)
+        return f"{tid_hash}:{model_id}:{backend}"
+
+    def get_latest_for_thread(
+        self, thread_id: str, model_id: str, backend: str,
+    ) -> ThreadTip | None:
+        """Return the latest thread tip for a session, or None."""
+        with self._lock:
+            key = self._tip_key(thread_id, model_id, backend)
+            return self._thread_tips.get(key)
+
+    def store_thread_tip(
+        self,
+        thread_id: str,
+        model_id: str,
+        backend: str,
+        chain_hash: str,
+        ordered_segment_hashes: list[str],
+        kv_handle_id: str | None = None,
+    ) -> ThreadTip:
+        """Store or update the thread tip for a session."""
+        with self._lock:
+            key = self._tip_key(thread_id, model_id, backend)
+            existing = self._thread_tips.get(key)
+            if existing is not None:
+                existing.chain_hash = chain_hash
+                existing.ordered_segment_hashes = list(ordered_segment_hashes)
+                existing.segment_count = len(ordered_segment_hashes)
+                existing.kv_handle_id = kv_handle_id
+                existing.updated_at = datetime.now(timezone.utc)
+                return existing
+
+            tip = ThreadTip(
+                thread_id_hash=sha256_hex(thread_id),
+                model_id=model_id,
+                backend=backend,
+                chain_hash=chain_hash,
+                segment_count=len(ordered_segment_hashes),
+                ordered_segment_hashes=list(ordered_segment_hashes),
+                kv_handle_id=kv_handle_id,
+            )
+            self._thread_tips[key] = tip
+            return tip
+
+    def validate_monotonic_append(
+        self,
+        previous_hashes: list[str],
+        new_ordered_hashes: list[str],
+    ) -> bool:
+        """Return True if new hashes are a strict monotonic append of previous.
+
+        All previous segment hashes must appear in the same order at the
+        start of new_ordered_hashes.  Any mismatch (edit, deletion, reorder)
+        returns False.
+        """
+        prev_count = len(previous_hashes)
+        if prev_count == 0:
+            return True  # No previous state — always valid
+        if len(new_ordered_hashes) < prev_count:
+            return False  # Truncation: cannot have fewer segments
+        return new_ordered_hashes[:prev_count] == previous_hashes
+
+    def clear_thread_tip(
+        self, thread_id: str, model_id: str, backend: str,
+    ) -> None:
+        """Remove the thread tip for a session (e.g. on failure)."""
+        with self._lock:
+            key = self._tip_key(thread_id, model_id, backend)
+            self._thread_tips.pop(key, None)
+
+    def thread_tip_count(self) -> int:
+        """Return the number of active thread tips."""
+        with self._lock:
+            return len(self._thread_tips)
 
     # ── Internal ────────────────────────────────────────────────────────────
 

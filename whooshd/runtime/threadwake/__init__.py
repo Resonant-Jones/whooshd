@@ -6,6 +6,7 @@ from .handles import KVCapability, KVHandle
 from .index import (
     EntryStatus,
     ScopeContext,
+    ThreadTip,
     ThreadWakeIndex,
     ThreadWakeIndexEntry,
     ThreadWakeStats,
@@ -15,6 +16,8 @@ from .manager import ThreadWakeManager
 from .metrics import ThreadWakeMetrics, get_threadwake_metrics
 from .policy import evaluate_threadwake_policy
 from .types import (
+    CodexifySegmentMeta,
+    CodexifySegmentMetadata,
     EphemeralResult,
     PromptGraph,
     PromptSegment,
@@ -26,6 +29,8 @@ from .types import (
 
 __all__ = [
     "BackendKVAdapterRegistry",
+    "CodexifySegmentMeta",
+    "CodexifySegmentMetadata",
     "EntryStatus",
     "EphemeralResult",
     "FakeKVBackend",
@@ -36,6 +41,7 @@ __all__ = [
     "PromptGraph",
     "PromptSegment",
     "ScopeContext",
+    "ThreadTip",
     "ThreadWakeIndex",
     "ThreadWakeIndexEntry",
     "ThreadWakeManager",

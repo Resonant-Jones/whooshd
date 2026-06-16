@@ -23,6 +23,45 @@ class ThreadWakeMode(str, Enum):
 
 ThreadWakeScope = Literal["request", "thread", "project", "user", "global"]
 
+# ── Codexify segment metadata (Phase F) ──────────────────────────────────
+
+CodexifySegmentType = Literal[
+    "system", "persona", "tools", "project", "retrieval",
+    "thread", "user", "tool_output", "unknown",
+]
+
+CodexifyStability = Literal["stable", "semi_stable", "dynamic"]
+
+
+class CodexifySegmentMeta(BaseModel):
+    """Optional Codexify-provided prompt segment metadata.
+
+    Enables Codexify to explicitly describe cacheable layers without
+    relying on message-role inference.  All fields are validated
+    against actual message content before use.
+    """
+
+    name: str
+    message_index: int = Field(0, ge=0)
+    content_path: Optional[str] = None
+    segment_type: CodexifySegmentType = "unknown"
+    stability: Optional[CodexifyStability] = None
+    scope: ThreadWakeScope = "thread"
+    content_hash: Optional[str] = None
+    cacheable: Optional[bool] = None
+
+
+class CodexifySegmentMetadata(BaseModel):
+    """Optional wrapper for Codexify-provided ``threadwake_segments``.
+
+    Sent as a top-level field in the chat completion request body.
+    """
+
+    segments: list[CodexifySegmentMeta] = Field(
+        default_factory=list,
+        description="Codexify-provided segment metadata for cacheable layers",
+    )
+
 
 class PromptSegment(BaseModel):
     """A hashed prompt segment with no raw prompt content."""
@@ -50,6 +89,12 @@ class PromptGraph(BaseModel):
     full_prompt_hash: str
     stable_prefix_tokens: int = Field(0, ge=0)
     dynamic_tokens: int = Field(0, ge=0)
+    # ── Session continuation (Phase E) ──────────────────────────────
+    ordered_segment_hashes: list[str] = Field(default_factory=list)
+    full_prefix_chain_hash: str = ""
+    previous_chain_hash: Optional[str] = None
+    latest_append_hash: Optional[str] = None
+    continuation_candidate: bool = False
 
 
 class ThreadWakeRequestConfig(BaseModel):

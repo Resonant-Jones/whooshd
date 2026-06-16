@@ -54,7 +54,7 @@ def evaluate_threadwake_policy(
         return ThreadWakeObservation(**base, eligible=False, reason="model_id_missing")
     if not graph.backend:
         return ThreadWakeObservation(**base, eligible=False, reason="backend_missing")
-    if mode not in (ThreadWakeMode.OBSERVE, ThreadWakeMode.EPHEMERAL):
+    if mode not in (ThreadWakeMode.OBSERVE, ThreadWakeMode.EPHEMERAL, ThreadWakeMode.SESSION):
         return ThreadWakeObservation(
             **base,
             eligible=False,

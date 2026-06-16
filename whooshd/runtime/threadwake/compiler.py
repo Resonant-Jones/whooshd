@@ -5,39 +5,13 @@ from __future__ import annotations
 import re
 from typing import Any, Iterable
 
-from .keys import canonical_json, hash_json, sha256_hex
+from .keys import canonical_json, canonicalize_content, hash_json, sha256_hex
+from .metadata import parse_codexify_segments, validate_and_merge_segments
 from .types import PromptGraph, PromptSegment, ThreadWakeScope
 
 
 DEFAULT_CHAT_TEMPLATE_HASH = sha256_hex("openai-chat-completions-v1")
 _TOKEN_RE = re.compile(r"\S+")
-
-
-def _normalize_text(value: str) -> str:
-    """Normalize line endings without trimming meaningful whitespace."""
-
-    return value.replace("\r\n", "\n").replace("\r", "\n")
-
-
-def _normalize_value(value: Any) -> Any:
-    """Normalize nested JSON-like values for deterministic hashing."""
-
-    if isinstance(value, str):
-        return _normalize_text(value)
-    if isinstance(value, list):
-        return [_normalize_value(item) for item in value]
-    if isinstance(value, dict):
-        return {str(key): _normalize_value(value[key]) for key in sorted(value)}
-    return value
-
-
-def canonicalize_content(content: Any) -> str:
-    """Canonicalize message/tool content without dropping semantic data."""
-
-    normalized = _normalize_value(content)
-    if isinstance(normalized, str):
-        return normalized
-    return canonical_json(normalized)
 
 
 def contains_multimodal_content(content: Any) -> bool:
@@ -142,8 +116,14 @@ def compile_prompt_graph(
     tokenizer_hash: str | None = None,
     chat_template_hash: str | None = None,
     scope: ThreadWakeScope = "thread",
+    codexify_segments: Any = None,
+    allow_global: bool = False,
 ) -> PromptGraph:
-    """Compile chat request inputs into a deterministic prompt graph."""
+    """Compile chat request inputs into a deterministic prompt graph.
+
+    If ``codexify_segments`` is provided, it is validated against the
+    actual message content and merged into the inferred segments.
+    """
 
     segments: list[PromptSegment] = []
 
@@ -195,6 +175,18 @@ def compile_prompt_graph(
             )
         )
 
+    # ── Apply Codexify segment metadata (Phase F) ──────────────────────
+    codexify_meta = parse_codexify_segments(codexify_segments)
+    if codexify_meta is not None and codexify_meta.segments:
+        segments, _errors = validate_and_merge_segments(
+            inferred_segments=segments,
+            codexify_metadata=codexify_meta,
+            messages=messages,
+            default_scope=scope,
+            allow_global=allow_global,
+        )
+        # Errors are logged but don't block — invalid entries fall back to inferred
+
     stable_prefix_tokens = 0
     stable_payload: list[dict[str, Any]] = []
     prefix_open = True
@@ -209,6 +201,14 @@ def compile_prompt_graph(
     full_payload = [_segment_hash_payload(segment) for segment in segments]
     total_tokens = sum(segment.token_count for segment in segments)
 
+    # ── Session continuation (Phase E) ──────────────────────────────────
+    ordered_hashes = [seg.content_hash for seg in segments]
+    chain = ""
+    for h in ordered_hashes:
+        chain = sha256_hex(chain + h)
+    chain_hash = chain
+    continuation_candidate = len(segments) > 0
+
     return PromptGraph(
         model_id=model_id,
         backend=backend,
@@ -219,4 +219,7 @@ def compile_prompt_graph(
         full_prompt_hash=hash_json(full_payload),
         stable_prefix_tokens=stable_prefix_tokens,
         dynamic_tokens=max(0, total_tokens - stable_prefix_tokens),
+        ordered_segment_hashes=ordered_hashes,
+        full_prefix_chain_hash=chain_hash,
+        continuation_candidate=continuation_candidate,
     )
