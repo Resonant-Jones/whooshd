@@ -127,6 +127,12 @@ class ThreadWakeObservation(BaseModel):
     backend_kv_capability: Optional[str] = None
     can_reuse_kv: bool = False
     kv_reuse_reason: Optional[str] = None
+    # ── Tokenization (Phase M1) ───────────────────────────────────────
+    tokenizer_capability: Optional[str] = None
+    real_tokenization_available: bool = False
+    tokenization_reason: Optional[str] = None
+    stable_prefix_token_count_real: Optional[int] = None
+    dynamic_tail_token_count_real: Optional[int] = None
 
 
 class ThreadWakeMetadata(BaseModel):

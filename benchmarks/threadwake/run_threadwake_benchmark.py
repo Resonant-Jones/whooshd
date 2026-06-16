@@ -39,6 +39,7 @@ from benchmarks.threadwake.synthetic_prompts import (
 from whooshd.contracts import ChatCompletionRequest
 from whooshd.runtime.threadwake.backend import BackendKVAdapterRegistry, FakeKVBackend
 from whooshd.runtime.threadwake.index import ThreadWakeIndex
+from whooshd.runtime.threadwake.tokenization import BackendTokenizerAdapterRegistry, FakeTokenizerAdapter
 from whooshd.runtime.threadwake.manager import ThreadWakeManager
 from whooshd.runtime.threadwake.metrics import ThreadWakeMetrics
 from whooshd.runtime.threadwake.types import ThreadWakeMode
@@ -156,11 +157,15 @@ def run_benchmarks(
     # Build manager
     if mode == "ephemeral":
         fake_kv = FakeKVBackend()
+        fake_tok = FakeTokenizerAdapter()
         registry = BackendKVAdapterRegistry()
+        tok_registry = BackendTokenizerAdapterRegistry()
         registry.register("fake", fake_kv)
+        tok_registry.register("fake", fake_tok)
         mgr = ThreadWakeManager(
             metrics=ThreadWakeMetrics(),
             backend_registry=registry,
+            tokenizer_registry=tok_registry,
             index=ThreadWakeIndex(max_entries=50),
         )
     else:

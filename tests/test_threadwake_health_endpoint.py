@@ -7,6 +7,7 @@ import json
 from whooshd.contracts import ChatCompletionRequest
 from whooshd.runtime.threadwake.backend import BackendKVAdapterRegistry, FakeKVBackend
 from whooshd.runtime.threadwake.index import ScopeContext, ThreadWakeIndex
+from whooshd.runtime.threadwake.tokenization import BackendTokenizerAdapterRegistry, FakeTokenizerAdapter
 from whooshd.runtime.threadwake.manager import ThreadWakeManager
 from whooshd.runtime.threadwake.metrics import ThreadWakeMetrics
 
@@ -86,12 +87,16 @@ class TestHealthStatus:
 
     def test_status_ready_when_ready_entries_present(self):
         fake_kv = FakeKVBackend()
+        fake_tok = FakeTokenizerAdapter()
         registry = BackendKVAdapterRegistry()
+        tok_registry = BackendTokenizerAdapterRegistry()
         registry.register("fake", fake_kv)
+        tok_registry.register("fake", fake_tok)
         index = ThreadWakeIndex(max_entries=50)
         mgr = ThreadWakeManager(
             metrics=ThreadWakeMetrics(),
             backend_registry=registry,
+            tokenizer_registry=tok_registry,
             index=index,
         )
 
@@ -122,12 +127,16 @@ class TestHealthStatus:
 class TestHealthFields:
     def test_ready_entries_count(self):
         fake_kv = FakeKVBackend()
+        fake_tok = FakeTokenizerAdapter()
         registry = BackendKVAdapterRegistry()
+        tok_registry = BackendTokenizerAdapterRegistry()
         registry.register("fake", fake_kv)
+        tok_registry.register("fake", fake_tok)
         index = ThreadWakeIndex(max_entries=50)
         mgr = ThreadWakeManager(
             metrics=ThreadWakeMetrics(),
             backend_registry=registry,
+            tokenizer_registry=tok_registry,
             index=index,
         )
 
