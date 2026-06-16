@@ -7,6 +7,7 @@ import pytest
 from whooshd.contracts import ChatCompletionRequest
 from whooshd.runtime.threadwake.backend import BackendKVAdapterRegistry, FakeKVBackend, NoOpKVBackendAdapter
 from whooshd.runtime.threadwake.handles import KVCapability
+from whooshd.runtime.threadwake.tokenization import BackendTokenizerAdapterRegistry, FakeTokenizerAdapter
 from whooshd.runtime.threadwake.index import ScopeContext, ThreadWakeIndex, EntryStatus
 from whooshd.runtime.threadwake.manager import ThreadWakeManager
 from whooshd.runtime.threadwake.metrics import ThreadWakeMetrics
@@ -49,12 +50,16 @@ def _make_request(
 
 def _make_mgr(**kwargs):
     fake_kv = FakeKVBackend()
+    fake_tok = FakeTokenizerAdapter()
     registry = BackendKVAdapterRegistry()
+    tok_registry = BackendTokenizerAdapterRegistry()
     registry.register("fake", fake_kv)
+    tok_registry.register("fake", fake_tok)
     index = ThreadWakeIndex(max_entries=50)
     mgr = ThreadWakeManager(
         metrics=ThreadWakeMetrics(),
         backend_registry=registry,
+        tokenizer_registry=tok_registry,
         index=index,
     )
     return mgr, fake_kv

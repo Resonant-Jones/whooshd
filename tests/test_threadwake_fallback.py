@@ -8,6 +8,7 @@ from whooshd.contracts import ChatCompletionRequest
 from whooshd.runtime.threadwake.backend import BackendKVAdapterRegistry, FakeKVBackend
 from whooshd.runtime.threadwake.handles import KVCapability, KVHandle
 from whooshd.runtime.threadwake.index import ScopeContext, ThreadWakeIndex, EntryStatus
+from whooshd.runtime.threadwake.tokenization import BackendTokenizerAdapterRegistry, FakeTokenizerAdapter
 from whooshd.runtime.threadwake.manager import ThreadWakeManager
 from whooshd.runtime.threadwake.metrics import ThreadWakeMetrics
 from whooshd.runtime.threadwake.types import ThreadWakeMode
@@ -105,12 +106,15 @@ class FailingGenerateFromKVBackend:
 class TestFallbackOnKVFailure:
     def test_clone_failure_falls_back_to_full_generation(self):
         registry = BackendKVAdapterRegistry()
+        tok_registry = BackendTokenizerAdapterRegistry()
+        tok_registry.register("failing", FakeTokenizerAdapter())
         backend = FailingCloneBackend()
         registry.register("failing", backend)
         index = ThreadWakeIndex(max_entries=50)
         mgr = ThreadWakeManager(
             metrics=ThreadWakeMetrics(),
             backend_registry=registry,
+            tokenizer_registry=tok_registry,
             index=index,
         )
 
@@ -128,12 +132,15 @@ class TestFallbackOnKVFailure:
 
     def test_generate_from_kv_failure_falls_back_to_full_generation(self):
         registry = BackendKVAdapterRegistry()
+        tok_registry = BackendTokenizerAdapterRegistry()
+        tok_registry.register("failing_gen", FakeTokenizerAdapter())
         backend = FailingGenerateFromKVBackend()
         registry.register("failing_gen", backend)
         index = ThreadWakeIndex(max_entries=50)
         mgr = ThreadWakeManager(
             metrics=ThreadWakeMetrics(),
             backend_registry=registry,
+            tokenizer_registry=tok_registry,
             index=index,
         )
 
@@ -150,12 +157,15 @@ class TestFallbackOnKVFailure:
 
     def test_fallback_marks_entry_stale(self):
         registry = BackendKVAdapterRegistry()
+        tok_registry = BackendTokenizerAdapterRegistry()
+        tok_registry.register("failing", FakeTokenizerAdapter())
         backend = FailingCloneBackend()
         registry.register("failing", backend)
         index = ThreadWakeIndex(max_entries=50)
         mgr = ThreadWakeManager(
             metrics=ThreadWakeMetrics(),
             backend_registry=registry,
+            tokenizer_registry=tok_registry,
             index=index,
         )
 
@@ -180,11 +190,15 @@ class TestFallbackOnKVFailure:
 class TestDisabledRequest:
     def test_disabled_threadwake_uses_full_generation(self):
         fake_kv = FakeKVBackend()
+        fake_tok = FakeTokenizerAdapter()
         registry = BackendKVAdapterRegistry()
+        tok_registry = BackendTokenizerAdapterRegistry()
         registry.register("fake", fake_kv)
+        tok_registry.register("fake", fake_tok)
         mgr = ThreadWakeManager(
             metrics=ThreadWakeMetrics(),
             backend_registry=registry,
+            tokenizer_registry=tok_registry,
             index=ThreadWakeIndex(max_entries=50),
         )
 
@@ -200,11 +214,15 @@ class TestDisabledRequest:
 
     def test_observe_mode_does_not_use_kv(self):
         fake_kv = FakeKVBackend()
+        fake_tok = FakeTokenizerAdapter()
         registry = BackendKVAdapterRegistry()
+        tok_registry = BackendTokenizerAdapterRegistry()
         registry.register("fake", fake_kv)
+        tok_registry.register("fake", fake_tok)
         mgr = ThreadWakeManager(
             metrics=ThreadWakeMetrics(),
             backend_registry=registry,
+            tokenizer_registry=tok_registry,
             index=ThreadWakeIndex(max_entries=50),
         )
 
@@ -227,10 +245,12 @@ class TestDisabledRequest:
 class TestNoOpFallback:
     def test_noop_backend_never_stores_kv(self):
         registry = BackendKVAdapterRegistry()
+        tok_registry = BackendTokenizerAdapterRegistry()  # No registration → no-op
         # No registration: no-op for all backends
         mgr = ThreadWakeManager(
             metrics=ThreadWakeMetrics(),
             backend_registry=registry,
+            tokenizer_registry=tok_registry,
             index=ThreadWakeIndex(max_entries=50),
         )
 
@@ -244,9 +264,11 @@ class TestNoOpFallback:
 
     def test_noop_backend_observation_reports_unsupported(self):
         registry = BackendKVAdapterRegistry()
+        tok_registry = BackendTokenizerAdapterRegistry()  # No registration → no-op
         mgr = ThreadWakeManager(
             metrics=ThreadWakeMetrics(),
             backend_registry=registry,
+            tokenizer_registry=tok_registry,
             index=ThreadWakeIndex(max_entries=50),
         )
 
@@ -262,11 +284,15 @@ class TestNoOpFallback:
 class TestIneligiblePrompt:
     def test_multimodal_prefix_is_ineligible(self):
         fake_kv = FakeKVBackend()
+        fake_tok = FakeTokenizerAdapter()
         registry = BackendKVAdapterRegistry()
+        tok_registry = BackendTokenizerAdapterRegistry()
         registry.register("fake", fake_kv)
+        tok_registry.register("fake", fake_tok)
         mgr = ThreadWakeManager(
             metrics=ThreadWakeMetrics(),
             backend_registry=registry,
+            tokenizer_registry=tok_registry,
             index=ThreadWakeIndex(max_entries=50),
         )
 
@@ -293,11 +319,15 @@ class TestIneligiblePrompt:
 
     def test_below_min_tokens_is_ineligible(self):
         fake_kv = FakeKVBackend()
+        fake_tok = FakeTokenizerAdapter()
         registry = BackendKVAdapterRegistry()
+        tok_registry = BackendTokenizerAdapterRegistry()
         registry.register("fake", fake_kv)
+        tok_registry.register("fake", fake_tok)
         mgr = ThreadWakeManager(
             metrics=ThreadWakeMetrics(),
             backend_registry=registry,
+            tokenizer_registry=tok_registry,
             index=ThreadWakeIndex(max_entries=50),
         )
 

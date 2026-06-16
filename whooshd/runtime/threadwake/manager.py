@@ -28,6 +28,11 @@ from .index import EntryStatus, ScopeContext, ThreadWakeIndex
 from .keys import build_threadwake_cache_key
 from .metrics import ThreadWakeMetrics, get_threadwake_metrics
 from .policy import evaluate_threadwake_policy
+from .tokenization import (
+    BackendTokenizerAdapterRegistry,
+    NoOpTokenizerAdapter,
+    TokenizedPrompt,
+)
 from .types import (
     EphemeralResult,
     PromptGraph,
@@ -42,21 +47,23 @@ logger = logging.getLogger(__name__)
 
 # ── Helpers ────────────────────────────────────────────────────────────────
 
+# Legacy synthetic token helpers — retained only for FakeKVBackend test
+# compatibility.  Production code MUST use TokenizedPrompt.stable_prefix_token_ids
+# and TokenizedPrompt.dynamic_tail_token_ids from a real tokenizer adapter.
+
 
 def _extract_stable_prefix_tokens(graph: PromptGraph) -> list[str]:
-    """Extract synthetic token representation of the stable prefix."""
+    """LEGACY: Synthetic token placeholder extraction.  Tests only."""
     tokens: list[str] = []
     for segment in graph.segments:
         if segment.in_stable_prefix:
-            # Reconstruct approximate tokens from the segment name
-            # In tests, token_count = whitespace-split word count
             for i in range(segment.token_count):
                 tokens.append(f"{segment.name}:{i}")
     return tokens
 
 
 def _extract_dynamic_tail_tokens(graph: PromptGraph) -> list[str]:
-    """Extract synthetic token representation of the dynamic tail."""
+    """LEGACY: Synthetic token placeholder extraction.  Tests only."""
     tokens: list[str] = []
     for segment in graph.segments:
         if not segment.in_stable_prefix:
@@ -66,7 +73,7 @@ def _extract_dynamic_tail_tokens(graph: PromptGraph) -> list[str]:
 
 
 def _extract_all_tokens(graph: PromptGraph) -> list[str]:
-    """Extract synthetic token representation of all prompt tokens."""
+    """LEGACY: Synthetic token placeholder extraction.  Tests only."""
     tokens: list[str] = []
     for segment in graph.segments:
         for i in range(segment.token_count):
@@ -75,7 +82,7 @@ def _extract_all_tokens(graph: PromptGraph) -> list[str]:
 
 
 def _extract_dynamic_tail_tokens_from_segments(segments) -> list[str]:
-    """Extract synthetic token representation from a list of segments."""
+    """LEGACY: Synthetic token placeholder extraction.  Tests only."""
     tokens: list[str] = []
     for segment in segments:
         for i in range(segment.token_count):
@@ -95,10 +102,12 @@ class ThreadWakeManager:
         self,
         metrics: ThreadWakeMetrics | None = None,
         backend_registry: BackendKVAdapterRegistry | None = None,
+        tokenizer_registry: BackendTokenizerAdapterRegistry | None = None,
         index: ThreadWakeIndex | None = None,
     ) -> None:
         self.metrics = metrics or get_threadwake_metrics()
         self._backend_registry = backend_registry or BackendKVAdapterRegistry()
+        self._tokenizer_registry = tokenizer_registry or BackendTokenizerAdapterRegistry()
         self._index = index or self._build_default_index()
 
     @staticmethod
@@ -187,12 +196,14 @@ class ThreadWakeManager:
         self,
         observation: ThreadWakeObservation,
         backend: str | None,
+        tokenized: TokenizedPrompt | None = None,
     ) -> ThreadWakeObservation:
-        """Annotate observation with backend KV capability info."""
+        """Annotate observation with backend KV capability + tokenizer info."""
         if backend is None:
             observation.backend_kv_capability = None
             observation.can_reuse_kv = False
             observation.kv_reuse_reason = "backend_unknown"
+            self._attach_tokenizer_status(observation, backend)
             return observation
 
         capability = self._backend_registry.capability(backend)
@@ -207,15 +218,49 @@ class ThreadWakeManager:
                 f"backend_capable_but_ineligible: {observation.reason}"
             )
         elif observation.mode in (ThreadWakeMode.EPHEMERAL, ThreadWakeMode.SESSION):
-            # Ephemeral/session mode with resumable-or-better backend → KV reuse active
-            observation.can_reuse_kv = True
-            observation.kv_reuse_reason = None
+            # Ephemeral/session mode: KV reuse only if real tokenization available
+            if tokenized and tokenized.real_tokenization:
+                observation.can_reuse_kv = True
+                observation.kv_reuse_reason = None
+                observation.stable_prefix_token_count_real = tokenized.stable_prefix_token_count
+                observation.dynamic_tail_token_count_real = tokenized.dynamic_tail_token_count
+            else:
+                observation.can_reuse_kv = False
+                observation.kv_reuse_reason = "real_tokenization_unavailable"
         else:
-            # Observe mode: capable but not reusing yet
             observation.can_reuse_kv = False
             observation.kv_reuse_reason = "observe_mode_not_reusing"
 
+        self._attach_tokenizer_status(observation, backend, tokenized)
         return observation
+
+    def _attach_tokenizer_status(
+        self,
+        observation: ThreadWakeObservation,
+        backend: str | None,
+        tokenized: TokenizedPrompt | None = None,
+    ) -> None:
+        """Annotate observation with tokenizer capability info."""
+        if backend is None:
+            observation.tokenizer_capability = None
+            observation.real_tokenization_available = False
+            observation.tokenization_reason = "backend_unknown"
+            return
+
+        cap = self._tokenizer_registry.capability(backend)
+        observation.tokenizer_capability = cap.value
+
+        if cap.value == "unsupported":
+            observation.real_tokenization_available = False
+            observation.tokenization_reason = "tokenizer_unsupported"
+        elif tokenized and tokenized.real_tokenization:
+            observation.real_tokenization_available = True
+            observation.tokenization_reason = None
+        else:
+            observation.real_tokenization_available = False
+            observation.tokenization_reason = (
+                tokenized.unavailable_reason if tokenized else "tokenization_not_performed"
+            )
 
     def _record_index_observation(
         self,
@@ -292,9 +337,16 @@ class ThreadWakeManager:
             scope=config.scope or "thread",
         )
         observation = self.evaluate_policy(graph, config)
-        observation = self._attach_backend_kv_status(observation, backend)
 
-        if config.mode != ThreadWakeMode.EPHEMERAL or not observation.eligible:
+        # Tokenize the prompt (may produce real or estimate-only spans)
+        tokenizer = self._tokenizer_registry.get(backend)
+        tokenized = tokenizer.tokenize_prompt(graph, request, model_id=graph.model_id or "")
+        if tokenized is None:
+            tokenized = TokenizedPrompt(real_tokenization=False, unavailable_reason="tokenizer_returned_none")
+
+        observation = self._attach_backend_kv_status(observation, backend, tokenized)
+
+        if config.mode not in (ThreadWakeMode.EPHEMERAL, ThreadWakeMode.SESSION) or not observation.eligible:
             self.metrics.record(observation)
             return self._full_generation_result(generate_fn, request, gen_params, observation)
 
@@ -307,9 +359,10 @@ class ThreadWakeManager:
         can_reuse = kv_adapter.supports_kv_cache() in (
             KVCapability.RESUMABLE, KVCapability.CLONEABLE, KVCapability.SERIALIZABLE,
         )
-        if not can_reuse:
-            observation.can_reuse_kv = False
-            observation.kv_reuse_reason = "backend_unsupported"
+        if not can_reuse or not tokenized.real_tokenization:
+            if not tokenized.real_tokenization:
+                observation.can_reuse_kv = False
+                observation.kv_reuse_reason = tokenized.unavailable_reason or "real_tokenization_unavailable"
             self.metrics.record(observation)
             return self._full_generation_result(generate_fn, request, gen_params, observation)
 
@@ -320,7 +373,7 @@ class ThreadWakeManager:
                 graph=graph, thread_id=thread_id, scope_context=scope_context,
                 kv_adapter=kv_adapter, backend=backend,
                 observation=observation, generate_fn=generate_fn,
-                request=request, gen_params=gen_params,
+                request=request, gen_params=gen_params, tokenized=tokenized,
             )
             if session_result is not None:
                 return session_result
@@ -332,15 +385,17 @@ class ThreadWakeManager:
                 graph=graph, cache_key=cache_key, index_entry=index_entry,
                 kv_adapter=kv_adapter, observation=observation,
                 generate_fn=generate_fn, request=request, gen_params=gen_params,
+                tokenized=tokenized,
             )
 
         return self._ephemeral_miss(
             graph=graph, cache_key=cache_key, scope=scope, scope_context=scope_context,
             kv_adapter=kv_adapter, observation=observation,
             generate_fn=generate_fn, request=request, gen_params=gen_params, backend=backend,
+            tokenized=tokenized,
         )
 
-    def _ephemeral_hit(self, *, graph, cache_key, index_entry, kv_adapter, observation, generate_fn, request, gen_params) -> EphemeralResult:
+    def _ephemeral_hit(self, *, graph, cache_key, index_entry, kv_adapter, observation, generate_fn, request, gen_params, tokenized=None) -> EphemeralResult:
         logger.debug("ThreadWake ephemeral HIT cache_key=%s", cache_key)
         try:
             opaque = {"index_key": cache_key, "handle_id": index_entry.kv_handle_id}
@@ -349,7 +404,13 @@ class ThreadWakeManager:
                 token_count=index_entry.token_count, opaque_ref=opaque,
             )
             cloned = kv_adapter.clone_kv(kv_handle)
-            dynamic_tokens = _extract_dynamic_tail_tokens(graph)
+            # Use real token IDs if available, else legacy synthetic
+            if tokenized and tokenized.real_tokenization:
+                dynamic_token_ids = tokenized.dynamic_tail_token_ids
+                # Convert int IDs to strings for FakeKVBackend compat
+                dynamic_tokens = [str(t) for t in dynamic_token_ids]
+            else:
+                dynamic_tokens = _extract_dynamic_tail_tokens(graph)
             output = list(kv_adapter.generate_from_kv(cloned, dynamic_tokens, gen_params))
             observation.cache_hit = True
             observation.estimated_prefill_reuse_tokens = graph.stable_prefix_tokens
@@ -368,11 +429,15 @@ class ThreadWakeManager:
             self._index.mark_stale(cache_key)
             return self._full_generation_result(generate_fn, request, gen_params, observation)
 
-    def _ephemeral_miss(self, *, graph, cache_key, scope, scope_context, kv_adapter, observation, generate_fn, request, gen_params, backend) -> EphemeralResult:
+    def _ephemeral_miss(self, *, graph, cache_key, scope, scope_context, kv_adapter, observation, generate_fn, request, gen_params, backend, tokenized=None) -> EphemeralResult:
         logger.debug("ThreadWake ephemeral MISS cache_key=%s", cache_key)
         result = self._full_generation_result(generate_fn, request, gen_params, observation)
         try:
-            stable_tokens = _extract_stable_prefix_tokens(graph)
+            # Use real token IDs if available, else legacy synthetic
+            if tokenized and tokenized.real_tokenization:
+                stable_tokens = [str(t) for t in tokenized.stable_prefix_token_ids]
+            else:
+                stable_tokens = _extract_stable_prefix_tokens(graph)
             if stable_tokens:
                 kv_handle = kv_adapter.prefill_to_kv(stable_tokens, model_id=graph.model_id or "")
                 self._index.put_observation(
@@ -400,7 +465,7 @@ class ThreadWakeManager:
 
     def _try_session_continuation(
         self, *, graph, thread_id, scope_context, kv_adapter, backend,
-        observation, generate_fn, request, gen_params,
+        observation, generate_fn, request, gen_params, tokenized=None,
     ) -> EphemeralResult | None:
         """Attempt session continuation via thread-tip monotonic append.
 
@@ -442,8 +507,13 @@ class ThreadWakeManager:
                 opaque_ref=opaque,
             )
             cloned = kv_adapter.clone_kv(kv_handle)
-            # Generate from appended dynamic tokens only
-            append_token_list = _extract_dynamic_tail_tokens_from_segments(appended_segments)
+            # Generate from appended dynamic tokens only — use real IDs if available
+            if tokenized and tokenized.real_tokenization:
+                # Dynamic tail starts after prev_count segments
+                # Use the dynamic tail token IDs from the tokenized prompt
+                append_token_list = [str(t) for t in tokenized.dynamic_tail_token_ids]
+            else:
+                append_token_list = _extract_dynamic_tail_tokens_from_segments(appended_segments)
             output = list(kv_adapter.generate_from_kv(cloned, append_token_list, gen_params))
 
             observation.cache_hit = True
