@@ -160,3 +160,4 @@ Open http://127.0.0.1:8000/docs for the auto-generated Swagger UI.
 - **[Benchmarking](docs/benchmarking.md)** — throughput measurement harness
 - **[Release Notes](docs/releases/v0.1-rc.md)** — v0.1 release candidate
 - **[Queue Policy](docs/queue-policy.md)** — future queue design (not implemented)
+- **[ThreadWake Cache](docs/threadwake/overview.md)** — prompt-prefix reuse optimization (overview, configuration, security, metrics, Codexify integration)

@@ -199,6 +199,13 @@ class StubInferenceAdapter:
 
     # ── Lifecycle (stub — always loaded) ───────────────────────────────
 
+    def set_external_model_path(self, path: str) -> None:
+        """Accept an external model path for runtime handoff.
+
+        Stub adapter ignores external paths — it always returns stub output.
+        """
+        pass
+
     def is_loaded(self) -> bool:
         return True
 

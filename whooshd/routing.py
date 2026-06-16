@@ -135,6 +135,11 @@ class RuntimeRouter:
         except Exception:
             pass  # Registry lookup is best-effort.
 
+        # ── Step 1b: Check external route inventory ─────────────────
+        external = await self._resolve_external_model(model_id)
+        if external is not None:
+            return external
+
         # ── Step 2: Heuristic by file extension ────────────────────
         if model_id.endswith(".gguf"):
             adapter = self._adapters.get(RuntimeKind.LLAMA_CPP.value)
@@ -170,6 +175,73 @@ class RuntimeRouter:
             f"Model '{model_id}' does not match any registered runtime. "
             f"Available runtimes: {self.registered_kinds}",
         )
+
+    async def _resolve_external_model(
+        self, model_id: str
+    ) -> InferenceAdapter | None:
+        """Try to resolve an external route model for runtime handoff.
+
+        Checks external inventory, resolves the path, selects the adapter,
+        and sets the external model path override on the adapter.
+
+        Returns the adapter if resolved, or ``None`` if not an external model.
+        Raises ``ModelResolutionError`` if found but not servable or route
+        unavailable.
+        """
+        try:
+            from whooshd.models.inventory import (
+                resolve_external_runtime_model,
+            )
+            from whooshd.models.routes import load_external_weight_routes
+
+            routes = load_external_weight_routes()
+            if not routes:
+                return None
+
+            resolution = resolve_external_runtime_model(model_id, routes)
+        except Exception:
+            return None
+
+        if not resolution.found:
+            return None
+
+        if not resolution.servable:
+            reason = resolution.reason or "not_servable"
+            if reason == "route_unavailable":
+                raise ModelResolutionError(
+                    model_id,
+                    "External model route is unavailable.",
+                )
+            if reason == "not_servable":
+                raise ModelResolutionError(
+                    model_id,
+                    "External model is visible but not servable by the current runtime configuration.",
+                )
+            raise ModelResolutionError(
+                model_id,
+                f"External model cannot be served: {reason}",
+            )
+
+        # ── Select the adapter ────────────────────────────────────
+        runtime = resolution.runtime
+        kind_map = {
+            "llama_cpp": RuntimeKind.LLAMA_CPP.value,
+            "mlx_lm": RuntimeKind.MLX_LM_SERVER.value,
+        }
+        kind = kind_map.get(runtime or "")
+        if kind is None or kind not in self._adapters:
+            raise ModelResolutionError(
+                model_id,
+                f"External model runtime '{runtime}' is not available.",
+            )
+
+        adapter = self._adapters[kind]
+
+        # ── Set the external model path on the adapter ────────────
+        if resolution.path and hasattr(adapter, "set_external_model_path"):
+            adapter.set_external_model_path(resolution.path)
+
+        return adapter
 
     # ── Inference dispatch ──────────────────────────────────────────────
 

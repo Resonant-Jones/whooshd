@@ -94,6 +94,44 @@ Evidence strings are machine-readable tags describing what was found
 Problems describe issues (`path_missing`, `config_unreadable`,
 `ambiguous_candidate`, `empty_directory`).
 
+### Vision detection is conservative
+
+Vision modality is only added when there is **strong explicit evidence**.
+The following are **not** sufficient alone:
+
+- `processor_config.json`
+- `preprocessor_config.json`
+- `tokenizer_config.json`
+- `generation_config.json`
+- generic `processor` metadata
+- a model path containing only `gemma`
+- a model path containing only `mlx`
+
+Acceptable strong vision evidence (at least one required):
+
+- `config.json` contains a top-level `vision_config` → evidence: `found_vision_config`
+- Explicit VLM `model_type` markers (`qwen2_vl`, `qwen2-vl`, `llava`, `paligemma`) → evidence: `model_type_<name>`
+- Explicit VLM architecture markers (`Qwen2VLForConditionalGeneration`, etc.) → evidence: `architecture_<name>`
+- Managed directory contains `mm_projector`, `vision_tower`, or `image_newline` → evidence: `found_<name>`
+
+When in doubt, the inspector classifies the model as **text-only**.
+Vision over-claiming is worse than vision under-claiming.
+
+### Invariant: vision requires explicit vision evidence
+
+Whoosh'd enforces a **hard invariant** at the inspection return path:
+
+> ``vision`` may appear in ``modalities`` **only** when ``evidence``
+> contains at least one explicit vision evidence code.
+
+This invariant is enforced by a safety-net helper that sanitizes
+modalities immediately before constructing the candidate result.
+
+If a previously registered local model was misclassified as vision-capable
+before this correction, the user should **delete and re-register** that
+local store entry manually.  Migration of existing user stores is out of
+scope; the invariant only applies to new inspections.
+
 ### What inspection does NOT do
 
 - Does NOT register the model as runnable.
@@ -209,14 +247,23 @@ into the durable managed model registry.
 
 ### Managed storage
 
-| Format | Modalities | Destination |
-|--------|-----------|-------------|
-| MLX | text only | `models/mlx/<id>/` |
-| MLX | text + vision | `models/vlm/<id>/` |
-| GGUF | text | `models/gguf/<id>/<file>` |
+| Format | Modalities | Destination | Adapter |
+|--------|-----------|-------------|---------|
+| MLX | text only | `models/mlx/<id>/` | `mlx_lm_server` |
+| MLX | text + vision | `models/vlm/<id>/` | `mlx_vlm` |
+| GGUF | text | `models/gguf/<id>/<file>` | `llama_cpp` |
 
 Copies are managed by Whoosh'd.  Original source files are never modified
 or deleted.  External-reference storage is intentionally deferred.
+
+Text-only MLX models always register under `models/mlx/` and map to
+`mlx_lm_server`, regardless of processor metadata presence.  Vision-capable
+MLX models require explicit multimodal evidence and register under
+`models/vlm/`.
+
+Existing registry entries created before this vision-detection correction
+may need to be re-registered manually if they were misclassified as
+vision-capable.
 
 ### Why registration ≠ runtime visibility
 

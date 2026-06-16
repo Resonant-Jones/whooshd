@@ -501,6 +501,9 @@ class RuntimeState:
         # ── Append compatible registered models from the model-store ──
         entries = await _append_registered_models_openai(entries)
 
+        # ── Append external route models ──
+        entries = await _append_external_models_openai(entries)
+
         return OpenAIModelListResponse(data=entries)
 
     # ── Ollama-compatible tags ──────────────────────────────────────────
@@ -546,6 +549,9 @@ class RuntimeState:
 
         # ── Append compatible registered models from the model-store ──
         entries = await _append_registered_models_ollama(entries)
+
+        # ── Append external route models ──
+        entries = await _append_external_models_ollama(entries)
 
         return OllamaTagsResponse(models=entries)
 
@@ -918,3 +924,108 @@ def _adapter_to_engine(rm) -> str:
     if fmt == "gguf":
         return "llama_cpp"
     return fmt
+
+
+# ── External model inventory helpers ──────────────────────────────────────
+
+
+async def _append_external_models_openai(
+    entries: list[OpenAIModelEntry],
+) -> list[OpenAIModelEntry]:
+    """Append external route models to an OpenAI-compatible model list.
+
+    Skips models whose id duplicates an existing entry (managed registry
+    or built-in wins).
+    """
+    external = _get_external_inventory()
+    if not external:
+        return entries
+
+    existing_ids = {e.id for e in entries}
+
+    for ext in external:
+        if ext.id in existing_ids:
+            continue
+        existing_ids.add(ext.id)
+
+        meta: dict = {
+            "source": "external",
+            "registry_managed": False,
+            "route_id": ext.route_id,
+            "format": ext.format,
+            "runtime": ext.runtime,
+            "path_available": ext.path_available,
+            "servable": ext.servable,
+        }
+        if ext.metadata.get("quant"):
+            meta["quant"] = ext.metadata["quant"]
+
+        entries.append(
+            OpenAIModelEntry(
+                id=ext.id,
+                created=_STUB_MODEL_CREATED,
+                owned_by="whooshd",
+                metadata=meta,
+            )
+        )
+
+    return entries
+
+
+async def _append_external_models_ollama(
+    entries: list[OllamaTagEntry],
+) -> list[OllamaTagEntry]:
+    """Append external route models to an Ollama-compatible tag list.
+
+    Skips models whose name duplicates an existing entry (managed registry
+    or built-in wins).
+    """
+    external = _get_external_inventory()
+    if not external:
+        return entries
+
+    existing_names = {e.name for e in entries}
+
+    for ext in external:
+        if ext.id in existing_names:
+            continue
+        existing_names.add(ext.id)
+
+        details: dict = {
+            "source": "external",
+            "registry_managed": False,
+            "route_id": ext.route_id,
+            "format": ext.format,
+            "runtime": ext.runtime,
+            "servable": ext.servable,
+        }
+
+        entries.append(
+            OllamaTagEntry(
+                name=ext.id,
+                model=ext.id,
+                modified_at="2024-01-01T00:00:00Z",
+                size=_STUB_MODEL_SIZE,
+                details=details,
+            )
+        )
+
+    return entries
+
+
+def _get_external_inventory() -> list:
+    """Load external model inventory from configured external routes.
+
+    Returns an empty list if no routes are configured, no routes are
+    available, or if any error occurs during scanning.
+    """
+    try:
+        from whooshd.models.routes import load_external_weight_routes
+        from whooshd.models.inventory import list_external_model_inventory
+
+        routes = load_external_weight_routes()
+        if not routes:
+            return []
+        return list_external_model_inventory(routes)
+    except Exception:
+        return []
