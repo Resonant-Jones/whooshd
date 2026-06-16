@@ -335,6 +335,21 @@ def get_threadwake_allow_global() -> bool:
     return _env_bool("WHOOSHD_THREADWAKE_ALLOW_GLOBAL", False)
 
 
+def get_threadwake_mlx_tokenizer_enabled() -> bool:
+    """Whether to register the MLX tokenizer adapter with ThreadWake.
+
+    When enabled and MLX is the active backend, the loaded tokenizer
+    is registered so ThreadWake can use real token IDs for observations.
+    This does NOT enable production KV reuse.
+    """
+    return _env_bool("WHOOSHD_THREADWAKE_MLX_TOKENIZER_ENABLED", False)
+
+
+def get_threadwake_mlx_kv_reuse_enabled() -> bool:
+    """Placeholder gate for future MLX KV reuse.  Always false for now."""
+    return False  # Hard-disabled; not controlled by env
+
+
 # ── MLX-VLM settings ──────────────────────────────────────────────────────
 
 

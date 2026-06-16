@@ -46,12 +46,13 @@ class MLXInferenceAdapter:
     completions are both supported.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, tokenizer_registry: object = None) -> None:
         self._model: object = None
         self._tokenizer: object = None
         self._model_path: Optional[str] = None
         self._load_lock = asyncio.Lock()
         self._loaded = False
+        self._tokenizer_registry = tokenizer_registry
 
     # ── Protocol properties ────────────────────────────────────────────
 
@@ -66,6 +67,11 @@ class MLXInferenceAdapter:
     @property
     def supports_streaming(self) -> bool:
         return True
+
+    @property
+    def tokenizer(self) -> object | None:
+        """Return the loaded tokenizer, or None."""
+        return self._tokenizer
 
     # ── Lazy import ─────────────────────────────────────────────────────
 
@@ -100,6 +106,10 @@ class MLXInferenceAdapter:
                 self._model, self._tokenizer = mlx_lm.load(model_path)
                 self._model_path = model_path
                 self._loaded = True
+
+                # Register MLX tokenizer adapter for ThreadWake if enabled
+                if self._tokenizer_registry is not None and self._tokenizer is not None:
+                    self._register_tokenizer_adapter()
             except Exception:
                 _update_runner_status(RunnerStatus.DEGRADED)
                 _update_model_lifecycle(ModelLifecycleState.FAILED)
@@ -374,8 +384,30 @@ class MLXInferenceAdapter:
         self._tokenizer = None
         self._loaded = False
         self._model_path = None
+        # Clear tokenizer adapter registration
+        if self._tokenizer_registry is not None:
+            try:
+                self._tokenizer_registry.unregister("mlx")
+            except Exception:
+                pass
         import gc
         gc.collect()
+
+    def _register_tokenizer_adapter(self) -> None:
+        """Register the MLX tokenizer adapter for ThreadWake.
+
+        Called after model/tokenizer load.  Best-effort — errors
+        are logged but never crash inference.
+        """
+        try:
+            from whooshd.config import get_threadwake_mlx_tokenizer_enabled
+            if not get_threadwake_mlx_tokenizer_enabled():
+                return
+            from whooshd.runtime.threadwake.mlx_tokenizer import MLXInProcessTokenizerAdapter
+            adapter = MLXInProcessTokenizerAdapter(tokenizer=self._tokenizer)
+            self._tokenizer_registry.register("mlx", adapter)
+        except Exception:
+            pass  # Best-effort; never crash inference for observability wiring
 
     # ── Multi-runtime introspection ──────────────────────────────────
 

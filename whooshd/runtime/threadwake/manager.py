@@ -253,14 +253,20 @@ class ThreadWakeManager:
         if cap.value == "unsupported":
             observation.real_tokenization_available = False
             observation.tokenization_reason = "tokenizer_unsupported"
+        elif cap.value == "estimates_only":
+            observation.real_tokenization_available = False
+            observation.tokenization_reason = "tokenizer_estimates_only"
         elif tokenized and tokenized.real_tokenization:
             observation.real_tokenization_available = True
             observation.tokenization_reason = None
+            if tokenized.stable_prefix_token_count:
+                observation.stable_prefix_token_count_real = tokenized.stable_prefix_token_count
+            if tokenized.dynamic_tail_token_count:
+                observation.dynamic_tail_token_count_real = tokenized.dynamic_tail_token_count
         else:
-            observation.real_tokenization_available = False
-            observation.tokenization_reason = (
-                tokenized.unavailable_reason if tokenized else "tokenization_not_performed"
-            )
+            # Adapter is registered with token_ids capability but not yet called
+            observation.real_tokenization_available = True
+            observation.tokenization_reason = None
 
     def _record_index_observation(
         self,

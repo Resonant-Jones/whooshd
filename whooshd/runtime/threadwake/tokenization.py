@@ -363,6 +363,10 @@ class BackendTokenizerAdapterRegistry:
             backend, type(adapter).__name__,
         )
 
+    def unregister(self, backend: str) -> None:
+        self._adapters.pop(backend, None)
+        logger.debug("BackendTokenizerAdapterRegistry: unregistered %s", backend)
+
     def get(self, backend: str) -> BackendTokenizerAdapter:
         return self._adapters.get(backend, self._noop)
 
