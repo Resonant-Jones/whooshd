@@ -103,6 +103,31 @@ class TestRegistryIntegration:
         # FakeTokenizerAdapter doesn't set tokenizer_hash — that's OK for tests
         assert result.real_tokenization is True
 
+    def test_resumable_backend_blocked_without_tokenizer(self):
+        """Even with resumable KV backend, no tokenizer → no KV reuse."""
+        fake_kv = FakeKVBackend()  # reports RESUMABLE
+        kv_reg = BackendKVAdapterRegistry()
+        kv_reg.register("fake", fake_kv)
+        # Deliberately omit tokenizer registry
+
+        mgr = ThreadWakeManager(
+            metrics=ThreadWakeMetrics(),
+            backend_registry=kv_reg,
+            index=ThreadWakeIndex(max_entries=50),
+        )
+        req = _make_request()
+
+        r1 = mgr.execute_ephemeral(req, backend="fake", generate_fn=_gen)
+        assert r1.cache_hit is False
+        assert r1.observation is not None
+        assert r1.observation.backend_kv_capability == "resumable"  # Backend IS capable
+        assert r1.observation.real_tokenization_available is False    # But tokenizer is NOT
+        assert r1.observation.can_reuse_kv is False                  # So KV reuse blocked
+
+        # Second request: still blocked (no tokenizer → no cache entries stored)
+        r2 = mgr.execute_ephemeral(req, backend="fake", generate_fn=_gen)
+        assert r2.cache_hit is False
+
     def test_observe_mode_still_works_without_tokenizer(self):
         mgr = ThreadWakeManager(
             metrics=ThreadWakeMetrics(),

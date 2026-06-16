@@ -397,6 +397,8 @@ class ThreadWakeManager:
 
     def _ephemeral_hit(self, *, graph, cache_key, index_entry, kv_adapter, observation, generate_fn, request, gen_params, tokenized=None) -> EphemeralResult:
         logger.debug("ThreadWake ephemeral HIT cache_key=%s", cache_key)
+        if tokenized is None or not tokenized.real_tokenization:
+            raise RuntimeError("BUG: _ephemeral_hit called without real tokenization — gate in execute_ephemeral should have prevented this")
         try:
             opaque = {"index_key": cache_key, "handle_id": index_entry.kv_handle_id}
             kv_handle = KVHandle(
@@ -404,13 +406,7 @@ class ThreadWakeManager:
                 token_count=index_entry.token_count, opaque_ref=opaque,
             )
             cloned = kv_adapter.clone_kv(kv_handle)
-            # Use real token IDs if available, else legacy synthetic
-            if tokenized and tokenized.real_tokenization:
-                dynamic_token_ids = tokenized.dynamic_tail_token_ids
-                # Convert int IDs to strings for FakeKVBackend compat
-                dynamic_tokens = [str(t) for t in dynamic_token_ids]
-            else:
-                dynamic_tokens = _extract_dynamic_tail_tokens(graph)
+            dynamic_tokens = [str(t) for t in tokenized.dynamic_tail_token_ids]
             output = list(kv_adapter.generate_from_kv(cloned, dynamic_tokens, gen_params))
             observation.cache_hit = True
             observation.estimated_prefill_reuse_tokens = graph.stable_prefix_tokens
@@ -432,12 +428,10 @@ class ThreadWakeManager:
     def _ephemeral_miss(self, *, graph, cache_key, scope, scope_context, kv_adapter, observation, generate_fn, request, gen_params, backend, tokenized=None) -> EphemeralResult:
         logger.debug("ThreadWake ephemeral MISS cache_key=%s", cache_key)
         result = self._full_generation_result(generate_fn, request, gen_params, observation)
+        if tokenized is None or not tokenized.real_tokenization:
+            return result  # No real tokens → skip prefill storage, return full generation result
         try:
-            # Use real token IDs if available, else legacy synthetic
-            if tokenized and tokenized.real_tokenization:
-                stable_tokens = [str(t) for t in tokenized.stable_prefix_token_ids]
-            else:
-                stable_tokens = _extract_stable_prefix_tokens(graph)
+            stable_tokens = [str(t) for t in tokenized.stable_prefix_token_ids]
             if stable_tokens:
                 kv_handle = kv_adapter.prefill_to_kv(stable_tokens, model_id=graph.model_id or "")
                 self._index.put_observation(
@@ -471,7 +465,12 @@ class ThreadWakeManager:
 
         Returns an EphemeralResult on success, or None if continuation
         is not possible (caller should fall through to ephemeral hit/miss).
+
+        Requires real_tokenization=True — the gate in execute_ephemeral
+        prevents calling this method without a real TokenizedPrompt.
         """
+        if tokenized is None or not tokenized.real_tokenization:
+            return None  # Cannot continue without real token spans
         model_id = graph.model_id or ""
         tip = self._index.get_latest_for_thread(thread_id, model_id, backend)
         if tip is None:
@@ -507,13 +506,8 @@ class ThreadWakeManager:
                 opaque_ref=opaque,
             )
             cloned = kv_adapter.clone_kv(kv_handle)
-            # Generate from appended dynamic tokens only — use real IDs if available
-            if tokenized and tokenized.real_tokenization:
-                # Dynamic tail starts after prev_count segments
-                # Use the dynamic tail token IDs from the tokenized prompt
-                append_token_list = [str(t) for t in tokenized.dynamic_tail_token_ids]
-            else:
-                append_token_list = _extract_dynamic_tail_tokens_from_segments(appended_segments)
+            # Generate from appended dynamic tokens only (real token IDs required)
+            append_token_list = [str(t) for t in tokenized.dynamic_tail_token_ids]
             output = list(kv_adapter.generate_from_kv(cloned, append_token_list, gen_params))
 
             observation.cache_hit = True
