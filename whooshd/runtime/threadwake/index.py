@@ -95,6 +95,8 @@ class ThreadWakeIndexEntry:
     potential_saved_ratio: float | None = None
     candidate_seen_count: int = 0
     candidate_last_seen_at: datetime | None = None
+    tokenizer_hash: str | None = None
+    chat_template_hash: str | None = None
 
     def touch(self) -> None:
         self.last_used_at = datetime.now(timezone.utc)

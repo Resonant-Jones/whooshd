@@ -26,6 +26,11 @@ from .candidate_selection import (
     SnapshotSelectionResult,
 )
 from .prefix_proof import PrefixProof, PrefixMismatchReason, StablePrefixProofEngine
+from .storage import (
+    NoOpThreadWakeStorage,
+    SQLiteThreadWakeStorage,
+    ThreadWakeStorageProtocol,
+)
 from .tokenization import (
     BackendTokenizerAdapter,
     BackendTokenizerAdapterRegistry,
@@ -96,10 +101,12 @@ __all__ = [
     "SnapshotCandidate",
     "SnapshotCandidateSelector",
     "SnapshotSelectionResult",
+    "SQLiteThreadWakeStorage",
     "StablePrefixProofEngine",
     "ThreadWakeStats",
     "ThreadWakeTokenizerCapability",
     "TokenSpan",
+    "ThreadWakeStorageProtocol",
     "TokenizedPrompt",
     "build_threadwake_cache_key",
     "compile_prompt_graph",
