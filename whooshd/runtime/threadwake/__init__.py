@@ -26,6 +26,7 @@ from .candidate_selection import (
     SnapshotSelectionResult,
 )
 from .prefix_proof import PrefixProof, PrefixMismatchReason, StablePrefixProofEngine
+from .replay_analysis import CandidateReplayAnalyzer, CandidateReplayRecord, CandidateReplaySummary
 from .storage import (
     NoOpThreadWakeStorage,
     SQLiteThreadWakeStorage,
@@ -84,6 +85,9 @@ __all__ = [
     "MlxVlmTokenizerAdapterStub",
     "NoOpKVBackendAdapter",
     "NoOpTokenizerAdapter",
+    "CandidateReplayAnalyzer",
+    "CandidateReplayRecord",
+    "CandidateReplaySummary",
     "PrefixMismatchReason",
     "PrefixProof",
     "PromptGraph",

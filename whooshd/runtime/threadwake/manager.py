@@ -29,6 +29,7 @@ from .keys import build_threadwake_cache_key
 from .metrics import ThreadWakeMetrics, get_threadwake_metrics
 from .policy import evaluate_threadwake_policy
 from .kv_lifecycle import KVEvent, KVLifecycleObserver
+from .replay_analysis import CandidateReplayAnalyzer
 from .tokenization import (
     BackendTokenizerAdapterRegistry,
     NoOpTokenizerAdapter,
@@ -624,7 +625,16 @@ class ThreadWakeManager:
             "entries_by_status": stats.entries_by_status,
             "entries_by_scope": stats.entries_by_scope,
             "candidate_registry": self._index.candidate_stats(),
+            "candidate_replay": self._build_replay_summary(),
         }
+
+    def _build_replay_summary(self) -> dict[str, Any]:
+        try:
+            analyzer = CandidateReplayAnalyzer()
+            summary = analyzer.analyze_index(self._index, limit=20)
+            return summary.safe_dict()
+        except Exception:
+            return {"total_candidates": 0}
 
     @staticmethod
     def _compute_status(mode: str, stats: Any) -> str:
