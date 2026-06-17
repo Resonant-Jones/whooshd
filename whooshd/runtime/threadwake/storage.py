@@ -175,6 +175,28 @@ CREATE INDEX IF NOT EXISTS idx_snapshot_artifacts_backend
     ON threadwake_snapshot_artifacts(backend);
 CREATE INDEX IF NOT EXISTS idx_snapshot_artifacts_created
     ON threadwake_snapshot_artifacts(created_at);
+
+CREATE TABLE IF NOT EXISTS threadwake_snapshot_creation_events (
+    event_id TEXT PRIMARY KEY,
+    artifact_id TEXT,
+    manifest_id TEXT,
+    backend TEXT,
+    model_id TEXT,
+    status TEXT,
+    reason TEXT,
+    snapshot_ref_hash TEXT,
+    error TEXT,
+    created_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_snapshot_creation_artifact
+    ON threadwake_snapshot_creation_events(artifact_id);
+CREATE INDEX IF NOT EXISTS idx_snapshot_creation_status
+    ON threadwake_snapshot_creation_events(status);
+CREATE INDEX IF NOT EXISTS idx_snapshot_creation_reason
+    ON threadwake_snapshot_creation_events(reason);
+CREATE INDEX IF NOT EXISTS idx_snapshot_creation_created_at
+    ON threadwake_snapshot_creation_events(created_at);
 """
 
 

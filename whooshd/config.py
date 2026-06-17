@@ -360,6 +360,11 @@ def get_threadwake_sqlite_path() -> str:
     return _env("WHOOSHD_THREADWAKE_SQLITE_PATH", ".whooshd/threadwake.sqlite3")
 
 
+def get_threadwake_experimental_snapshots_enabled() -> bool:
+    """Enable experimental snapshot creation.  Disabled by default."""
+    return _env_bool("WHOOSHD_THREADWAKE_EXPERIMENTAL_SNAPSHOTS_ENABLED", False)
+
+
 # ── MLX-VLM settings ──────────────────────────────────────────────────────
 
 
