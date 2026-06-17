@@ -14,6 +14,15 @@ from .index import (
 from .keys import build_threadwake_cache_key
 from .kv_lifecycle import KVEvent, KVLifecycleObserver, KVLifecycleStats
 from .manager import ThreadWakeManager
+from .materialization import (
+    MaterializationCapability,
+    MaterializationCapabilityResult,
+    MaterializationReason,
+    MaterializerRegistry,
+    MLXSnapshotMaterializer,
+    NoOpSnapshotMaterializer,
+    SnapshotMaterializer,
+)
 from .mlx_tokenizer import MLXInProcessTokenizerAdapter
 from .metrics import ThreadWakeMetrics, get_threadwake_metrics
 from .policy import (
@@ -118,6 +127,7 @@ __all__ = [
     "MLXTokenizerAdapterStub",
     "MlxVlmTokenizerAdapterStub",
     "NoOpKVBackendAdapter",
+    "NoOpSnapshotMaterializer",
     "NoOpTokenizerAdapter",
     "CandidateReplayAnalyzer",
     "CandidateReplayRecord",
