@@ -46,6 +46,12 @@ from .snapshot_creation import (
     SnapshotCreationStatus,
     SnapshotCreator,
 )
+from .snapshot_material import (
+    SnapshotMaterialBuilder,
+    SnapshotMaterialContract,
+    SnapshotMaterialKind,
+    SnapshotMaterialStatus,
+)
 from .snapshot_manifest import (
     SnapshotManifest,
     SnapshotManifestBuilder,
@@ -140,6 +146,10 @@ __all__ = [
     "SnapshotCreator",
     "SnapshotManifest",
     "SnapshotManifestBuilder",
+    "SnapshotMaterialBuilder",
+    "SnapshotMaterialContract",
+    "SnapshotMaterialKind",
+    "SnapshotMaterialStatus",
     "SnapshotManifestReason",
     "SnapshotManifestStatus",
     "SnapshotSelectionResult",
