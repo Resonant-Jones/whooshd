@@ -16,7 +16,13 @@ from .kv_lifecycle import KVEvent, KVLifecycleObserver, KVLifecycleStats
 from .manager import ThreadWakeManager
 from .mlx_tokenizer import MLXInProcessTokenizerAdapter
 from .metrics import ThreadWakeMetrics, get_threadwake_metrics
-from .policy import evaluate_threadwake_policy
+from .policy import (
+    SnapshotEligibility,
+    SnapshotEligibilityReason,
+    SnapshotPolicyConfig,
+    SnapshotPolicyEngine,
+    evaluate_threadwake_policy,
+)
 from .candidate_selection import (
     CandidateConfidence,
     CandidateScore,
@@ -106,6 +112,10 @@ __all__ = [
     "SnapshotCandidateSelector",
     "SnapshotSelectionResult",
     "SQLiteThreadWakeStorage",
+    "SnapshotEligibility",
+    "SnapshotEligibilityReason",
+    "SnapshotPolicyConfig",
+    "SnapshotPolicyEngine",
     "StablePrefixProofEngine",
     "ThreadWakeStats",
     "ThreadWakeTokenizerCapability",
