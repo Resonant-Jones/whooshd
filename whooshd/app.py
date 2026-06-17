@@ -57,10 +57,12 @@ from whooshd.routing import ModelResolutionError, get_router, reset_router
 from whooshd.runtime import get_runtime
 from whooshd.http_forwarding import UpstreamRuntimeError
 from whooshd.runtime.threadwake import ThreadWakeManager
+from whooshd.runtime.threadwake.tokenization import BackendTokenizerAdapterRegistry
 
 
 logger = logging.getLogger(__name__)
-_threadwake_manager = ThreadWakeManager()
+_tokenizer_registry = BackendTokenizerAdapterRegistry()
+_threadwake_manager = ThreadWakeManager(tokenizer_registry=_tokenizer_registry)
 
 app = FastAPI(
     title="Whoosh'd",
@@ -93,7 +95,7 @@ def _init_router():
     # ── MLX in-process adapter (legacy, when WHOOSHD_ADAPTER=mlx)
     if backend == "mlx":
         from whooshd.adapters.mlx import MLXInferenceAdapter
-        router.register(MLXInferenceAdapter())
+        router.register(MLXInferenceAdapter(tokenizer_registry=_tokenizer_registry))
 
     # ── MLX-VLM adapter (vision-language, subprocess-supervised) ──
     if get_mlx_vlm_enabled():
