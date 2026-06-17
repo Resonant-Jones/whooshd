@@ -39,6 +39,13 @@ from .artifacts import (
     SnapshotArtifactRegistry,
     SnapshotArtifactStatus,
 )
+from .snapshot_creation import (
+    FakeSnapshotCreator,
+    SnapshotCreationReason,
+    SnapshotCreationResult,
+    SnapshotCreationStatus,
+    SnapshotCreator,
+)
 from .snapshot_manifest import (
     SnapshotManifest,
     SnapshotManifestBuilder,
@@ -126,6 +133,11 @@ __all__ = [
     "SnapshotArtifactRegistry",
     "SnapshotArtifactStatus",
     "SnapshotCandidateSelector",
+    "FakeSnapshotCreator",
+    "SnapshotCreationReason",
+    "SnapshotCreationResult",
+    "SnapshotCreationStatus",
+    "SnapshotCreator",
     "SnapshotManifest",
     "SnapshotManifestBuilder",
     "SnapshotManifestReason",
