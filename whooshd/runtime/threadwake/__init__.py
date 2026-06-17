@@ -17,6 +17,7 @@ from .manager import ThreadWakeManager
 from .mlx_tokenizer import MLXInProcessTokenizerAdapter
 from .metrics import ThreadWakeMetrics, get_threadwake_metrics
 from .policy import evaluate_threadwake_policy
+from .prefix_proof import PrefixProof, PrefixMismatchReason, StablePrefixProofEngine
 from .tokenization import (
     BackendTokenizerAdapter,
     BackendTokenizerAdapterRegistry,
@@ -67,6 +68,8 @@ __all__ = [
     "MlxVlmTokenizerAdapterStub",
     "NoOpKVBackendAdapter",
     "NoOpTokenizerAdapter",
+    "PrefixMismatchReason",
+    "PrefixProof",
     "PromptGraph",
     "PromptSegment",
     "ScopeContext",
@@ -79,6 +82,7 @@ __all__ = [
     "ThreadWakeMode",
     "ThreadWakeObservation",
     "ThreadWakeRequestConfig",
+    "StablePrefixProofEngine",
     "ThreadWakeStats",
     "ThreadWakeTokenizerCapability",
     "TokenSpan",
