@@ -26,14 +26,17 @@ class ThreadWakeStorageProtocol(Protocol):
     """Protocol for ThreadWake candidate telemetry storage."""
 
     def upsert_candidate(self, entry: Any) -> None: ...
-    def list_candidates(self, limit: int = 50, min_confidence: str | None = None, backend: str | None = None) -> list[dict[str, Any]]: ...
-    def candidate_stats(self) -> dict[str, Any]: ...
+    def list_candidates(self, limit=50, min_confidence=None, backend=None) -> list[dict]: ...
+    def candidate_stats(self) -> dict: ...
     def upsert_snapshot_manifest(self, manifest: Any) -> None: ...
-    def list_snapshot_manifests(self, limit: int = 50, status: str | None = None, backend: str | None = None) -> list[dict[str, Any]]: ...
-    def snapshot_manifest_stats(self) -> dict[str, Any]: ...
+    def list_snapshot_manifests(self, limit=50, status=None, backend=None) -> list[dict]: ...
+    def snapshot_manifest_stats(self) -> dict: ...
     def upsert_snapshot_artifact(self, artifact: Any) -> None: ...
-    def list_snapshot_artifacts(self, limit: int = 50, status: str | None = None, backend: str | None = None) -> list[dict[str, Any]]: ...
-    def snapshot_artifact_stats(self) -> dict[str, Any]: ...
+    def list_snapshot_artifacts(self, limit=50, status=None, backend=None) -> list[dict]: ...
+    def snapshot_artifact_stats(self) -> dict: ...
+    def upsert_snapshot_material(self, material: Any) -> None: ...
+    def list_snapshot_materials(self, limit=50, status=None, backend=None) -> list[dict]: ...
+    def snapshot_material_stats(self) -> dict: ...
     def close(self) -> None: ...
 
 
@@ -81,6 +84,15 @@ class NoOpThreadWakeStorage:
 
     def snapshot_artifact_stats(self) -> dict[str, Any]:
         return {"total_artifacts": 0, "planned": 0, "build_pending": 0, "build_failed": 0, "ready": 0, "superseded": 0, "expired": 0}
+
+    def upsert_snapshot_material(self, material: Any) -> None:
+        pass
+
+    def list_snapshot_materials(self, limit=50, status=None, backend=None) -> list[dict]:
+        return []
+
+    def snapshot_material_stats(self) -> dict:
+        return {"total_materials": 0, "declared": 0, "materialized": 0, "validated": 0, "invalid": 0, "unsupported": 0, "expired": 0}
 
 
 # ── SQLite storage ─────────────────────────────────────────────────────────
@@ -197,6 +209,40 @@ CREATE INDEX IF NOT EXISTS idx_snapshot_creation_reason
     ON threadwake_snapshot_creation_events(reason);
 CREATE INDEX IF NOT EXISTS idx_snapshot_creation_created_at
     ON threadwake_snapshot_creation_events(created_at);
+
+CREATE TABLE IF NOT EXISTS threadwake_snapshot_materials (
+    material_id TEXT PRIMARY KEY,
+    artifact_id TEXT NOT NULL,
+    manifest_id TEXT NOT NULL,
+    prefix_hash TEXT NOT NULL,
+    backend TEXT,
+    model_id TEXT,
+    tokenizer_hash TEXT,
+    chat_template_hash TEXT,
+    material_kind TEXT,
+    material_status TEXT,
+    material_version TEXT,
+    policy_version TEXT,
+    checksum TEXT,
+    byte_size INTEGER,
+    token_count INTEGER,
+    format_name TEXT,
+    format_version TEXT,
+    validation_errors TEXT,
+    created_at TEXT,
+    updated_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_snapshot_material_artifact
+    ON threadwake_snapshot_materials(artifact_id);
+CREATE INDEX IF NOT EXISTS idx_snapshot_material_manifest
+    ON threadwake_snapshot_materials(manifest_id);
+CREATE INDEX IF NOT EXISTS idx_snapshot_material_status
+    ON threadwake_snapshot_materials(material_status);
+CREATE INDEX IF NOT EXISTS idx_snapshot_material_backend
+    ON threadwake_snapshot_materials(backend);
+CREATE INDEX IF NOT EXISTS idx_snapshot_material_created
+    ON threadwake_snapshot_materials(created_at);
 """
 
 
@@ -230,6 +276,80 @@ class SQLiteThreadWakeStorage:
             if self._conn:
                 self._conn.close()
             self._conn = None
+
+    # ── Snapshot materials ─────────────────────────────────────────────
+
+    def upsert_snapshot_material(self, material: Any) -> None:
+        if not self._conn: return
+        try:
+            with self._lock:
+                mid = getattr(material, "material_id", "")
+                if not mid: return
+                self._conn.execute(
+                    """INSERT INTO threadwake_snapshot_materials
+                       (material_id,artifact_id,manifest_id,prefix_hash,backend,model_id,
+                        tokenizer_hash,chat_template_hash,material_kind,material_status,
+                        material_version,policy_version,checksum,byte_size,token_count,
+                        format_name,format_version,validation_errors,created_at,updated_at)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                       ON CONFLICT(material_id) DO UPDATE SET
+                        material_status=excluded.material_status,
+                        material_kind=excluded.material_kind,
+                        checksum=excluded.checksum, byte_size=excluded.byte_size,
+                        token_count=excluded.token_count,
+                        validation_errors=excluded.validation_errors,
+                        updated_at=excluded.updated_at""",
+                    (mid, getattr(material,"artifact_id",""),getattr(material,"manifest_id",""),
+                     getattr(material,"prefix_hash",""),getattr(material,"backend",None),
+                     getattr(material,"model_id",None),getattr(material,"tokenizer_hash",None),
+                     getattr(material,"chat_template_hash",None),getattr(material,"material_kind","metadata_only"),
+                     getattr(material,"material_status","declared"),getattr(material,"material_version","1"),
+                     getattr(material,"policy_version","1"),getattr(material,"checksum",None),
+                     getattr(material,"byte_size",None),getattr(material,"token_count",None),
+                     getattr(material,"format_name",None),getattr(material,"format_version",None),
+                     ",".join(getattr(material,"validation_errors",[]) or []),
+                     getattr(material,"created_at",""),getattr(material,"updated_at","")),
+                )
+                self._conn.commit()
+        except Exception as exc:
+            logger.warning("ThreadWake SQLite material upsert failed: %s", exc)
+            self._persistence_errors += 1
+
+    def list_snapshot_materials(self, limit=50, status=None, backend=None):
+        if not self._conn: return []
+        limit = max(1, min(limit, 500))
+        try:
+            with self._lock:
+                q = "SELECT * FROM threadwake_snapshot_materials WHERE 1=1"
+                ps: list = []
+                if status: q += " AND material_status=?"; ps.append(status)
+                if backend: q += " AND backend=?"; ps.append(backend)
+                q += " ORDER BY created_at DESC LIMIT ?"; ps.append(limit)
+                rows = self._conn.execute(q, ps).fetchall()
+            return [{"material_id":r[0],"artifact_id":r[1],"manifest_id":r[2],"prefix_hash":r[3],
+                     "backend":r[4],"model_id":r[5],"tokenizer_hash":r[6],"chat_template_hash":r[7],
+                     "material_kind":r[8],"material_status":r[9],"material_version":r[10],
+                     "policy_version":r[11],"checksum":r[12],"byte_size":r[13],"token_count":r[14],
+                     "format_name":r[15],"format_version":r[16],"validation_errors":r[17],
+                     "created_at":r[18],"updated_at":r[19]} for r in rows]
+        except Exception as exc:
+            logger.warning("ThreadWake SQLite material list failed: %s", exc)
+            self._persistence_errors += 1
+            return []
+
+    def snapshot_material_stats(self):
+        if not self._conn: return NoOpThreadWakeStorage().snapshot_material_stats()
+        try:
+            with self._lock:
+                row = self._conn.execute(
+                    "SELECT COUNT(*), SUM(CASE WHEN material_status='declared' THEN 1 ELSE 0 END), SUM(CASE WHEN material_status='materialized' THEN 1 ELSE 0 END), SUM(CASE WHEN material_status='validated' THEN 1 ELSE 0 END), SUM(CASE WHEN material_status='invalid' THEN 1 ELSE 0 END), SUM(CASE WHEN material_status='unsupported' THEN 1 ELSE 0 END), SUM(CASE WHEN material_status='expired' THEN 1 ELSE 0 END) FROM threadwake_snapshot_materials"
+                ).fetchone()
+            if row is None: return NoOpThreadWakeStorage().snapshot_material_stats()
+            return {"total_materials":row[0],"declared":row[1],"materialized":row[2],"validated":row[3],"invalid":row[4],"unsupported":row[5],"expired":row[6]}
+        except Exception as exc:
+            logger.warning("ThreadWake SQLite material stats failed: %s", exc)
+            self._persistence_errors += 1
+            return NoOpThreadWakeStorage().snapshot_material_stats()
 
     # ── Snapshot artifacts ─────────────────────────────────────────────
 
