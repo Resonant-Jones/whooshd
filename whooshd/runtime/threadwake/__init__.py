@@ -51,6 +51,9 @@ from .snapshot_material import (
     SnapshotMaterialContract,
     SnapshotMaterialKind,
     SnapshotMaterialStatus,
+    SnapshotMaterialValidationReason,
+    SnapshotMaterialValidationResult,
+    SnapshotMaterialValidator,
 )
 from .snapshot_manifest import (
     SnapshotManifest,
@@ -150,6 +153,9 @@ __all__ = [
     "SnapshotMaterialContract",
     "SnapshotMaterialKind",
     "SnapshotMaterialStatus",
+    "SnapshotMaterialValidationReason",
+    "SnapshotMaterialValidationResult",
+    "SnapshotMaterialValidator",
     "SnapshotManifestReason",
     "SnapshotManifestStatus",
     "SnapshotSelectionResult",
