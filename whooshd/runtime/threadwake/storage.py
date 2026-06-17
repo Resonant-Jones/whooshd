@@ -34,6 +34,7 @@ class ThreadWakeStorageProtocol(Protocol):
     def upsert_snapshot_artifact(self, artifact: Any) -> None: ...
     def list_snapshot_artifacts(self, limit=50, status=None, backend=None) -> list[dict]: ...
     def snapshot_artifact_stats(self) -> dict: ...
+    def record_snapshot_material_validation(self, result: Any) -> None: ...
     def upsert_snapshot_material(self, material: Any) -> None: ...
     def list_snapshot_materials(self, limit=50, status=None, backend=None) -> list[dict]: ...
     def snapshot_material_stats(self) -> dict: ...
@@ -84,6 +85,9 @@ class NoOpThreadWakeStorage:
 
     def snapshot_artifact_stats(self) -> dict[str, Any]:
         return {"total_artifacts": 0, "planned": 0, "build_pending": 0, "build_failed": 0, "ready": 0, "superseded": 0, "expired": 0}
+
+    def record_snapshot_material_validation(self, result: Any) -> None:
+        pass
 
     def upsert_snapshot_material(self, material: Any) -> None:
         pass
@@ -243,6 +247,26 @@ CREATE INDEX IF NOT EXISTS idx_snapshot_material_backend
     ON threadwake_snapshot_materials(backend);
 CREATE INDEX IF NOT EXISTS idx_snapshot_material_created
     ON threadwake_snapshot_materials(created_at);
+
+CREATE TABLE IF NOT EXISTS threadwake_snapshot_material_validation_events (
+    event_id TEXT PRIMARY KEY,
+    material_id TEXT,
+    valid INTEGER,
+    reason TEXT,
+    material_kind TEXT,
+    material_status TEXT,
+    errors TEXT,
+    checked_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_material_validation_material
+    ON threadwake_snapshot_material_validation_events(material_id);
+CREATE INDEX IF NOT EXISTS idx_material_validation_valid
+    ON threadwake_snapshot_material_validation_events(valid);
+CREATE INDEX IF NOT EXISTS idx_material_validation_reason
+    ON threadwake_snapshot_material_validation_events(reason);
+CREATE INDEX IF NOT EXISTS idx_material_validation_checked_at
+    ON threadwake_snapshot_material_validation_events(checked_at);
 """
 
 
@@ -276,6 +300,25 @@ class SQLiteThreadWakeStorage:
             if self._conn:
                 self._conn.close()
             self._conn = None
+
+    def record_snapshot_material_validation(self, result: Any) -> None:
+        if not self._conn: return
+        try:
+            import uuid
+            with self._lock:
+                self._conn.execute(
+                    "INSERT INTO threadwake_snapshot_material_validation_events (event_id,material_id,valid,reason,material_kind,material_status,errors,checked_at) VALUES (?,?,?,?,?,?,?,?)",
+                    (uuid.uuid4().hex[:12], getattr(result,"material_id",None),
+                     1 if getattr(result,"valid",False) else 0,
+                     getattr(result,"reason",""), getattr(result,"material_kind",None),
+                     getattr(result,"material_status",None),
+                     ",".join(getattr(result,"errors",[]) or []),
+                     getattr(result,"checked_at","")),
+                )
+                self._conn.commit()
+        except Exception as exc:
+            logger.warning("ThreadWake SQLite validation record failed: %s", exc)
+            self._persistence_errors += 1
 
     # ── Snapshot materials ─────────────────────────────────────────────
 
