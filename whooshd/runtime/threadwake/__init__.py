@@ -17,6 +17,14 @@ from .manager import ThreadWakeManager
 from .mlx_tokenizer import MLXInProcessTokenizerAdapter
 from .metrics import ThreadWakeMetrics, get_threadwake_metrics
 from .policy import evaluate_threadwake_policy
+from .candidate_selection import (
+    CandidateConfidence,
+    CandidateScore,
+    CandidateSelectionReason,
+    SnapshotCandidate,
+    SnapshotCandidateSelector,
+    SnapshotSelectionResult,
+)
 from .prefix_proof import PrefixProof, PrefixMismatchReason, StablePrefixProofEngine
 from .tokenization import (
     BackendTokenizerAdapter,
@@ -48,6 +56,9 @@ __all__ = [
     "BackendKVAdapterRegistry",
     "BackendTokenizerAdapter",
     "BackendTokenizerAdapterRegistry",
+    "CandidateConfidence",
+    "CandidateScore",
+    "CandidateSelectionReason",
     "CodexifySegmentMeta",
     "CodexifySegmentMetadata",
     "EntryStatus",
@@ -82,6 +93,9 @@ __all__ = [
     "ThreadWakeMode",
     "ThreadWakeObservation",
     "ThreadWakeRequestConfig",
+    "SnapshotCandidate",
+    "SnapshotCandidateSelector",
+    "SnapshotSelectionResult",
     "StablePrefixProofEngine",
     "ThreadWakeStats",
     "ThreadWakeTokenizerCapability",
