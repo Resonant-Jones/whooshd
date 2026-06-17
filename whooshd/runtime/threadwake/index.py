@@ -86,6 +86,15 @@ class ThreadWakeIndexEntry:
     last_used_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     hit_count: int = 0
     estimated_memory_bytes: int = 0
+    # ── Candidate selection metadata (Phase M9) ───────────────────
+    candidate_score: float | None = None
+    candidate_confidence: str | None = None
+    candidate_selected_at: datetime | None = None
+    selection_reason: str | None = None
+    potential_saved_tokens: int | None = None
+    potential_saved_ratio: float | None = None
+    candidate_seen_count: int = 0
+    candidate_last_seen_at: datetime | None = None
 
     def touch(self) -> None:
         self.last_used_at = datetime.now(timezone.utc)
@@ -106,6 +115,16 @@ class ThreadWakeIndexEntry:
             "last_used_at": self.last_used_at.isoformat(),
             "hit_count": self.hit_count,
             "estimated_memory_bytes": self.estimated_memory_bytes,
+            "candidate_score": self.candidate_score,
+            "candidate_confidence": self.candidate_confidence,
+            "selection_reason": self.selection_reason,
+            "potential_saved_tokens": self.potential_saved_tokens,
+            "potential_saved_ratio": self.potential_saved_ratio,
+            "candidate_seen_count": self.candidate_seen_count,
+            "candidate_last_seen_at": (
+                self.candidate_last_seen_at.isoformat()
+                if self.candidate_last_seen_at else None
+            ),
         }
 
 
@@ -474,6 +493,93 @@ class ThreadWakeIndex:
         """Return the number of active thread tips."""
         with self._lock:
             return len(self._thread_tips)
+
+    # ── Candidate selection metadata (Phase M9) ────────────────────────
+
+    def mark_candidate_selected(
+        self,
+        cache_key: str,
+        *,
+        score: float,
+        confidence: str,
+        selection_reason: str,
+        potential_saved_tokens: int,
+        potential_saved_ratio: float,
+        selected_at: datetime | None = None,
+    ) -> bool:
+        """Mark an index entry as a candidate with selection metadata.
+
+        Returns False if cache_key is unknown.  Does not alter
+        lifecycle state, KV handles, or opaque_ref.
+        """
+        with self._lock:
+            entry = self._entries.get(cache_key)
+            if entry is None:
+                return False
+            entry.candidate_score = score
+            entry.candidate_confidence = confidence
+            entry.candidate_selected_at = selected_at or datetime.now(timezone.utc)
+            entry.selection_reason = selection_reason
+            entry.potential_saved_tokens = potential_saved_tokens
+            entry.potential_saved_ratio = potential_saved_ratio
+            entry.candidate_seen_count += 1
+            entry.candidate_last_seen_at = datetime.now(timezone.utc)
+            self._promote_lru(cache_key)
+            return True
+
+    def list_candidates(
+        self,
+        limit: int = 50,
+        min_confidence: str | None = None,
+        backend: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Return candidate entries sorted by score, seen count, last seen.
+
+        Only entries with ``candidate_score is not None`` are returned.
+        Output is privacy-safe — no raw token IDs, prompts, or opaque refs.
+        """
+        limit = max(1, min(limit, 500))
+        with self._lock:
+            candidates = [
+                e for e in self._entries.values()
+                if e.candidate_score is not None and e.status != EntryStatus.EVICTED
+            ]
+        if min_confidence:
+            candidates = [c for c in candidates if c.candidate_confidence == min_confidence]
+        if backend:
+            candidates = [c for c in candidates if c.backend == backend]
+        candidates.sort(
+            key=lambda e: (
+                -(e.candidate_score or 0),
+                -e.candidate_seen_count,
+                -(e.candidate_last_seen_at.timestamp() if e.candidate_last_seen_at else 0),
+            )
+        )
+        return [e.public_snapshot() for e in candidates[:limit]]
+
+    def candidate_stats(self) -> dict[str, Any]:
+        """Return aggregate candidate statistics."""
+        with self._lock:
+            candidates = [
+                e for e in self._entries.values()
+                if e.candidate_score is not None and e.status != EntryStatus.EVICTED
+            ]
+        total = len(candidates)
+        high = sum(1 for c in candidates if c.candidate_confidence == "high")
+        medium = sum(1 for c in candidates if c.candidate_confidence == "medium")
+        low = sum(1 for c in candidates if c.candidate_confidence == "low")
+        seen_total = sum(c.candidate_seen_count for c in candidates)
+        saved_total = sum(c.potential_saved_tokens or 0 for c in candidates)
+        avg_score = sum(c.candidate_score or 0 for c in candidates) / total if total > 0 else 0.0
+        return {
+            "total_candidates": total,
+            "high_confidence": high,
+            "medium_confidence": medium,
+            "low_confidence": low,
+            "candidate_seen_total": seen_total,
+            "potential_saved_tokens_total": saved_total,
+            "average_candidate_score": round(avg_score, 4),
+        }
 
     # ── Internal ────────────────────────────────────────────────────────────
 

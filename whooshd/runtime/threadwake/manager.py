@@ -623,6 +623,7 @@ class ThreadWakeManager:
             },
             "entries_by_status": stats.entries_by_status,
             "entries_by_scope": stats.entries_by_scope,
+            "candidate_registry": self._index.candidate_stats(),
         }
 
     @staticmethod
