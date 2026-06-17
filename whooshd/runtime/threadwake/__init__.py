@@ -33,6 +33,12 @@ from .candidate_selection import (
 )
 from .prefix_proof import PrefixProof, PrefixMismatchReason, StablePrefixProofEngine
 from .replay_analysis import CandidateReplayAnalyzer, CandidateReplayRecord, CandidateReplaySummary
+from .snapshot_manifest import (
+    SnapshotManifest,
+    SnapshotManifestBuilder,
+    SnapshotManifestReason,
+    SnapshotManifestStatus,
+)
 from .storage import (
     NoOpThreadWakeStorage,
     SQLiteThreadWakeStorage,
@@ -110,6 +116,10 @@ __all__ = [
     "ThreadWakeRequestConfig",
     "SnapshotCandidate",
     "SnapshotCandidateSelector",
+    "SnapshotManifest",
+    "SnapshotManifestBuilder",
+    "SnapshotManifestReason",
+    "SnapshotManifestStatus",
     "SnapshotSelectionResult",
     "SQLiteThreadWakeStorage",
     "SnapshotEligibility",

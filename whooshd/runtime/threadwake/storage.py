@@ -25,22 +25,13 @@ logger = logging.getLogger(__name__)
 class ThreadWakeStorageProtocol(Protocol):
     """Protocol for ThreadWake candidate telemetry storage."""
 
-    def upsert_candidate(self, entry: Any) -> None:
-        """Insert or update a candidate entry."""
-        ...
-
-    def list_candidates(
-        self, limit: int = 50,
-        min_confidence: str | None = None,
-        backend: str | None = None,
-    ) -> list[dict[str, Any]]:
-        ...
-
-    def candidate_stats(self) -> dict[str, Any]:
-        ...
-
-    def close(self) -> None:
-        ...
+    def upsert_candidate(self, entry: Any) -> None: ...
+    def list_candidates(self, limit: int = 50, min_confidence: str | None = None, backend: str | None = None) -> list[dict[str, Any]]: ...
+    def candidate_stats(self) -> dict[str, Any]: ...
+    def upsert_snapshot_manifest(self, manifest: Any) -> None: ...
+    def list_snapshot_manifests(self, limit: int = 50, status: str | None = None, backend: str | None = None) -> list[dict[str, Any]]: ...
+    def snapshot_manifest_stats(self) -> dict[str, Any]: ...
+    def close(self) -> None: ...
 
 
 # ── No-op storage ──────────────────────────────────────────────────────────
@@ -69,6 +60,15 @@ class NoOpThreadWakeStorage:
 
     def close(self) -> None:
         pass
+
+    def upsert_snapshot_manifest(self, manifest: Any) -> None:
+        pass
+
+    def list_snapshot_manifests(self, limit: int = 50, status: str | None = None, backend: str | None = None) -> list[dict[str, Any]]:
+        return []
+
+    def snapshot_manifest_stats(self) -> dict[str, Any]:
+        return {"total_manifests": 0, "planned": 0, "superseded": 0, "expired": 0, "rejected": 0}
 
 
 # ── SQLite storage ─────────────────────────────────────────────────────────
@@ -106,6 +106,36 @@ CREATE TABLE IF NOT EXISTS threadwake_schema_version (
     version INTEGER PRIMARY KEY,
     applied_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+CREATE TABLE IF NOT EXISTS threadwake_snapshot_manifests (
+    manifest_id TEXT PRIMARY KEY,
+    prefix_hash TEXT NOT NULL,
+    backend TEXT,
+    model_id TEXT,
+    tokenizer_hash TEXT,
+    chat_template_hash TEXT,
+    candidate_score REAL,
+    candidate_confidence TEXT,
+    seen_count INTEGER DEFAULT 0,
+    potential_saved_tokens_total INTEGER DEFAULT 0,
+    average_potential_saved_ratio REAL,
+    eligibility_reason TEXT,
+    policy_version TEXT,
+    status TEXT DEFAULT 'planned',
+    created_at TEXT,
+    last_seen_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_snapshot_manifest_prefix_hash
+    ON threadwake_snapshot_manifests(prefix_hash);
+CREATE INDEX IF NOT EXISTS idx_snapshot_manifest_backend
+    ON threadwake_snapshot_manifests(backend);
+CREATE INDEX IF NOT EXISTS idx_snapshot_manifest_model_id
+    ON threadwake_snapshot_manifests(model_id);
+CREATE INDEX IF NOT EXISTS idx_snapshot_manifest_status
+    ON threadwake_snapshot_manifests(status);
+CREATE INDEX IF NOT EXISTS idx_snapshot_manifest_created_at
+    ON threadwake_snapshot_manifests(created_at);
 """
 
 
@@ -139,6 +169,117 @@ class SQLiteThreadWakeStorage:
             if self._conn:
                 self._conn.close()
             self._conn = None
+
+    # ── Snapshot manifests ─────────────────────────────────────────────
+
+    def upsert_snapshot_manifest(self, manifest: Any) -> None:
+        if not self._conn:
+            return
+        try:
+            with self._lock:
+                mid = getattr(manifest, "manifest_id", "")
+                if not mid:
+                    return
+                self._conn.execute(
+                    """INSERT INTO threadwake_snapshot_manifests
+                       (manifest_id, prefix_hash, backend, model_id,
+                        tokenizer_hash, chat_template_hash, candidate_score,
+                        candidate_confidence, seen_count, potential_saved_tokens_total,
+                        average_potential_saved_ratio, eligibility_reason,
+                        policy_version, status, created_at, last_seen_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                       ON CONFLICT(manifest_id) DO UPDATE SET
+                        candidate_score = excluded.candidate_score,
+                        candidate_confidence = excluded.candidate_confidence,
+                        seen_count = excluded.seen_count,
+                        potential_saved_tokens_total = excluded.potential_saved_tokens_total,
+                        average_potential_saved_ratio = excluded.average_potential_saved_ratio,
+                        eligibility_reason = excluded.eligibility_reason,
+                        policy_version = excluded.policy_version,
+                        status = excluded.status,
+                        last_seen_at = excluded.last_seen_at""",
+                    (
+                        mid, getattr(manifest, "prefix_hash", ""),
+                        getattr(manifest, "backend", None),
+                        getattr(manifest, "model_id", None),
+                        getattr(manifest, "tokenizer_hash", None),
+                        getattr(manifest, "chat_template_hash", None),
+                        getattr(manifest, "candidate_score", 0),
+                        getattr(manifest, "candidate_confidence", None),
+                        getattr(manifest, "seen_count", 0),
+                        getattr(manifest, "potential_saved_tokens_total", 0),
+                        getattr(manifest, "average_potential_saved_ratio", 0),
+                        getattr(manifest, "eligibility_reason", ""),
+                        getattr(manifest, "policy_version", "1"),
+                        getattr(manifest, "status", "planned"),
+                        getattr(manifest, "created_at", ""),
+                        getattr(manifest, "last_seen_at", None),
+                    ),
+                )
+                self._conn.commit()
+        except Exception as exc:
+            logger.warning("ThreadWake SQLite manifest upsert failed: %s", exc)
+            self._persistence_errors += 1
+
+    def list_snapshot_manifests(
+        self, limit: int = 50, status: str | None = None, backend: str | None = None,
+    ) -> list[dict[str, Any]]:
+        if not self._conn:
+            return []
+        limit = max(1, min(limit, 500))
+        try:
+            with self._lock:
+                query = "SELECT * FROM threadwake_snapshot_manifests WHERE 1=1"
+                params: list = []
+                if status:
+                    query += " AND status = ?"
+                    params.append(status)
+                if backend:
+                    query += " AND backend = ?"
+                    params.append(backend)
+                query += " ORDER BY created_at DESC LIMIT ?"
+                params.append(limit)
+                rows = self._conn.execute(query, params).fetchall()
+            return [
+                {
+                    "manifest_id": r[0], "prefix_hash": r[1], "backend": r[2],
+                    "model_id": r[3], "tokenizer_hash": r[4], "chat_template_hash": r[5],
+                    "candidate_score": r[6], "candidate_confidence": r[7],
+                    "seen_count": r[8], "potential_saved_tokens_total": r[9],
+                    "average_potential_saved_ratio": r[10], "eligibility_reason": r[11],
+                    "policy_version": r[12], "status": r[13],
+                    "created_at": r[14], "last_seen_at": r[15],
+                }
+                for r in rows
+            ]
+        except Exception as exc:
+            logger.warning("ThreadWake SQLite manifest list failed: %s", exc)
+            self._persistence_errors += 1
+            return []
+
+    def snapshot_manifest_stats(self) -> dict[str, Any]:
+        if not self._conn:
+            return NoOpThreadWakeStorage().snapshot_manifest_stats()
+        try:
+            with self._lock:
+                row = self._conn.execute(
+                    """SELECT COUNT(*),
+                              SUM(CASE WHEN status='planned' THEN 1 ELSE 0 END),
+                              SUM(CASE WHEN status='superseded' THEN 1 ELSE 0 END),
+                              SUM(CASE WHEN status='expired' THEN 1 ELSE 0 END),
+                              SUM(CASE WHEN status='rejected' THEN 1 ELSE 0 END)
+                       FROM threadwake_snapshot_manifests"""
+                ).fetchone()
+            if row is None:
+                return NoOpThreadWakeStorage().snapshot_manifest_stats()
+            return {
+                "total_manifests": row[0], "planned": row[1],
+                "superseded": row[2], "expired": row[3], "rejected": row[4],
+            }
+        except Exception as exc:
+            logger.warning("ThreadWake SQLite manifest stats failed: %s", exc)
+            self._persistence_errors += 1
+            return NoOpThreadWakeStorage().snapshot_manifest_stats()
 
     def close(self) -> None:
         if self._conn:
