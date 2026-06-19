@@ -56,6 +56,9 @@ python3 -m venv .venv
 source .venv/bin/activate
 pip install -e ".[dev]"
 
+# Copy example env
+cp examples/env.stub .env
+
 # Run with stub adapter (no models needed)
 WHOOSHD_ADAPTER=stub python -m uvicorn whooshd.app:app --reload
 
@@ -161,6 +164,23 @@ curl http://127.0.0.1:8000/runtime/threadwake/analysis
 ```
 
 All commands should succeed with the stub adapter — no models, downloads, or GPU required.
+
+Or run the smoke scripts (server must already be running):
+
+```bash
+sh scripts/smoke_stub.sh
+sh scripts/smoke_threadwake.sh
+sh scripts/smoke_openai_compat.sh
+```
+
+Example env files are in `examples/` — copy and adapt for your setup:
+
+| File | Purpose |
+|---|---|
+| `examples/env.stub` | Stub adapter (no models) |
+| `examples/env.codexify` | Codexify local provider connection |
+| `examples/env.mlx.example` | MLX in-process adapter |
+| `examples/env.llama-cpp.example` | llama.cpp / GGUF adapter |
 
 ### Codexify Connection
 
