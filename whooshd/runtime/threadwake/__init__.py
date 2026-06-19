@@ -42,6 +42,7 @@ from .candidate_selection import (
 )
 from .prefix_proof import PrefixProof, PrefixMismatchReason, StablePrefixProofEngine
 from .replay_analysis import CandidateReplayAnalyzer, CandidateReplayRecord, CandidateReplaySummary
+from .analysis_loop import AnalysisLoopResult, ThreadWakeAnalysisLoop
 from .artifacts import (
     SnapshotArtifact,
     SnapshotArtifactBuilder,
@@ -102,6 +103,7 @@ from .types import (
 )
 
 __all__ = [
+    "AnalysisLoopResult",
     "BackendKVAdapterRegistry",
     "BackendTokenizerAdapter",
     "BackendTokenizerAdapterRegistry",
@@ -177,6 +179,7 @@ __all__ = [
     "StablePrefixProofEngine",
     "ThreadWakeStats",
     "ThreadWakeTokenizerCapability",
+    "ThreadWakeAnalysisLoop",
     "TokenSpan",
     "ThreadWakeStorageProtocol",
     "TokenizedPrompt",
