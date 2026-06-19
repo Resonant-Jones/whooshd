@@ -1,5 +1,43 @@
 # Changelog
 
+## ThreadWake Metadata Milestone (2026-06-19)
+
+Tag: `threadwake-metadata-milestone-2026-06`
+
+Pre-materialization platform layer for prompt-prefix reuse optimization.
+
+### Added
+
+- **Metadata spine** (M14–M18): artifact registry, snapshot creation gate,
+  material contract, material validation, backend materialization interface
+- **Backend feasibility investigation** (M19): no backend is production-ready
+  for real KV snapshot materialization
+- **Metadata-only analysis loop** (M20): periodic analysis outside inference path
+- **Read-only visibility surface** (M21): `GET /runtime/threadwake/analysis` +
+  `python -m whooshd.threadwake.analyze`
+- **Operator runbook** (M22): safe usage, field interpretation, scenarios,
+  safety checklist
+- **Visibility docs polish** (M23): "which surface?" table, operator workflow,
+  example outputs
+- **Documentation index** (M24): consolidated threadwake docs map, milestone
+  status, safety boundary
+
+### Safety
+
+- KV materialization: **not enabled**
+- Durable snapshots: **deferred**
+- Production restore: **not implemented**
+- Backend materialization: no backend supports it
+- All visibility surfaces: counts and status only — no raw prompts, token
+  IDs, opaque refs, or user identifiers
+
+### Scope
+
+- 24 source modules, 47 test files, 10 doc pages, 3 benchmark scripts
+- 614 tests passing, 4 skipped
+
+---
+
 ## v0.1.0rc2 (2026-05-29)
 
 ### Added
