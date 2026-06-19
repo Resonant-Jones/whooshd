@@ -86,7 +86,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--whooshd-label", default="com.resonant.whooshd")
     parser.add_argument("--mlx-vlm-label", default="com.resonant.mlx-vlm-gemma12b")
     parser.add_argument("--model-registry-path", default="configs/models.yaml")
-    parser.add_argument("--whooshd-host", default="0.0.0.0")
+    parser.add_argument("--whooshd-host", default="127.0.0.1")
     parser.add_argument("--whooshd-port", default="8000")
     parser.add_argument("--mlx-vlm-host", default="127.0.0.1")
     parser.add_argument("--mlx-vlm-port", default="8082")

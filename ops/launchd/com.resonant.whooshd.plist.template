@@ -11,7 +11,10 @@
     <key>ProgramArguments</key>
     <array>
       <string>{{WHOOSHD_LAUNCHER}}</string>
-      <string>--codexify</string>
+      <string>--host</string>
+      <string>{{WHOOSHD_HOST}}</string>
+      <string>--port</string>
+      <string>{{WHOOSHD_PORT}}</string>
     </array>
 
     <key>RunAtLoad</key>

@@ -37,12 +37,23 @@ The persistence plan is intentionally split:
   - owns the OpenAI-compatible proxy on port `8000`
   - points at the runtime registry in `configs/models.yaml`
   - does not hardcode the old E4B model in launchd env
+  - binds `127.0.0.1:8000` by default in the launchd bundle
+  - uses explicit `--host` / `--port` launcher args instead of `--codexify`
 - `com.resonant.mlx-vlm-gemma12b`
   - owns the Gemma 12B `mlx_vlm` server on `127.0.0.1:8082`
   - launches the exact working command shape: `python -m mlx_vlm server --model ...`
 
 This preserves Whoosh'd as the single Model Bay/proxy endpoint while making
 the 12B upstream repeatable across reboot/login.
+
+On this machine, Docker containers can still reach loopback-bound host services
+through `host.docker.internal`. That is already proven by the launchd-owned
+Gemma 12B sidecar on `127.0.0.1:8082`, which is reachable from the Codexify
+backend container at `http://host.docker.internal:8082/v1/models`.
+
+The bundle intentionally avoids `whooshd --codexify` because the current local
+launcher implementation forces `0.0.0.0:8000` when that flag is present. For
+the launchd path we want the bind host to remain renderer-controlled.
 
 ## Render
 
@@ -116,6 +127,11 @@ Expected endpoints:
 
 - Whoosh'd proxy: `http://127.0.0.1:8000`
 - Gemma 12B upstream: `http://127.0.0.1:8082`
+
+Dockerized Codexify services should continue using:
+
+- `LOCAL_BASE_URL=http://host.docker.internal:8000/v1`
+- `VAULTNODE_BASE_URL=http://host.docker.internal:8000`
 
 ## Rollback
 
