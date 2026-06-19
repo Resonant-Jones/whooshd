@@ -1,5 +1,7 @@
 # Whoosh'd
 
+<img width="1672" height="941" alt="blue-balloon-whoosh" src="https://github.com/user-attachments/assets/25ed7dae-9d3a-4c8e-9e54-3185ced18831" />
+
 **Local-first inference broker for Apple Silicon systems.**
 
 Whoosh'd coordinates local model backends such as MLX, llama.cpp, and
