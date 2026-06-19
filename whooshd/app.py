@@ -58,11 +58,22 @@ from whooshd.runtime import get_runtime
 from whooshd.http_forwarding import UpstreamRuntimeError
 from whooshd.runtime.threadwake import ThreadWakeManager
 from whooshd.runtime.threadwake.tokenization import BackendTokenizerAdapterRegistry
+from whooshd.runtime.threadwake.analysis_loop import ThreadWakeAnalysisLoop
 
 
 logger = logging.getLogger(__name__)
 _tokenizer_registry = BackendTokenizerAdapterRegistry()
 _threadwake_manager = ThreadWakeManager(tokenizer_registry=_tokenizer_registry)
+_threadwake_analysis_loop: ThreadWakeAnalysisLoop | None = None
+
+
+def _get_analysis_loop() -> ThreadWakeAnalysisLoop:
+    global _threadwake_analysis_loop
+    if _threadwake_analysis_loop is None:
+        _threadwake_analysis_loop = ThreadWakeAnalysisLoop(
+            index=_threadwake_manager._index,
+        )
+    return _threadwake_analysis_loop
 
 app = FastAPI(
     title="Whoosh'd",
@@ -813,3 +824,34 @@ async def runtime_threadwake_flush(req: dict | None = None):
     # Record evictions in metrics
     _threadwake_manager.metrics.record_eviction(result["flushed"])
     return result
+
+
+# ── ThreadWake analysis visibility ──────────────────────────────────────────
+
+
+@app.get("/runtime/threadwake/analysis")
+async def runtime_threadwake_analysis():
+    """Read-only ThreadWake analysis report.
+
+    Returns candidate, manifest, and artifact summary counts.
+    May run the metadata-only analysis loop on demand.
+    No raw prompts, token IDs, opaque refs, or KV state.
+    """
+    loop = _get_analysis_loop()
+    result = loop.run(limit=50)
+    last = loop.last_result() or {}
+    return {
+        "analysis": {
+            "candidates_scanned": last.get("candidates_scanned", 0),
+            "candidates_eligible": last.get("candidates_eligible", 0),
+            "manifests_created": last.get("manifests_created", 0),
+            "artifacts_registered": last.get("artifacts_registered", 0),
+            "skipped": last.get("skipped", 0),
+            "errors": last.get("errors", 0),
+            "run_count": loop.run_count,
+        },
+        "threadwake_status": {
+            "enabled": _threadwake_manager.get_health().get("enabled", False),
+            "mode": _threadwake_manager.get_health().get("mode", "off"),
+        },
+    }
