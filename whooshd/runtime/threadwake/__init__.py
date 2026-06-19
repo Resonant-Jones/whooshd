@@ -14,6 +14,15 @@ from .index import (
 from .keys import build_threadwake_cache_key
 from .kv_lifecycle import KVEvent, KVLifecycleObserver, KVLifecycleStats
 from .manager import ThreadWakeManager
+from .materialization import (
+    MaterializationCapability,
+    MaterializationCapabilityResult,
+    MaterializationReason,
+    MaterializerRegistry,
+    MLXSnapshotMaterializer,
+    NoOpSnapshotMaterializer,
+    SnapshotMaterializer,
+)
 from .mlx_tokenizer import MLXInProcessTokenizerAdapter
 from .metrics import ThreadWakeMetrics, get_threadwake_metrics
 from .policy import (
@@ -33,6 +42,28 @@ from .candidate_selection import (
 )
 from .prefix_proof import PrefixProof, PrefixMismatchReason, StablePrefixProofEngine
 from .replay_analysis import CandidateReplayAnalyzer, CandidateReplayRecord, CandidateReplaySummary
+from .artifacts import (
+    SnapshotArtifact,
+    SnapshotArtifactBuilder,
+    SnapshotArtifactRegistry,
+    SnapshotArtifactStatus,
+)
+from .snapshot_creation import (
+    FakeSnapshotCreator,
+    SnapshotCreationReason,
+    SnapshotCreationResult,
+    SnapshotCreationStatus,
+    SnapshotCreator,
+)
+from .snapshot_material import (
+    SnapshotMaterialBuilder,
+    SnapshotMaterialContract,
+    SnapshotMaterialKind,
+    SnapshotMaterialStatus,
+    SnapshotMaterialValidationReason,
+    SnapshotMaterialValidationResult,
+    SnapshotMaterialValidator,
+)
 from .snapshot_manifest import (
     SnapshotManifest,
     SnapshotManifestBuilder,
@@ -96,6 +127,7 @@ __all__ = [
     "MLXTokenizerAdapterStub",
     "MlxVlmTokenizerAdapterStub",
     "NoOpKVBackendAdapter",
+    "NoOpSnapshotMaterializer",
     "NoOpTokenizerAdapter",
     "CandidateReplayAnalyzer",
     "CandidateReplayRecord",
@@ -115,9 +147,25 @@ __all__ = [
     "ThreadWakeObservation",
     "ThreadWakeRequestConfig",
     "SnapshotCandidate",
+    "SnapshotArtifact",
+    "SnapshotArtifactBuilder",
+    "SnapshotArtifactRegistry",
+    "SnapshotArtifactStatus",
     "SnapshotCandidateSelector",
+    "FakeSnapshotCreator",
+    "SnapshotCreationReason",
+    "SnapshotCreationResult",
+    "SnapshotCreationStatus",
+    "SnapshotCreator",
     "SnapshotManifest",
     "SnapshotManifestBuilder",
+    "SnapshotMaterialBuilder",
+    "SnapshotMaterialContract",
+    "SnapshotMaterialKind",
+    "SnapshotMaterialStatus",
+    "SnapshotMaterialValidationReason",
+    "SnapshotMaterialValidationResult",
+    "SnapshotMaterialValidator",
     "SnapshotManifestReason",
     "SnapshotManifestStatus",
     "SnapshotSelectionResult",
