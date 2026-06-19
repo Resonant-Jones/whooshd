@@ -38,6 +38,72 @@ Configure via `WHOOSHD_THREADWAKE_MODE` or per-request `threadwake.mode`.
 
 ---
 
+## Visibility Surfaces
+
+ThreadWake exposes three visibility surfaces. Each answers a different question.
+
+| Surface | Question | Returns |
+|---|---|---|
+| `GET /health/threadwake` | What is ThreadWake's current posture? | Live state: mode, entry counts, hit/miss rates, KV observability, candidate registry, replay summary |
+| `GET /runtime/threadwake/analysis` | What would be worth caching? | Analysis counts: candidates scanned, eligible, manifests, artifacts, errors |
+| `python -m whooshd.threadwake.analyze` | Same as above, from CLI | Same analysis counts |
+
+**Rule of thumb**: Health tells you *if* ThreadWake is working. Analysis tells you *what* it found.
+
+---
+
+## Recommended Operator Workflow
+
+```
+1. Confirm posture
+   → GET /health/threadwake
+   → Verify mode, check for errors
+
+2. Run analysis
+   → GET /runtime/threadwake/analysis
+   → or: python -m whooshd.threadwake.analyze
+
+3. Interpret counts
+   → See "Interpreting Fields" below
+   → Common scenarios below
+
+4. Decide
+   → candidates_eligible > 0: analysis is finding value
+   → all zero: keep observing, need more data
+   → errors > 0: investigate logs
+   → everything looks good: no action needed
+```
+
+---
+
+## Example Outputs
+
+### ThreadWake off
+```json
+{"analysis": {"candidates_scanned": 0, ...}, "threadwake_status": {"enabled": false, "mode": "off"}}
+```
+**Action**: Enable observe mode to start collecting candidates.
+
+### Observe mode, no candidates yet
+```json
+{"analysis": {"candidates_scanned": 0, ...}, "threadwake_status": {"enabled": true, "mode": "observe"}}
+```
+**Action**: Continue running workloads with stable prefixes. Candidates appear after repeated observations.
+
+### Observe mode, eligible candidates found
+```json
+{"analysis": {"candidates_scanned": 8, "candidates_eligible": 3, "manifests_created": 3, "artifacts_registered": 3, "skipped": 5, "errors": 0}, ...}
+```
+**Action**: Analysis is finding value. Manifests and artifacts are metadata only. No KV materialization has occurred.
+
+### Errors detected
+```json
+{"analysis": {"candidates_scanned": 5, "errors": 1, ...}, ...}
+```
+**Action**: Check Whoosh'd logs for `ThreadWake` warnings. Errors do not affect inference.
+
+---
+
 ## Safe Operating Posture
 
 - ThreadWake is **off by default**. Enable explicitly.
