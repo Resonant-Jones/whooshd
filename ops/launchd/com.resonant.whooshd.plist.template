@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+  <dict>
+    <key>Label</key>
+    <string>{{WHOOSHD_LABEL}}</string>
+
+    <key>UserName</key>
+    <string>{{USER_NAME}}</string>
+
+    <key>ProgramArguments</key>
+    <array>
+      <string>{{WHOOSHD_LAUNCHER}}</string>
+      <string>--codexify</string>
+    </array>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>WorkingDirectory</key>
+    <string>{{WHOOSHD_ROOT}}</string>
+
+    <key>StandardOutPath</key>
+    <string>{{WHOOSHD_STDOUT}}</string>
+
+    <key>StandardErrorPath</key>
+    <string>{{WHOOSHD_STDERR}}</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+      <key>PATH</key>
+      <string>{{PATH_VALUE}}</string>
+      <key>WHOOSHD_ROOT</key>
+      <string>{{WHOOSHD_ROOT}}</string>
+      <key>WHOOSHD_MODEL_REGISTRY_PATH</key>
+      <string>{{WHOOSHD_MODEL_REGISTRY_PATH}}</string>
+      <key>WHOOSHD_MLX_ENABLED</key>
+      <string>{{WHOOSHD_MLX_ENABLED}}</string>
+      <key>WHOOSHD_MLX_VLM_ENABLED</key>
+      <string>{{WHOOSHD_MLX_VLM_ENABLED}}</string>
+      <key>WHOOSHD_MLX_VLM_HOST</key>
+      <string>{{WHOOSHD_MLX_VLM_HOST}}</string>
+      <key>WHOOSHD_MLX_VLM_PORT</key>
+      <string>{{WHOOSHD_MLX_VLM_PORT}}</string>
+      <key>WHOOSHD_MLX_VLM_MODEL</key>
+      <string>{{WHOOSHD_MLX_VLM_MODEL}}</string>
+      <key>WHOOSHD_HOST</key>
+      <string>{{WHOOSHD_HOST}}</string>
+      <key>WHOOSHD_PORT</key>
+      <string>{{WHOOSHD_PORT}}</string>
+    </dict>
+  </dict>
+</plist>

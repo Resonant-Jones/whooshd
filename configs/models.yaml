@@ -55,6 +55,51 @@ models:
       - mlx
       - local
 
+  # ── Desktop-installed Gemma 4 E4B MLX model ────────────────────────
+  gemma-4-e4b-it-4bit:
+    display_name: "Gemma 4 E4B IT 4-bit"
+    engine: mlx_vlm
+    format: mlx
+    path: "/Volumes/Dev_SSD/whooshd/model-weights/hub/models--mlx-community--gemma-4-e4b-it-4bit/snapshots/deb1db712068b1c9f83fb1c97f08c1204b9459a1"
+    modalities:
+      - text
+      - vision
+    context_window: 131072
+    preferred_hardware:
+      - apple_silicon
+      - metal
+    warm_policy: warm_on_first_use
+    priority: chat
+    enabled: true
+    tags:
+      - chat
+      - vision
+      - mlx
+      - local
+
+  # ── Requested Gemma 4 12B QAT model on Dev_SSD ──────────────────────
+  gemma-4-12b-it-qat-4bit:
+    display_name: "Gemma 4 12B IT QAT 4-bit"
+    engine: mlx_vlm
+    format: mlx
+    path: "/Volumes/Dev_SSD/whooshd/model-weights/hub/models--mlx-community--gemma-4-12B-it-qat-4bit"
+    modalities:
+      - text
+      - vision
+    context_window: 262144
+    preferred_hardware:
+      - apple_silicon
+      - metal
+    warm_policy: warm_on_first_use
+    priority: chat
+    enabled: true
+    tags:
+      - chat
+      - vision
+      - mlx
+      - local
+      - large
+
   # ── Example MLX text-only model ─────────────────────────────────────
   llama-3.2-3b-mlx:
     display_name: "Llama 3.2 3B Instruct 4-bit MLX"

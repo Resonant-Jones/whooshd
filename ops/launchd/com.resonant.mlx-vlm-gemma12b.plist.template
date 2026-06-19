@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+  <dict>
+    <key>Label</key>
+    <string>{{MLX_VLM_LABEL}}</string>
+
+    <key>UserName</key>
+    <string>{{USER_NAME}}</string>
+
+    <key>ProgramArguments</key>
+    <array>
+      <string>{{MLX_VLM_PYTHON}}</string>
+      <string>-m</string>
+      <string>mlx_vlm</string>
+      <string>server</string>
+      <string>--model</string>
+      <string>{{MLX_VLM_MODEL_PATH}}</string>
+      <string>--host</string>
+      <string>{{MLX_VLM_HOST}}</string>
+      <string>--port</string>
+      <string>{{MLX_VLM_PORT}}</string>
+    </array>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>WorkingDirectory</key>
+    <string>{{MLX_VLM_WORKING_DIR}}</string>
+
+    <key>StandardOutPath</key>
+    <string>{{MLX_VLM_STDOUT}}</string>
+
+    <key>StandardErrorPath</key>
+    <string>{{MLX_VLM_STDERR}}</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+      <key>PATH</key>
+      <string>{{PATH_VALUE}}</string>
+      <key>PYTHONUNBUFFERED</key>
+      <string>1</string>
+    </dict>
+  </dict>
+</plist>
