@@ -109,8 +109,110 @@ See **[docs/codexify-integration.md](docs/codexify-integration.md)** for the ful
 | POST   | `/v1/chat/completions`         | OpenAI-compatible chat (routed, streaming + non) |
 | POST   | `/v1/generate`                 | Codexify-style generation (routed)        |
 | GET    | `/models`                      | Internal model registry                   |
+| GET    | `/health/threadwake`           | ThreadWake cache posture                  |
+| GET    | `/runtime/threadwake/analysis` | ThreadWake analysis counts                |
+| POST   | `/runtime/threadwake/flush`    | Flush ThreadWake cache entries            |
 
 Open http://127.0.0.1:8000/docs for the auto-generated Swagger UI.
+
+### Runtime Surface Map
+
+| Question | Endpoint |
+|---|---|
+| Is the server alive? | `GET /health` |
+| Can it serve inference now? | `GET /ready` |
+| What's the full runtime state? | `GET /runtime` |
+| What models are available? | `GET /v1/models` or `GET /api/tags` |
+| What's ThreadWake doing? | `GET /health/threadwake` |
+| What did ThreadWake find? | `GET /runtime/threadwake/analysis` |
+
+**Rule**: Health tells you if the system is okay. Ready tells you if it can serve. ThreadWake health tells you if the cache subsystem is awake. Analysis tells you what it found.
+
+### Local Sanity Checklist
+
+```bash
+# 1. Start stub server (no models needed)
+WHOOSHD_ADAPTER=stub uvicorn whooshd.app:app --port 8000
+
+# 2. Confirm liveness
+curl http://127.0.0.1:8000/health
+
+# 3. Confirm readiness
+curl http://127.0.0.1:8000/ready
+
+# 4. List models
+curl http://127.0.0.1:8000/v1/models | python3 -m json.tool
+
+# 5. Non-streaming chat
+curl -s http://127.0.0.1:8000/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model":"stub-model","messages":[{"role":"user","content":"Hello"}]}'
+
+# 6. Streaming chat
+curl -s http://127.0.0.1:8000/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model":"stub-model","messages":[{"role":"user","content":"Hello"}],"stream":true}'
+
+# 7. ThreadWake health (off by default — all zeros)
+curl http://127.0.0.1:8000/health/threadwake
+
+# 8. ThreadWake analysis (counts only, safe even when off)
+curl http://127.0.0.1:8000/runtime/threadwake/analysis
+```
+
+All commands should succeed with the stub adapter — no models, downloads, or GPU required.
+
+### Codexify Connection
+
+Point Codexify at Whoosh'd:
+
+```bash
+export LOCAL_BASE_URL=http://127.0.0.1:8000/v1
+export LOCAL_CHAT_MODEL=stub-model
+export LOCAL_API_KEY=local
+```
+
+For MLX with a real model:
+
+```bash
+export LOCAL_CHAT_MODEL=mlx-community/Llama-3.2-3B-Instruct-4bit
+```
+
+Codexify's `LOCAL_PROVIDER_VENDOR=whooshd` enables ThreadWake segment
+metadata emission when `CODEXIFY_WHOOSHD_THREADWAKE_SEGMENTS_ENABLED=true`.
+
+## ThreadWake Cache
+
+ThreadWake is a **runtime optimization** that reuses pre-computed prompt-prefix
+state across chat requests.  It is included in this release as a **metadata
+milestone**: the full analysis, policy, manifest, and visibility pipeline is
+available, but KV materialization is not enabled.
+
+| Capability | Status |
+|---|---|
+| Observe-mode prompt analysis | ✅ |
+| Candidate telemetry and scoring | ✅ |
+| Snapshot policy engine | ✅ |
+| Metadata-only analysis loop | ✅ |
+| Read-only visibility (`/health/threadwake`, `/runtime/threadwake/analysis`) | ✅ |
+| Operator runbook and docs index | ✅ |
+| KV reuse | ❌ Not enabled |
+| Durable KV snapshots | ❌ Deferred |
+| Production backend materialization | ❌ No backend supports it |
+
+See **[docs/threadwake/README.md](docs/threadwake/README.md)** for the full documentation index.
+
+## Troubleshooting
+
+| Symptom | Check |
+|---|---|
+| Server not responding | `curl http://127.0.0.1:8000/health` — is uvicorn running? |
+| `GET /ready` returns 503 | Model may be warming. Check `/runtime/model` for lifecycle state. |
+| Warmup hangs | Check model path exists. MLX downloads on first load — wait or check logs. |
+| 429 Too Many Requests | Admission control at capacity. Increase `WHOOSHD_MAX_ACTIVE_REQUESTS` or wait. |
+| Model listed but not runnable | Check adapter is registered for that runtime kind. See `/health/runtime`. |
+| ThreadWake analysis all zeros | Normal when ThreadWake is off or no candidates exist. Enable observe mode first. |
+| `pip install` fails | Ensure Python 3.13+ and that optional dependencies (`mlx`, `dev`) match your use case. |
 
 ## Configuration
 
