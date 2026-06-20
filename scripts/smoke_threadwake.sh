@@ -15,7 +15,17 @@ check_field() {
     url="$2"
     field="$3"
     resp=$(curl -s "$url" 2>/dev/null)
-    val=$(echo "$resp" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('$field','NOT_FOUND'))" 2>/dev/null)
+    val=$(echo "$resp" | python3 -c "
+import sys,json
+d=json.load(sys.stdin)
+# Navigate nested dict with dot-separated path
+parts='$field'.split('.')
+v=d
+for p in parts:
+    if isinstance(v,dict): v=v.get(p,'NOT_FOUND')
+    else: v='NOT_FOUND'; break
+print(v)
+" 2>/dev/null)
     if [ "$val" != "NOT_FOUND" ] && [ "$val" != "null" ]; then
         echo "  PASS  $name ($field=$val)"
         PASS=$((PASS + 1))
@@ -49,7 +59,7 @@ check_no_leak "/health/threadwake safe"   "$BASE_URL/health/threadwake"
 
 echo ""
 echo "ThreadWake Analysis"
-check_field "/runtime/threadwake/analysis candidates" "$BASE_URL/runtime/threadwake/analysis" candidates_scanned
+check_field "/runtime/threadwake/analysis candidates" "$BASE_URL/runtime/threadwake/analysis" analysis.candidates_scanned
 check_no_leak "/runtime/threadwake/analysis safe"     "$BASE_URL/runtime/threadwake/analysis"
 
 echo ""
