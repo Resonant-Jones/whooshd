@@ -1,5 +1,26 @@
 # Changelog
 
+## Runtime Readiness Smoke Layer (2026-06-19)
+
+Tag: `whooshd-runtime-readiness-smoke-2026-06`
+
+Turned the README quickstart into executable artifacts with live verification.
+
+### Added
+
+- Example env files: `examples/env.stub`, `examples/env.codexify`,
+  `examples/env.mlx.example`, `examples/env.llama-cpp.example`
+- Smoke scripts: `scripts/smoke_stub.sh`, `scripts/smoke_threadwake.sh`,
+  `scripts/smoke_openai_compat.sh`
+- Live stub smoke verification: 12/12 checks passing
+
+### Docs
+
+- README runtime surface map, local sanity checklist, Codexify connection notes,
+  ThreadWake milestone status table, troubleshooting guide
+
+---
+
 ## ThreadWake Metadata Milestone (2026-06-19)
 
 Tag: `threadwake-metadata-milestone-2026-06`
