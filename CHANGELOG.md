@@ -1,5 +1,17 @@
 # Changelog
 
+## Public README Positioning (2026-06-19)
+
+- Clarified Whoosh'd as a local-first inference gateway for Apple Silicon
+  and self-hosted workflows.
+- Added clearer audience framing: Codexify users, local inference builders.
+- Added non-disparaging "Why not just Ollama or a raw MLX script?"
+  positioning with concrete differentiators.
+- Preserved technical quickstart, smoke scripts, endpoint map, and
+  troubleshooting below the fold.
+
+---
+
 ## Runtime Readiness Smoke Layer (2026-06-19)
 
 Tag: `whooshd-runtime-readiness-smoke-2026-06`
