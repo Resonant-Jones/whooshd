@@ -2,15 +2,31 @@
 
 <img width="1672" height="941" alt="blue-balloon-whoosh" src="https://github.com/user-attachments/assets/25ed7dae-9d3a-4c8e-9e54-3185ced18831" />
 
-**Local-first inference broker for Apple Silicon systems.**
+**A local-first inference gateway for Apple Silicon and self-hosted AI
+workflows.** It exposes OpenAI-compatible chat and model surfaces while
+coordinating local runtimes like MLX and llama.cpp — with explicit
+health, readiness, runtime visibility, and safety boundaries.
 
-Whoosh'd coordinates local model backends such as MLX, llama.cpp, and
-related runtimes behind a unified routing surface, with support for
-memory-aware orchestration and Codexify-compatible workflows.
+Whoosh'd is built to be useful as a standalone local inference server,
+but especially sharp as the local runtime layer beneath
+[Codexify](https://codexify.ai).
+
+**Why not just Ollama or a raw MLX script?**
+
+- **Multi-runtime routing** — run MLX, llama.cpp, and future backends
+  behind a single `POST /v1/chat/completions` surface
+- **Health and readiness** — distinguish "process alive" from "model
+  warm and ready to serve" without guessing
+- **Runtime visibility** — `/health/runtime`, `/ready`, `/runtime`,
+  structured model inventory
+- **ThreadWake cache** — prompt-prefix reuse optimization (metadata
+  milestone — analysis and visibility available, KV materialization
+  deferred)
+- **Codexify-native** — designed as the local inference backend for
+  Codexify's local-first posture
 
 Whoosh'd does **not** replace lower-level inference engines. It sits
-above them as a lightweight broker for local AI applications that need
-routing, task boundaries, model inventory, and model-aware execution.
+above them as a lightweight broker.
 
 - **Use with Codexify** as a managed local sidecar, or
 - **Use standalone** with any OpenAI-compatible client, or
