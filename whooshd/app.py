@@ -113,12 +113,10 @@ def _init_router():
         from whooshd.adapters.mlx_vlm import MlxVlmAdapter
         router.register(MlxVlmAdapter())
 
-    # ── llama.cpp adapter ──────────────────────────────────────
-    # Register when server URL is configured OR adapter is explicitly selected.
-    from whooshd.config import get_llama_cpp_server_url
-    if backend == "llama_cpp" or get_llama_cpp_server_url():
-        from whooshd.adapters.llama_cpp import LlamaCppAdapter
-        router.register(LlamaCppAdapter())
+    # ── llama.cpp adapter (always registered — reports offline until
+    #     WHOOSHD_LLAMA_CPP_SERVER_URL is set or auto_start is enabled) ─
+    from whooshd.adapters.llama_cpp import LlamaCppAdapter
+    router.register(LlamaCppAdapter())
 
 
 _init_router()

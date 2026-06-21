@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- `python -m whooshd.threadwake.analyze` now fetches live analysis from the
+  running Whoosh'd daemon instead of constructing a fresh empty in-memory
+  ThreadWake manager.
+
+---
+
 ## Runtime Readiness Smoke Layer (2026-06-19)
 
 Tag: `whooshd-runtime-readiness-smoke-2026-06`

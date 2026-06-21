@@ -72,7 +72,7 @@ latency for repeated long-context workflows.
 - **Observes** prompt prefixes and identifies which ones are stable vs dynamic
 - **Measures** potential benefit via candidate telemetry (token counts, hit rates, reuse ratios)
 - **Analyzes** which prefixes would be worth caching via the snapshot policy engine
-- **Reports** analysis results via HTTP and CLI — counts only, no raw content
+- **Reports** live daemon analysis results via HTTP and CLI — counts only, no raw content
 - **Materializes nothing** — all manifests and artifacts are metadata-only
 - **Degrades safely** — all features off by default, no impact on inference when disabled
 
