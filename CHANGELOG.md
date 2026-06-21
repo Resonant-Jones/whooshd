@@ -1,5 +1,17 @@
 # Changelog
 
+## CLI Daemon Tracking Decision (2026-06-21)
+
+Decision: CLI daemon tracking is intentionally single-instance for MVP.
+
+Rationale: safer lifecycle ownership, simpler support surface, and no
+accidental killing of unknown port occupants.
+
+Future: named instances or port-scoped PID/log state may be added later if
+multi-daemon operation becomes a real use case.
+
+---
+
 ## Public README Positioning (2026-06-19)
 
 - Clarified Whoosh'd as a local-first inference gateway for Apple Silicon

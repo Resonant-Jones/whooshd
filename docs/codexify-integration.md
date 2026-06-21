@@ -49,25 +49,33 @@ Whoosh'd presents an OpenAI-compatible API surface with additional runtime endpo
 
 ## Starting Whoosh'd
 
-### Stub mode (always works, no models)
+Use the package CLI for normal startup:
+
+```bash
+whoosh -d
+whoosh status
+```
+
+One implementation, multiple affordance routes. `whoosh -d`, `whoosh up`,
+`whooshd up`, and `whooshd-up` all start the same server path. `whoosh down`,
+`whooshd down`, and `whooshd-down` all stop the same tracked process.
+
+Alternate entrypoints:
+
+```bash
+whooshd-up
+whooshd-down
+whoosh up
+whooshd up
+whooshd down
+```
+
+Developer/debug startup remains available when you need raw Uvicorn or reload:
 
 ```bash
 WHOOSHD_ADAPTER=stub \
 python -m uvicorn whooshd.app:app --reload
-```
 
-### MLX mode (requires mlx-lm and a converted model)
-
-```bash
-WHOOSHD_ADAPTER=mlx \
-WHOOSHD_MLX_MODEL=mlx-community/Llama-3.2-3B-Instruct-4bit \
-python -m uvicorn whooshd.app:app --reload
-```
-
-### Production-ish local binding
-
-```bash
-WHOOSHD_ADAPTER=mlx \
 WHOOSHD_MLX_MODEL=mlx-community/Llama-3.2-3B-Instruct-4bit \
 python -m uvicorn whooshd.app:app --host 127.0.0.1 --port 8000
 ```
@@ -77,7 +85,7 @@ python -m uvicorn whooshd.app:app --host 127.0.0.1 --port 8000
 - `WHOOSHD_MLX_MODEL` defaults to `mlx-community/Llama-3.2-3B-Instruct-4bit`
 - `WHOOSHD_MLX_MAX_TOKENS_DEFAULT` defaults to `256`
 - `WHOOSHD_MLX_TRUST_REMOTE_CODE` defaults to `false`
-- Server binds to `127.0.0.1:8000` by default (uvicorn default)
+- The CLI binds to `127.0.0.1:8000` by default
 - No telemetry, no cloud dependency
 
 ---

@@ -67,27 +67,94 @@ Runtime Router
 ## Quick Start
 
 ```bash
-# Create venv and install
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -e ".[dev]"
 
-# Copy example env
-cp examples/env.stub .env
+# Start Whoosh'd
+whoosh -d
 
-# Run with stub adapter (no models needed)
-WHOOSHD_ADAPTER=stub python -m uvicorn whooshd.app:app --reload
+# Check status
+whoosh status
 
-# Run with MLX-LM Server (subprocess-supervised)
-WHOOSHD_MLX_ENABLED=true \
-  WHOOSHD_MLX_MODEL=mlx-community/Llama-3.2-3B-Instruct-4bit \
-  python -m uvicorn whooshd.app:app --reload
+# Show logs
+whoosh logs
 
-# Run with MLX in-process (legacy, requires mlx-lm)
-WHOOSHD_ADAPTER=mlx \
-  WHOOSHD_MLX_MODEL=mlx-community/Llama-3.2-3B-Instruct-4bit \
-  python -m uvicorn whooshd.app:app --reload
+# Stop Whoosh'd
+whoosh down
+```
 
+Alternate entrypoints:
+
+```bash
+whooshd-up
+whooshd-down
+whoosh up
+whooshd up
+whooshd down
+```
+
+One implementation, multiple affordance routes.
+
+These start commands all launch the same server path:
+
+```bash
+whoosh -d
+whoosh up
+whooshd up
+whooshd-up
+```
+
+These stop commands all stop the same tracked process:
+
+```bash
+whoosh down
+whooshd down
+whooshd-down
+```
+
+### One tracked daemon at a time
+
+The Whoosh'd CLI currently tracks one daemon process at a time via:
+
+```text
+~/.whooshd/whooshd.pid
+~/.whooshd/whooshd.log
+```
+
+Custom `--port` values are supported for startup and status probes, but PID and
+log state are global, not per-port.
+
+That means:
+
+```bash
+whoosh -d --port 8010
+whoosh status --port 8010
+whoosh down
+```
+
+will start and inspect Whoosh'd on port 8010, then stop the globally tracked
+Whoosh'd process group.
+
+`whoosh down --port 8010` does not select a separate daemon by port. It stops
+the one tracked daemon.
+
+The CLI will not kill unknown processes occupying a port. If a port is already
+in use and no tracked Whoosh'd PID exists, inspect it manually:
+
+```bash
+lsof -nP -iTCP:8000 -sTCP:LISTEN
+```
+
+Developer/debug startup remains available:
+
+```bash
+python -m uvicorn whooshd.app:app --host 127.0.0.1 --port 8000
+```
+
+Useful validation commands:
+
+```bash
 # Run tests (no MLX or model downloads required)
 python -m pytest -v
 
@@ -150,8 +217,8 @@ Open http://127.0.0.1:8000/docs for the auto-generated Swagger UI.
 ### Local Sanity Checklist
 
 ```bash
-# 1. Start stub server (no models needed)
-WHOOSHD_ADAPTER=stub uvicorn whooshd.app:app --port 8000
+# 1. Start server
+whoosh -d
 
 # 2. Confirm liveness
 curl http://127.0.0.1:8000/health
@@ -240,9 +307,33 @@ See **[docs/threadwake/README.md](docs/threadwake/README.md)** for the full docu
 
 ## Troubleshooting
 
+### `whooshd --help` still shows Uvicorn help
+
+You may have an old shell function or alias named `whooshd`.
+Check:
+
+```bash
+type -a whooshd
+```
+
+If it says `whooshd` is a shell function from `~/.zshrc`, remove or rename the old function, then reload your shell:
+
+```bash
+source ~/.zshrc
+hash -r
+```
+
+### Port 8000 is already in use
+
+Whoosh'd will not kill unknown processes automatically. If startup reports a port conflict, inspect the listener:
+
+```bash
+lsof -nP -iTCP:8000 -sTCP:LISTEN
+```
+
 | Symptom | Check |
 |---|---|
-| Server not responding | `curl http://127.0.0.1:8000/health` — is uvicorn running? |
+| Server not responding | `whoosh status` or `curl http://127.0.0.1:8000/health` |
 | `GET /ready` returns 503 | Model may be warming. Check `/runtime/model` for lifecycle state. |
 | Warmup hangs | Check model path exists. MLX downloads on first load — wait or check logs. |
 | 429 Too Many Requests | Admission control at capacity. Increase `WHOOSHD_MAX_ACTIVE_REQUESTS` or wait. |

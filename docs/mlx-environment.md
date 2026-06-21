@@ -87,7 +87,18 @@ Rules:
 ## Starting Whoosh'd with MLX
 
 ```bash
-WHOOSHD_ADAPTER=mlx \
+WHOOSHD_MLX_MODEL=mlx-community/Llama-3.2-3B-Instruct-4bit \
+whoosh -d
+whoosh status
+```
+
+One implementation, multiple affordance routes: `whoosh -d`, `whoosh up`,
+`whooshd up`, and `whooshd-up` all start the same server path. `whoosh down`,
+`whooshd down`, and `whooshd-down` all stop the same tracked process.
+
+Developer/debug startup remains available:
+
+```bash
 WHOOSHD_MLX_MODEL=mlx-community/Llama-3.2-3B-Instruct-4bit \
 python -m uvicorn whooshd.app:app --host 127.0.0.1 --port 8000
 ```

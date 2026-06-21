@@ -26,6 +26,12 @@ mlx = [
     "mlx-lm>=0.20.0",
 ]
 
+[project.scripts]
+whoosh = "whooshd.cli:main"
+whooshd = "whooshd.cli:main"
+whooshd-up = "whooshd.cli:up_main"
+whooshd-down = "whooshd.cli:down_main"
+
 [tool.hatch.build.targets.wheel]
 packages = ["whooshd"]
 
