@@ -29,7 +29,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from whooshd import __version__
-from whooshd.admission import evaluate_chat_request
+from whooshd.admission import AdmissionDecision, evaluate_chat_request
 from whooshd.adapters.base import StreamingNotSupportedError
 from whooshd.contracts import (
     ChatCompletionRequest,
@@ -55,6 +55,7 @@ from whooshd.config import (
 )
 from whooshd.routing import ModelResolutionError, get_router, reset_router
 from whooshd.runtime import get_runtime
+from whooshd.queue import QueueEntry, get_queue
 from whooshd.http_forwarding import UpstreamRuntimeError
 from whooshd.runtime.threadwake import ThreadWakeManager
 from whooshd.runtime.threadwake.tokenization import BackendTokenizerAdapterRegistry
@@ -432,6 +433,89 @@ async def _streaming_not_supported_handler(request, exc: StreamingNotSupportedEr
     )
 
 
+# ── Shared execution helpers (used by both queued and immediate paths) ────
+
+
+async def _execute_non_streaming(adapter, req, ctx, rt, request_id):
+    """Execute a non-streaming request and return the JSON response."""
+    try:
+        result = await adapter.chat_completion(req, context=ctx)
+        rt.complete_request(request_id)
+        return result
+    except UpstreamRuntimeError:
+        rt.fail_request(request_id)
+        raise
+    except Exception:
+        rt.fail_request(request_id)
+        raise
+
+
+async def _execute_streaming(adapter, req, ctx, rt, request_id):
+    """Eagerly fetch the first SSE chunk, then return a StreamingResponse.
+
+    No SSE chunks are emitted until the first chunk is successfully retrieved,
+    so upstream errors surface as structured JSON before the stream starts.
+    """
+    stream_gen = adapter.chat_completion_stream(req, context=ctx)
+    try:
+        first_chunk = await stream_gen.__anext__()
+    except StopAsyncIteration:
+        async def _empty_sse():
+            yield "data: [DONE]\n\n"
+        rt.complete_request(request_id)
+        return StreamingResponse(
+            _empty_sse(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"},
+        )
+    except UpstreamRuntimeError as exc:
+        rt.fail_request(request_id)
+        return JSONResponse(
+            status_code=exc.http_status,
+            content=ErrorResponse(
+                code=_error_code_for_status(exc.http_status),
+                message=str(exc),
+                detail={"kind": type(exc).__name__},
+            ).model_dump(),
+        )
+    except Exception:
+        rt.fail_request(request_id)
+        raise
+
+    async def _sse_stream():
+        finished_normally = False
+        try:
+            yield first_chunk.to_sse()
+            async for chunk in stream_gen:
+                yield chunk.to_sse()
+            yield "data: [DONE]\n\n"
+            finished_normally = True
+        except UpstreamRuntimeError as exc:
+            error_json = json.dumps({
+                "error": {
+                    "message": str(exc),
+                    "type": type(exc).__name__,
+                }
+            })
+            yield f"data: {error_json}\n\n"
+        finally:
+            if finished_normally:
+                rt.complete_request(request_id)
+            else:
+                rt.record_stream_disconnect(request_id)
+                rt.cancel_request(request_id)
+
+    return StreamingResponse(
+        _sse_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
 # ── OpenAI-compatible Chat Completions ─────────────────────────────────────
 
 
@@ -443,9 +527,16 @@ async def chat_completions(req: ChatCompletionRequest):
     - stream=true  → SSE text/event-stream with OpenAI-compatible chunks.
 
     Requests are routed to the correct runtime based on model ID.
+
+    When the optional queue is enabled via WHOOSHD_ENABLE_QUEUE, requests
+    that pass structural admission but exceed the active request limit
+    are enqueued in a bounded FIFO queue instead of being rejected
+    immediately.  The HTTP connection waits synchronously until execution
+    starts or a timeout/cancellation occurs.
     """
     rt = get_runtime()
     router = get_router()
+    queue = get_queue()
 
     # ── Admission control ─────────────────────────────────────────────
     admission = evaluate_chat_request(req, rt)
@@ -514,7 +605,74 @@ async def chat_completions(req: ChatCompletionRequest):
             threadwake_observation.cache_scope,
         )
 
-    # ── Non-streaming path ────────────────────────────────────────────
+    # ── Queue wait (when admission returned QUEUED) ───────────────────
+    is_queued = admission.reason == AdmissionDecision.QUEUED
+    if is_queued:
+        # Create the request record and transition to queued.
+        request_id = rt.begin_request(model=req.model, stream=req.stream)
+        rt.mark_queued(request_id)
+        token = rt.get_cancellation_token(request_id)
+        entry = QueueEntry(request_id=request_id, request=req)
+        queue.enqueue(entry)
+
+        from whooshd.config import get_max_active_requests
+
+        ready = await queue.wait_for_execution(
+            entry,
+            cancel_token=token,
+            capacity_available=lambda: rt.active_jobs < get_max_active_requests(),
+        )
+
+        if not ready:
+            # Timed out or cancelled — never call the adapter.
+            if token is not None and token.is_cancelled():
+                rt.cancel_request(request_id)
+                rt.record_queue_cancelled()
+                # Return cancellation-compatible response.
+                return JSONResponse(
+                    status_code=409,
+                    content=ErrorResponse(
+                        code=ErrorCode.CANCELLED,
+                        message="Request was cancelled while queued.",
+                        detail={"request_id": request_id},
+                    ).model_dump(),
+                )
+            else:
+                rt.mark_timed_out(request_id)
+                return JSONResponse(
+                    status_code=429,
+                    content=ErrorResponse(
+                        code=ErrorCode.TIMEOUT,
+                        message=f"Request timed out while waiting in queue.",
+                        detail={"request_id": request_id},
+                    ).model_dump(),
+                )
+
+        # Successfully dequeued — proceed to execution.
+        rt.mark_dequeued(request_id)
+
+        # ── Non-streaming: dequeue then execute ───────────────────────
+        if not req.stream:
+            rt.mark_running(request_id)
+            ctx = RequestExecutionContext(
+                request_id=request_id, cancellation_token=token, stream=False
+            ) if token else None
+            return await _execute_non_streaming(adapter, req, ctx, rt, request_id)
+
+        # ── Streaming: dequeue then stream ────────────────────────────
+        # Note: no SSE chunks are emitted while queued — the connection
+        # is held open during the queue wait above.
+        if not adapter.supports_streaming:
+            rt.fail_request(request_id)
+            raise StreamingNotSupportedError()
+
+        rt.mark_streaming(request_id)
+        ctx = RequestExecutionContext(
+            request_id=request_id, cancellation_token=token, stream=True
+        ) if token else None
+        return await _execute_streaming(adapter, req, ctx, rt, request_id)
+
+    # ── Non-streaming path (immediate execution) ──────────────────────
     if not req.stream:
         request_id = rt.begin_request(model=req.model, stream=False)
         rt.mark_running(request_id)
@@ -522,18 +680,9 @@ async def chat_completions(req: ChatCompletionRequest):
         ctx = RequestExecutionContext(
             request_id=request_id, cancellation_token=token, stream=False
         ) if token else None
-        try:
-            result = await adapter.chat_completion(req, context=ctx)
-            rt.complete_request(request_id)
-            return result
-        except UpstreamRuntimeError:
-            rt.fail_request(request_id)
-            raise
-        except Exception:
-            rt.fail_request(request_id)
-            raise
+        return await _execute_non_streaming(adapter, req, ctx, rt, request_id)
 
-    # ── Streaming path ────────────────────────────────────────────────
+    # ── Streaming path (immediate execution) ──────────────────────────
     if not adapter.supports_streaming:
         raise StreamingNotSupportedError()
 
@@ -543,70 +692,7 @@ async def chat_completions(req: ChatCompletionRequest):
     ctx = RequestExecutionContext(
         request_id=request_id, cancellation_token=token, stream=True
     ) if token else None
-
-    # Eagerly get the first chunk so overload errors surface as 429
-    # before the SSE stream starts.
-    stream_gen = adapter.chat_completion_stream(req, context=ctx)
-    try:
-        first_chunk = await stream_gen.__anext__()
-    except StopAsyncIteration:
-        # Empty stream — still return SSE with just [DONE].
-        async def _empty_sse():
-            yield "data: [DONE]\n\n"
-        rt.complete_request(request_id)
-        return StreamingResponse(
-            _empty_sse(),
-            media_type="text/event-stream",
-            headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"},
-        )
-    except UpstreamRuntimeError as exc:
-        rt.fail_request(request_id)
-        return JSONResponse(
-            status_code=exc.http_status,
-            content=ErrorResponse(
-                code=_error_code_for_status(exc.http_status),
-                message=str(exc),
-                detail={"kind": type(exc).__name__},
-            ).model_dump(),
-        )
-    except Exception:
-        rt.fail_request(request_id)
-        raise
-
-    async def _sse_stream():
-        finished_normally = False
-        try:
-            # Yield the eagerly-fetched first chunk.
-            yield first_chunk.to_sse()
-            # Continue with remaining chunks.
-            async for chunk in stream_gen:
-                yield chunk.to_sse()
-            yield "data: [DONE]\n\n"
-            finished_normally = True
-        except UpstreamRuntimeError as exc:
-            error_json = json.dumps({
-                "error": {
-                    "message": str(exc),
-                    "type": type(exc).__name__,
-                }
-            })
-            yield f"data: {error_json}\n\n"
-        finally:
-            if finished_normally:
-                rt.complete_request(request_id)
-            else:
-                rt.record_stream_disconnect(request_id)
-                rt.cancel_request(request_id)
-
-    return StreamingResponse(
-        _sse_stream(),
-        media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",
-        },
-    )
+    return await _execute_streaming(adapter, req, ctx, rt, request_id)
 
 
 # ── OpenAI-compatible Model Inventory ──────────────────────────────────────
@@ -669,6 +755,7 @@ async def runtime_cancel_request(request_id: str):
         RequestLifecycleState.COMPLETED,
         RequestLifecycleState.CANCELLED,
         RequestLifecycleState.FAILED,
+        RequestLifecycleState.TIMED_OUT,
     ):
         raise HTTPException(
             status_code=409,
