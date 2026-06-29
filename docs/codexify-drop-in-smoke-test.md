@@ -11,14 +11,24 @@ and validate the integration.
 ## Step 1: Start Whoosh'd
 
 ```bash
-# With stub adapter (for baseline testing)
-python -m uvicorn whooshd.app:app --host 127.0.0.1 --port 8000
+# Default local MLX path
+whoosh -d
+whoosh status
 
-# With MLX-LM Server
-WHOOSHD_MLX_ENABLED=true \
-  WHOOSHD_MLX_MODEL=mlx-community/Llama-3.2-3B-Instruct-4bit \
-  python -m uvicorn whooshd.app:app --host 127.0.0.1 --port 8000
+# Alternate start entrypoints
+whoosh up
+whooshd up
+whooshd-up
+```
 
+One implementation, multiple affordance routes. `whoosh -d`, `whoosh up`,
+`whooshd up`, and `whooshd-up` all start the same server path. `whoosh down`,
+`whooshd down`, and `whooshd-down` all stop the same tracked process.
+
+Developer/debug startup remains available when you need explicit runtime
+selection:
+
+```bash
 # With llama.cpp
 WHOOSHD_ADAPTER=llama_cpp \
   WHOOSHD_LLAMA_CPP_SERVER_URL=http://127.0.0.1:8080 \

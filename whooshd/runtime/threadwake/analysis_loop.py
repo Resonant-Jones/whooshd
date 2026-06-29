@@ -134,9 +134,10 @@ class ThreadWakeAnalysisLoop:
             logger.warning("ThreadWake analysis loop error: %s", exc)
             result.errors += 1
             result.details.append(str(exc))
+        finally:
+            self._run_count += 1
+            self._last_result = result
 
-        self._run_count += 1
-        self._last_result = result
         return result
 
     def last_result(self) -> dict | None:

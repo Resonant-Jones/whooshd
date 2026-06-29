@@ -55,7 +55,19 @@ class TestLoopBasics:
     def test_no_index_returns_empty(self):
         loop = ThreadWakeAnalysisLoop()
         result = loop.run()
+        last = loop.last_result()
+
         assert result.candidates_scanned == 0
+        assert result.details == ["no_index_available"]
+        assert loop.run_count == 1
+        assert last == {
+            "candidates_scanned": 0,
+            "candidates_eligible": 0,
+            "manifests_created": 0,
+            "artifacts_registered": 0,
+            "skipped": 0,
+            "errors": 0,
+        }
 
     def test_empty_index_safe(self):
         index = ThreadWakeIndex()
