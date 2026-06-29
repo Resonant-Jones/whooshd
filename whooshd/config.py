@@ -91,6 +91,36 @@ def get_mlx_quantization() -> str | None:
     return val if val else None
 
 
+# ── Queue config ─────────────────────────────────────────────────────────────
+
+
+def get_enable_queue() -> bool:
+    """Enable optional bounded FIFO request queue.
+
+    When false (default), the current reject-only behaviour is preserved:
+    requests at the active limit receive 429 immediately.
+    """
+    return _env_bool("WHOOSHD_ENABLE_QUEUE", False)
+
+
+def get_max_queue_depth() -> int:
+    """Maximum number of requests allowed in the queue."""
+    return _env_int("WHOOSHD_MAX_QUEUE_DEPTH", 8)
+
+
+def get_queue_timeout_seconds() -> float:
+    """Max seconds a request waits in the queue before timing out."""
+    try:
+        return float(_env("WHOOSHD_QUEUE_TIMEOUT_SECONDS", "120"))
+    except ValueError:
+        return 120.0
+
+
+def get_queue_poll_interval_ms() -> int:
+    """How often (ms) to check for capacity while queued."""
+    return _env_int("WHOOSHD_QUEUE_POLL_INTERVAL_MS", 25)
+
+
 # ── Admission control ───────────────────────────────────────────────────────
 
 

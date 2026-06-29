@@ -1,28 +1,27 @@
 # Changelog
 
-## CLI Daemon Tracking Decision (2026-06-21)
+## Optional Bounded Request Queue — Phase 4B (2026-06-26)
 
-Decision: CLI daemon tracking is intentionally single-instance for MVP.
+Feature-flagged bounded FIFO request queue behind `WHOOSHD_ENABLE_QUEUE`.
 
-Rationale: safer lifecycle ownership, simpler support surface, and no
-accidental killing of unknown port occupants.
+### Added
 
-Future: named instances or port-scoped PID/log state may be added later if
-multi-daemon operation becomes a real use case.
+- Bounded FIFO request queue (disabled by default; `WHOOSHD_ENABLE_QUEUE=false`)
+- Queue env config: `WHOOSHD_ENABLE_QUEUE`, `WHOOSHD_MAX_QUEUE_DEPTH` (8),
+  `WHOOSHD_QUEUE_TIMEOUT_SECONDS` (120), `WHOOSHD_QUEUE_POLL_INTERVAL_MS` (25)
+- `QUEUED` and `TIMED_OUT` request lifecycle states
+- Queue observability via `GET /runtime/admission` (counters and depth)
+- Cancel/timeout queued requests without invoking the adapter
+- Streaming: no SSE chunks emitted while queued
+- 50 queue tests covering disabled behavior, enqueue/dequeue, queue full,
+  timeout, cancellation, streaming hold, and no-leakage guarantees
 
----
+### Unchanged
 
-## Public README Positioning (2026-06-19)
-
-- Clarified Whoosh'd as a local-first inference gateway for Apple Silicon
-  and self-hosted workflows.
-- Added clearer audience framing: Codexify users, local inference builders.
-- Added non-disparaging "Why not just Ollama or a raw MLX script?"
-  positioning with concrete differentiators.
-- Preserved technical quickstart, smoke scripts, endpoint map, and
-  troubleshooting below the fold.
-
----
+- Default reject-only 429 behavior preserved
+- OpenAI-compatible API contract unchanged
+- No priority lanes, batching, prompt-prefix caching, ThreadWake KV reuse,
+  embeddings, tool calling, or durable snapshots
 
 ## Runtime Readiness Smoke Layer (2026-06-19)
 

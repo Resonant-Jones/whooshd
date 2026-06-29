@@ -372,11 +372,13 @@ class RequestLifecycleState(str, Enum):
     """States a request moves through from acceptance to termination."""
 
     ACCEPTED = "accepted"
+    QUEUED = "queued"
     RUNNING = "running"
     STREAMING = "streaming"
     COMPLETED = "completed"
     CANCELLED = "cancelled"
     FAILED = "failed"
+    TIMED_OUT = "timed_out"
 
 
 class RequestSnapshot(BaseModel):

@@ -104,6 +104,13 @@ class RuntimeState:
         self.total_requests_cancelled: int = 0
         self.total_stream_disconnects: int = 0
 
+        # ── Queue counters ─────────────────────────────────────────────
+        self.total_queued: int = 0
+        self.total_dequeued: int = 0
+        self.total_queue_rejected: int = 0
+        self.total_queue_timeout: int = 0
+        self.total_queue_cancelled: int = 0
+
         # ── Memory (stubbed) ────────────────────────────────────────────
         self.memory = MemoryInfo(
             pressure=MemoryPressure.NORMAL,
@@ -125,8 +132,6 @@ class RuntimeState:
         # ── Request lifecycle ───────────────────────────────────────────
         self._requests: dict[str, _RequestRecord] = {}
 
-        # ── Queue (stubbed — real scheduler later) ──────────────────────
-        self.queue_depth: int = 0
         self.active_model: Optional[str] = None
 
         # ── Model registry (loaded lazily or from YAML) ────────────────
@@ -136,7 +141,10 @@ class RuntimeState:
 
     @property
     def active_jobs(self) -> int:
-        """Count of requests in non-terminal lifecycle states."""
+        """Count of requests in non-terminal executing lifecycle states.
+
+        Queued requests are excluded — they are not actively executing.
+        """
         return sum(
             1
             for r in self._requests.values()
@@ -149,8 +157,58 @@ class RuntimeState:
         )
 
     @property
+    def queue_depth(self) -> int:
+        """Count of requests currently in the queued state."""
+        return sum(
+            1
+            for r in self._requests.values()
+            if r.status == RequestLifecycleState.QUEUED
+        )
+
+    @property
+    def oldest_queued_age_ms(self) -> float:
+        """Age in milliseconds of the oldest queued request, or 0."""
+        oldest: float | None = None
+        now = time.time()
+        for r in self._requests.values():
+            if r.status == RequestLifecycleState.QUEUED:
+                age = now - r.started_at
+                if oldest is None or age > oldest:
+                    oldest = age
+        return (oldest * 1000.0) if oldest is not None else 0.0
+
+    @property
     def uptime_seconds(self) -> float:
         return time.monotonic() - self._started_at
+
+    # ── Queue lifecycle helpers ─────────────────────────────────────────
+
+    def mark_queued(self, request_id: str) -> None:
+        """Transition an accepted request to the queued state."""
+        rec = self._requests.get(request_id)
+        if rec:
+            rec.status = RequestLifecycleState.QUEUED
+            self.total_queued += 1
+
+    def mark_dequeued(self, request_id: str) -> None:
+        """Record that a request was removed from the queue for execution."""
+        self.total_dequeued += 1
+
+    def mark_timed_out(self, request_id: str) -> None:
+        """Mark a queued request as timed out."""
+        rec = self._requests.get(request_id)
+        if rec:
+            rec.status = RequestLifecycleState.TIMED_OUT
+            rec.ended_at = time.time()
+            self.total_queue_timeout += 1
+
+    def record_queue_rejected(self) -> None:
+        """Increment the queue-full rejection counter."""
+        self.total_queue_rejected += 1
+
+    def record_queue_cancelled(self) -> None:
+        """Increment the queue cancellation counter."""
+        self.total_queue_cancelled += 1
 
     # ── API builders ────────────────────────────────────────────────────
 
@@ -272,10 +330,13 @@ class RuntimeState:
     def build_admission_config(self) -> dict:
         """Return current admission limits + counters."""
         from whooshd.config import (
+            get_enable_queue,
             get_max_active_requests,
+            get_max_queue_depth,
             get_max_messages,
             get_max_prompt_chars,
             get_max_request_max_tokens,
+            get_queue_timeout_seconds,
         )
 
         return {
@@ -284,6 +345,10 @@ class RuntimeState:
             "max_prompt_chars": get_max_prompt_chars(),
             "max_messages": get_max_messages(),
             "max_request_max_tokens": get_max_request_max_tokens(),
+            "queue_enabled": get_enable_queue(),
+            "queue_depth": self.queue_depth,
+            "max_queue_depth": get_max_queue_depth(),
+            "queue_timeout_seconds": get_queue_timeout_seconds(),
             "counters": {
                 "accepted": self.total_requests_accepted,
                 "rejected": self.total_requests_rejected,
@@ -292,6 +357,11 @@ class RuntimeState:
                 "rejected_too_many_messages": self.total_rejected_too_many_messages,
                 "rejected_max_tokens": self.total_rejected_max_tokens,
                 "rejected_model_not_ready": self.total_rejected_model_not_ready,
+                "queued": self.total_queued,
+                "dequeued": self.total_dequeued,
+                "queue_rejected": self.total_queue_rejected,
+                "queue_timeout": self.total_queue_timeout,
+                "queue_cancelled": self.total_queue_cancelled,
             },
         }
 
@@ -588,6 +658,7 @@ class RuntimeState:
             RequestLifecycleState.COMPLETED,
             RequestLifecycleState.CANCELLED,
             RequestLifecycleState.FAILED,
+            RequestLifecycleState.TIMED_OUT,
         ):
             return False
         rec.cancel_requested = True
@@ -597,15 +668,21 @@ class RuntimeState:
         return True
 
     def mark_running(self, request_id: str) -> None:
-        """Transition an accepted request to running."""
+        """Transition an accepted or queued request to running."""
         rec = self._requests.get(request_id)
-        if rec:
+        if rec and rec.status in (
+            RequestLifecycleState.ACCEPTED,
+            RequestLifecycleState.QUEUED,
+        ):
             rec.status = RequestLifecycleState.RUNNING
 
     def mark_streaming(self, request_id: str) -> None:
-        """Transition a request to the streaming state."""
+        """Transition an accepted or queued request to the streaming state."""
         rec = self._requests.get(request_id)
-        if rec:
+        if rec and rec.status in (
+            RequestLifecycleState.ACCEPTED,
+            RequestLifecycleState.QUEUED,
+        ):
             rec.status = RequestLifecycleState.STREAMING
 
     def complete_request(self, request_id: str) -> None:
@@ -670,6 +747,7 @@ class RuntimeState:
             if r.status
             in (
                 RequestLifecycleState.ACCEPTED,
+                RequestLifecycleState.QUEUED,
                 RequestLifecycleState.RUNNING,
                 RequestLifecycleState.STREAMING,
             )

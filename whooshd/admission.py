@@ -12,9 +12,11 @@ from typing import Optional
 from pydantic import BaseModel, Field
 
 from whooshd.config import (
+    get_enable_queue,
     get_max_active_requests,
     get_max_messages,
     get_max_prompt_chars,
+    get_max_queue_depth,
     get_max_request_max_tokens,
 )
 from whooshd.contracts import ChatCompletionRequest, ErrorCode
@@ -23,7 +25,9 @@ from whooshd.runtime import RuntimeState
 
 class AdmissionDecision(str, Enum):
     ACCEPTED = "accepted"
+    QUEUED = "queued"
     REJECTED_OVERLOADED = "rejected_overloaded"
+    REJECTED_QUEUE_FULL = "rejected_queue_full"
     REJECTED_PROMPT_TOO_LARGE = "rejected_prompt_too_large"
     REJECTED_TOO_MANY_MESSAGES = "rejected_too_many_messages"
     REJECTED_MAX_TOKENS_TOO_HIGH = "rejected_max_tokens_too_high"
@@ -62,20 +66,12 @@ def evaluate_chat_request(
     Returns an AdmissionResult.  If ``accepted`` is False the caller
     should return the structured error immediately — no request lifecycle
     record should be created.
-    """
-    # ── Rule A: active request limit ──────────────────────────────────
-    max_active = get_max_active_requests()
-    if runtime.active_jobs >= max_active:
-        return AdmissionResult(
-            accepted=False,
-            reason=AdmissionDecision.REJECTED_OVERLOADED,
-            error_code=ErrorCode.RUNNER_OVERLOADED,
-            message=f"Whoosh'd is at its active request limit ({max_active}).",
-            details={"active_jobs": runtime.active_jobs, "max_active_requests": max_active},
-            http_status=429,
-        )
 
-    # ── Rule C: message count ─────────────────────────────────────────
+    Structural checks (message count, prompt size, max_tokens) are
+    evaluated first and always result in immediate rejection regardless
+    of queue enablement.
+    """
+    # ── Rule 1: message count (structural — always reject) ────────────
     max_msgs = get_max_messages()
     if len(request.messages) > max_msgs:
         return AdmissionResult(
@@ -87,7 +83,7 @@ def evaluate_chat_request(
             http_status=400,
         )
 
-    # ── Rule D: prompt size estimate ──────────────────────────────────
+    # ── Rule 2: prompt size estimate (structural — always reject) ─────
     prompt_chars = _estimade_prompt_chars(request)
     max_chars = get_max_prompt_chars()
     if prompt_chars > max_chars:
@@ -100,7 +96,7 @@ def evaluate_chat_request(
             http_status=400,
         )
 
-    # ── Rule E: max_tokens cap ────────────────────────────────────────
+    # ── Rule 3: max_tokens cap (structural — always reject) ───────────
     max_tok = get_max_request_max_tokens()
     if request.max_tokens is not None and request.max_tokens > max_tok:
         return AdmissionResult(
@@ -110,6 +106,53 @@ def evaluate_chat_request(
             message=f"max_tokens {request.max_tokens} exceeds server cap {max_tok}.",
             details={"request_max_tokens": request.max_tokens, "server_cap": max_tok},
             http_status=400,
+        )
+
+    # ── Rule 4: active request limit (capacity check) ─────────────────
+    max_active = get_max_active_requests()
+    if runtime.active_jobs >= max_active:
+        # At capacity — check if queueing is enabled.
+        queue_enabled = get_enable_queue()
+        if queue_enabled:
+            max_queue = get_max_queue_depth()
+            if runtime.queue_depth < max_queue:
+                # Can enqueue.
+                return AdmissionResult(
+                    accepted=False,
+                    reason=AdmissionDecision.QUEUED,
+                    error_code=None,
+                    message=None,
+                    details={
+                        "active_jobs": runtime.active_jobs,
+                        "max_active_requests": max_active,
+                        "queue_depth": runtime.queue_depth,
+                        "max_queue_depth": max_queue,
+                    },
+                    http_status=202,  # Accepted for queueing; caller waits
+                )
+            else:
+                # Queue is full.
+                return AdmissionResult(
+                    accepted=False,
+                    reason=AdmissionDecision.REJECTED_QUEUE_FULL,
+                    error_code=ErrorCode.RUNNER_OVERLOADED,
+                    message=f"Whoosh'd is at capacity and the queue is full (depth {runtime.queue_depth}/{max_queue}).",
+                    details={
+                        "active_jobs": runtime.active_jobs,
+                        "max_active_requests": max_active,
+                        "queue_depth": runtime.queue_depth,
+                        "max_queue_depth": max_queue,
+                    },
+                    http_status=429,
+                )
+        # Queue disabled — reject with overloaded.
+        return AdmissionResult(
+            accepted=False,
+            reason=AdmissionDecision.REJECTED_OVERLOADED,
+            error_code=ErrorCode.RUNNER_OVERLOADED,
+            message=f"Whoosh'd is at its active request limit ({max_active}).",
+            details={"active_jobs": runtime.active_jobs, "max_active_requests": max_active},
+            http_status=429,
         )
 
     return AdmissionResult(accepted=True, reason=AdmissionDecision.ACCEPTED, http_status=200)

@@ -1,7 +1,11 @@
 # Whoosh'd Queue Policy
 
 Queue and admission control design specification.
-**No implementation yet — this is a policy document.**
+
+**Phase 4B (bounded FIFO queue) is implemented behind `WHOOSHD_ENABLE_QUEUE`.**
+The queue is disabled by default; reject-only behavior is unchanged.
+Priority lanes, batching, prompt-prefix caching, ThreadWake KV reuse,
+embeddings, tool calling, and durable snapshots remain out of scope.
 
 ---
 
@@ -72,7 +76,7 @@ else → return structured 429 (overloaded / queue full)
 
 ## Queue States
 
-Proposed future lifecycle integration:
+Lifecycle states (Phase 4B implemented):
 
 | State | Meaning |
 |---|---|
@@ -84,12 +88,9 @@ Proposed future lifecycle integration:
 | `cancelled` | Cancellation was requested and request terminated |
 | `failed` | Execution raised an exception |
 | `timed_out` | Queue wait time exceeded limit without execution |
-| `expired` | Queue entry was removed for policy reasons (shutdown, etc.) |
 
-The existing `accepted → running/streaming → completed/cancelled/failed`
-lifecycle would gain an intermediate `queued` state before `running/streaming`.
-
-Do not change existing enums until implementation.  This is design only.
+The lifecycle follows: `accepted → [queued] → running/streaming → completed/cancelled/failed/timed_out`.
+The `queued` state is only entered when `WHOOSHD_ENABLE_QUEUE=true`.
 
 ---
 
@@ -165,16 +166,17 @@ interactive > agent > background
 
 ---
 
-## Proposed Future Configuration
+## Configuration (Phase 4B)
 
-| Variable | Proposed Default | Purpose |
+| Variable | Default | Purpose |
 |---|---|---|
 | `WHOOSHD_ENABLE_QUEUE` | `false` | Enable request queueing |
 | `WHOOSHD_MAX_QUEUE_DEPTH` | `8` | Maximum queued requests |
 | `WHOOSHD_QUEUE_TIMEOUT_SECONDS` | `120` | Max wait time before expiry |
 | `WHOOSHD_QUEUE_POLL_INTERVAL_MS` | `25` | How often to check for capacity |
 
-For current behavior, `WHOOSHD_ENABLE_QUEUE=false` matches Phase 3A/3B exactly.
+With `WHOOSHD_ENABLE_QUEUE=false` (default), the runner behaves exactly as in
+Phase 3A/3B: overloaded requests receive structured 429 immediately.
 
 ---
 
@@ -241,25 +243,26 @@ Future timeout types:
 
 ---
 
-## Observability Requirements
+## Observability (Phase 4B)
 
-Future queue implementation must expose (safe snapshots only, no prompts/messages):
+The following metrics are exposed via `GET /runtime/admission`.  All snapshots
+are prompt/message/content-free:
 
 | Metric | Description |
 |---|---|
 | `queue_enabled` | Whether queueing is active |
 | `queue_depth` | Current number of queued requests |
 | `max_queue_depth` | Configured queue limit |
-| `oldest_queued_age_ms` | Age of oldest queued request |
-| `running_request_count` | Requests currently executing |
-| `total_queued` | Counter: requests ever enqueued |
-| `total_dequeued` | Counter: requests removed from queue for execution |
-| `total_queue_rejected` | Counter: queue-full rejections |
-| `total_queue_timeout` | Counter: queue timeout expirations |
-| `total_queue_cancelled` | Counter: requests cancelled while queued |
+| `queue_timeout_seconds` | Configured timeout |
+| `oldest_queued_age_ms` | Age of oldest queued request (via RuntimeState) |
+| `queued` | Counter: requests ever enqueued |
+| `dequeued` | Counter: requests removed from queue for execution |
+| `queue_rejected` | Counter: queue-full rejections |
+| `queue_timeout` | Counter: queue timeout expirations |
+| `queue_cancelled` | Counter: requests cancelled while queued |
 
-All snapshots must remain prompt/message/content-free.
-No prompts. No messages. No generated text.
+Queued requests appear in `GET /runtime/requests` with status `queued`
+(safe metadata only — no prompts, no messages, no generated text).
 
 ---
 
@@ -298,11 +301,11 @@ not duplicate Codexify's role unless strictly necessary.
 
 ## Implementation Phases
 
-| Phase | Scope | Gate |
+| Phase | Scope | Status |
 |---|---|---|
-| Phase 4A | Throughput measurement harness | Before any queue implementation |
-| Phase 4B | Optional bounded FIFO queue | After measurement justifies it |
-| Phase 4C | Priority lane hints | After Codexify can provide priority metadata |
+| Phase 4A | Throughput measurement harness | ✅ Done |
+| Phase 4B | Optional bounded FIFO queue | ✅ Implemented (disabled by default) |
+| Phase 4C | Priority lane hints | 🔒 Parked (needs Codexify priority metadata) |
 
 ---
 
@@ -311,39 +314,39 @@ not duplicate Codexify's role unless strictly necessary.
 These should be resolved before queue implementation begins:
 
 1. Should queued requests be visible in `/runtime/requests` with status `queued`?
-   *Tentative answer: yes, with safe metadata only.*
+   **Yes — implemented with safe metadata only.**
 
 2. Should queued requests count toward active admission limits?
-   *Tentative answer: no — only `active_jobs` (running/streaming) counts.*
+   **No — only `active_jobs` (running/streaming) counts.  `queue_depth` is separate.**
 
 3. Should warmup trigger dequeue?
-   *Tentative answer: yes — if model transitions to ready, eligible queued requests should be considered.*
+   *Not yet implemented.  Capacity checks re-evaluate at poll interval.*
 
 4. Should queue be FIFO or LIFO?
-   *Tentative answer: FIFO, with optional priority lanes later.*
+   **FIFO implemented.  Priority lanes parked for Phase 4C.**
 
 5. Should streaming requests be queued differently from non-streaming?
-   *Tentative answer: same queue, but streaming requests should not emit partial SSE while waiting.*
+   **Same queue.  No SSE chunks emitted while queued.  Connection held until dequeue.**
 
 6. How to handle admission limits changing at runtime?
-   *Tentative answer: dequeue check re-evaluates admission limits at dequeue time, not enqueue time.*
+   **Implemented: `wait_for_execution` re-checks `capacity_available` at every poll interval.**
 
 ---
 
 ## Summary
 
 ```text
-Current: reject-only (Phase 3A/3B)
-  ↓
-Future: optional bounded FIFO queue (Phase 4B)
-  ↓
-Later: priority lanes (Phase 4C)
+Phase 3A/3B: reject-only  ← current default
+Phase 4B:    optional bounded FIFO queue  ✅ implemented (disabled by default)
+Phase 4C:    priority lanes               parked
 ```
 
-- Queue is optional and disabled by default.
+- Queue is optional and disabled by default (`WHOOSHD_ENABLE_QUEUE=false`).
 - Queue is bounded (default max depth 8).
 - Queue respects cancellation before execution.
-- Queue has configurable timeout.
+- Queue has configurable timeout (default 120 s).
 - Queue snapshots are prompt-safe.
 - Queue preserves OpenAI-compatible synchronous chat behavior.
-- Priority lanes are explicitly parked.
+- Streaming requests emit no SSE while queued.
+- Priority lanes, batching, prompt-prefix caching, ThreadWake KV reuse,
+  embeddings, tool calling, and durable snapshots are explicitly out of scope.
