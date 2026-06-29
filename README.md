@@ -283,5 +283,5 @@ See **[docs/threadwake/README.md](docs/threadwake/README.md)** for the full docu
 - **[Model Management](docs/model-management.md)** — downloading, storing, and switching models
 - **[Benchmarking](docs/benchmarking.md)** — throughput measurement harness
 - **[Release Notes](docs/releases/v0.1-rc.md)** — v0.1 release candidate
-- **[Queue Policy](docs/queue-policy.md)** — future queue design (not implemented)
+- **[Queue Policy](docs/queue-policy.md)** — bounded FIFO request queue (implemented behind `WHOOSHD_ENABLE_QUEUE`, disabled by default)
 - **[ThreadWake Cache](docs/threadwake/README.md)** — prompt-prefix reuse optimization (overview, configuration, metrics, security, operator runbook, architecture)
