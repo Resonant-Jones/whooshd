@@ -131,7 +131,15 @@ class RuntimeRouter:
                     kind = engine_kind_map.get(engine)
                     if kind and kind in self._adapters:
                         return self._adapters[kind]
-                    # If the mapped kind isn't registered, fall through.
+                    # Runtime not enabled — raise a clear error so the
+                    # caller knows which runtime needs to be configured.
+                    if kind:
+                        raise ModelResolutionError(
+                            model_id,
+                            f"Model '{model_id}' needs the '{kind}' runtime, "
+                            f"which is not enabled. Available: {self.registered_kinds}",
+                        )
+                    # Unknown engine — fall through to heuristics.
         except Exception:
             pass  # Registry lookup is best-effort.
 

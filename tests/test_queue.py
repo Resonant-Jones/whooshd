@@ -55,9 +55,12 @@ def client():
 def _reset_queue():
     """Ensure queue singleton starts fresh for each test."""
     import whooshd.queue as qmod
+    import whooshd.runtime as rmod
     qmod._queue = None
+    rmod._runtime = None
     yield
     qmod._queue = None
+    rmod._runtime = None
 
 
 # ── 1. Queue disabled preserves current 429 behavior ────────────────────────
@@ -709,3 +712,172 @@ class TestRequestQueueUnit:
         assert q._capacity_event.is_set()
         q._clear_capacity_signal()
         assert not q._capacity_event.is_set()
+
+
+# ── 9. Endpoint-level queue reachability tests ─────────────────────────────
+
+
+class TestQueueEndpointReachability:
+    """Prove that queued chat requests reach the FIFO execution path
+    through the FastAPI handler, not just the unit-level queue module.
+    """
+
+    async def test_queued_request_reaches_queue_branch_timeout(self, monkeypatch, client):
+        """Queued request enters the queue branch and times out without
+        calling the adapter."""
+        monkeypatch.setenv("WHOOSHD_ENABLE_QUEUE", "true")
+        monkeypatch.setenv("WHOOSHD_MAX_ACTIVE_REQUESTS", "1")
+        monkeypatch.setenv("WHOOSHD_MAX_QUEUE_DEPTH", "8")
+        monkeypatch.setenv("WHOOSHD_QUEUE_TIMEOUT_SECONDS", "0.05")
+
+        from whooshd.runtime import get_runtime
+        rt = get_runtime()
+
+        # Occupy the single active slot.
+        blocker = rt.begin_request(model="stub-model", stream=False)
+        rt.mark_running(blocker)
+
+        resp = await client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "stub-model",
+                "messages": [{"role": "user", "content": "hello"}],
+                "stream": False,
+            },
+        )
+
+        # Queue timeout returns 429 with code=TIMEOUT.
+        assert resp.status_code == 429
+        body = resp.json()
+        assert body["code"] == "TIMEOUT"
+
+        # Counters: queued incremented, timeout incremented.
+        admission = rt.build_admission_config()
+        assert admission["counters"]["queued"] >= 1
+        assert admission["counters"]["queue_timeout"] >= 1
+        # Not counted as rejected.
+        assert admission["counters"]["rejected"] == 0
+
+        rt.complete_request(blocker)
+
+    async def test_queue_disabled_behavior_unchanged(self, monkeypatch, client):
+        """When queue is disabled, overload returns 429 immediately."""
+        monkeypatch.setenv("WHOOSHD_ENABLE_QUEUE", "false")
+        monkeypatch.setenv("WHOOSHD_MAX_ACTIVE_REQUESTS", "1")
+
+        from whooshd.runtime import get_runtime
+        rt = get_runtime()
+
+        # Occupy the single active slot.
+        blocker = rt.begin_request(model="stub-model", stream=False)
+        rt.mark_running(blocker)
+
+        resp = await client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "stub-model",
+                "messages": [{"role": "user", "content": "hello"}],
+                "stream": False,
+            },
+        )
+
+        assert resp.status_code == 429
+        body = resp.json()
+        assert body["code"] == "RUNNER_OVERLOADED"
+
+        # No queued counter increment.
+        admission = rt.build_admission_config()
+        assert admission["counters"]["queued"] == 0
+
+        rt.complete_request(blocker)
+
+    async def test_queue_full_counter_increments(self, monkeypatch, client):
+        """When queue is enabled but full, queue_rejected counter increments."""
+        monkeypatch.setenv("WHOOSHD_ENABLE_QUEUE", "true")
+        monkeypatch.setenv("WHOOSHD_MAX_ACTIVE_REQUESTS", "1")
+        monkeypatch.setenv("WHOOSHD_MAX_QUEUE_DEPTH", "1")
+
+        from whooshd.runtime import get_runtime
+        rt = get_runtime()
+
+        # Occupy the single active slot.
+        blocker = rt.begin_request(model="stub-model", stream=False)
+        rt.mark_running(blocker)
+
+        # Fill the queue to capacity.
+        r1 = rt.begin_request(model="stub-model", stream=False)
+        rt.mark_queued(r1)
+
+        # Now the queue is full — this request should be rejected.
+        resp = await client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "stub-model",
+                "messages": [{"role": "user", "content": "hello"}],
+                "stream": False,
+            },
+        )
+
+        assert resp.status_code == 429
+        body = resp.json()
+        assert body["code"] == "RUNNER_OVERLOADED"
+
+        admission = rt.build_admission_config()
+        assert admission["counters"]["queue_rejected"] >= 1
+
+        rt.cancel_request(r1)
+        rt.complete_request(blocker)
+
+    async def test_queued_request_eventually_executes(self, monkeypatch, client):
+        """A queued request dequeues and executes successfully when capacity
+        opens up."""
+        import asyncio
+        monkeypatch.setenv("WHOOSHD_ENABLE_QUEUE", "true")
+        monkeypatch.setenv("WHOOSHD_MAX_ACTIVE_REQUESTS", "1")
+        monkeypatch.setenv("WHOOSHD_MAX_QUEUE_DEPTH", "8")
+        monkeypatch.setenv("WHOOSHD_QUEUE_TIMEOUT_SECONDS", "10")
+
+        from whooshd.runtime import get_runtime
+        from whooshd.queue import get_queue
+        rt = get_runtime()
+        queue = get_queue()
+
+        # Occupy the active slot.
+        blocker = rt.begin_request(model="stub-model", stream=False)
+        rt.mark_running(blocker)
+
+        # Start the queued request as a background task.
+        async def _queued_request():
+            return await client.post(
+                "/v1/chat/completions",
+                json={
+                    "model": "stub-model",
+                    "messages": [{"role": "user", "content": "hello"}],
+                    "stream": False,
+                },
+            )
+
+        task = asyncio.ensure_future(_queued_request())
+
+        # Give the request time to be accepted and enqueued.
+        await asyncio.sleep(0.1)
+        assert rt.queue_depth == 1
+
+        # Release the blocker — capacity opens.
+        rt.complete_request(blocker)
+        queue.notify_capacity()
+
+        # Wait for the queued request to complete.
+        resp = await asyncio.wait_for(task, timeout=5.0)
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert "choices" in body
+        assert len(body["choices"]) >= 1
+
+        # Counters.
+        admission = rt.build_admission_config()
+        assert admission["counters"]["queued"] >= 1
+        assert admission["counters"]["dequeued"] >= 1
+        # active_jobs should return to 0.
+        assert rt.active_jobs == 0

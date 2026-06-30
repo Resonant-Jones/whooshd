@@ -114,12 +114,10 @@ def _init_router():
         from whooshd.adapters.mlx_vlm import MlxVlmAdapter
         router.register(MlxVlmAdapter())
 
-    # ── llama.cpp adapter ──────────────────────────────────────
-    # Register when server URL is configured OR adapter is explicitly selected.
-    from whooshd.config import get_llama_cpp_server_url
-    if backend == "llama_cpp" or get_llama_cpp_server_url():
-        from whooshd.adapters.llama_cpp import LlamaCppAdapter
-        router.register(LlamaCppAdapter())
+    # ── llama.cpp adapter (always registered — reports offline until
+    #     WHOOSHD_LLAMA_CPP_SERVER_URL is set or auto_start is enabled) ─
+    from whooshd.adapters.llama_cpp import LlamaCppAdapter
+    router.register(LlamaCppAdapter())
 
 
 _init_router()
@@ -540,7 +538,10 @@ async def chat_completions(req: ChatCompletionRequest):
 
     # ── Admission control ─────────────────────────────────────────────
     admission = evaluate_chat_request(req, rt)
-    if not admission.accepted:
+
+    # Queue-full is a hard rejection — record queue-specific counter too.
+    if admission.reason == AdmissionDecision.REJECTED_QUEUE_FULL:
+        rt.record_queue_rejected()
         rt.record_rejected(admission.reason.value)
         return JSONResponse(
             status_code=admission.http_status,
@@ -551,6 +552,20 @@ async def chat_completions(req: ChatCompletionRequest):
             ).model_dump(),
         )
 
+    # All non-accepted, non-queued decisions are hard rejections.
+    # QUEUED is accepted-for-waiting — let it fall through to the queue branch.
+    if not admission.accepted and admission.reason != AdmissionDecision.QUEUED:
+        rt.record_rejected(admission.reason.value)
+        return JSONResponse(
+            status_code=admission.http_status,
+            content=ErrorResponse(
+                code=admission.error_code or ErrorCode.INTERNAL,
+                message=admission.message or "Request rejected.",
+                detail=admission.details,
+            ).model_dump(),
+        )
+
+    # Accepted or queued — both count as non-rejected.
     rt.record_accepted()
 
     # ── Resolve the adapter via router ───────────────────────────────

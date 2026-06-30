@@ -46,7 +46,7 @@ ThreadWake exposes three visibility surfaces. Each answers a different question.
 |---|---|---|
 | `GET /health/threadwake` | What is ThreadWake's current posture? | Live state: mode, entry counts, hit/miss rates, KV observability, candidate registry, replay summary |
 | `GET /runtime/threadwake/analysis` | What would be worth caching? | Analysis counts: candidates scanned, eligible, manifests, artifacts, errors |
-| `python -m whooshd.threadwake.analyze` | Same as above, from CLI | Same analysis counts |
+| `python -m whooshd.threadwake.analyze` | Same as above, from CLI | Same live daemon analysis counts |
 
 **Rule of thumb**: Health tells you *if* ThreadWake is working. Analysis tells you *what* it found.
 
@@ -151,7 +151,10 @@ Returns:
 python -m whooshd.threadwake.analyze
 ```
 
-Same output format.
+Same output format. The CLI reads from the running daemon's
+`/runtime/threadwake/analysis` endpoint; it does not create a private
+in-memory ThreadWake manager. Use `WHOOSHD_BASE_URL` or `--base-url` when the
+daemon is not at `http://127.0.0.1:8000`.
 
 ### Health Endpoint
 

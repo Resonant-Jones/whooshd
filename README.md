@@ -244,6 +244,9 @@ curl http://127.0.0.1:8000/health/threadwake
 
 # 8. ThreadWake analysis (counts only, safe even when off)
 curl http://127.0.0.1:8000/runtime/threadwake/analysis
+
+# Or fetch the same live daemon report from the CLI
+python -m whooshd.threadwake.analyze --base-url http://127.0.0.1:8000
 ```
 
 All commands should succeed with the stub adapter — no models, downloads, or GPU required.
@@ -297,7 +300,7 @@ available, but KV materialization is not enabled.
 | Candidate telemetry and scoring | ✅ |
 | Snapshot policy engine | ✅ |
 | Metadata-only analysis loop | ✅ |
-| Read-only visibility (`/health/threadwake`, `/runtime/threadwake/analysis`) | ✅ |
+| Read-only visibility (`/health/threadwake`, `/runtime/threadwake/analysis`, CLI daemon client) | ✅ |
 | Operator runbook and docs index | ✅ |
 | KV reuse | ❌ Not enabled |
 | Durable KV snapshots | ❌ Deferred |

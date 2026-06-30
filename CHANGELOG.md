@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- `python -m whooshd.threadwake.analyze` now fetches live analysis from the
+  running Whoosh'd daemon instead of constructing a fresh empty in-memory
+  ThreadWake manager.
+
+---
 ## Optional Bounded Request Queue — Phase 4B (2026-06-26)
 
 Feature-flagged bounded FIFO request queue behind `WHOOSHD_ENABLE_QUEUE`.
