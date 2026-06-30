@@ -24,6 +24,7 @@ from .tokenization import (
     TokenizedPrompt,
     TokenSpan,
 )
+from whooshd.adapters.mlx_prompt import extract_chat_messages, render_mlx_chat_prompt
 
 logger = logging.getLogger(__name__)
 
@@ -61,35 +62,6 @@ def _chat_template_hash(tokenizer: Any) -> str | None:
         return None
 
 
-def _render_prompt(tokenizer: Any, messages: list[dict]) -> str | None:
-    """Render messages into a prompt string using the chat template.
-
-    Returns None if rendering fails.
-    """
-    try:
-        if hasattr(tokenizer, "apply_chat_template"):
-            return tokenizer.apply_chat_template(
-                messages,
-                add_generation_prompt=True,
-                tokenize=False,
-            )
-        # Fallback: simple transcript
-        parts: list[str] = []
-        for msg in messages:
-            role = msg.get("role", "user")
-            content = msg.get("content", "")
-            if role == "system":
-                parts.append(f"System: {content}")
-            elif role == "assistant":
-                parts.append(f"Assistant: {content}")
-            else:
-                parts.append(f"User: {content}")
-        parts.append("Assistant: ")
-        return "\n".join(parts)
-    except Exception:
-        return None
-
-
 def _tokenize(tokenizer: Any, text: str) -> list[int] | None:
     """Tokenize a text string.  Returns None on failure."""
     try:
@@ -103,21 +75,6 @@ def _tokenize(tokenizer: Any, text: str) -> list[int] | None:
         return None
     except Exception:
         return None
-
-
-def _extract_messages(request: Any) -> list[dict]:
-    """Extract message dicts from a request object."""
-    messages = getattr(request, "messages", [])
-    result: list[dict] = []
-    for m in messages:
-        if isinstance(m, dict):
-            result.append({"role": m.get("role", "user"), "content": m.get("content", "")})
-        else:
-            result.append({
-                "role": getattr(m, "role", "user"),
-                "content": getattr(m, "content", ""),
-            })
-    return result
 
 
 # ── Adapter ────────────────────────────────────────────────────────────────
@@ -165,7 +122,8 @@ class MLXInProcessTokenizerAdapter:
         tmpl_hash = _chat_template_hash(self._tokenizer)
 
         try:
-            messages = _extract_messages(request)
+            # Use the shared message extraction + prompt rendering.
+            messages = extract_chat_messages(request)
             if not messages:
                 return TokenizedPrompt(
                     model_id=model_id,
@@ -176,19 +134,10 @@ class MLXInProcessTokenizerAdapter:
                     unavailable_reason="no_messages_to_tokenize",
                 )
 
-            # Render the full prompt
-            full_prompt = _render_prompt(self._tokenizer, messages)
-            if full_prompt is None:
-                return TokenizedPrompt(
-                    model_id=model_id,
-                    backend="mlx",
-                    tokenizer_hash=tok_hash,
-                    chat_template_hash=tmpl_hash,
-                    real_tokenization=False,
-                    unavailable_reason="prompt_rendering_failed",
-                )
+            # Render full prompt using shared renderer.
+            full_prompt = render_mlx_chat_prompt(self._tokenizer, messages)
 
-            # Tokenize the full prompt
+            # Tokenize the full prompt.
             all_ids = _tokenize(self._tokenizer, full_prompt)
             if all_ids is None:
                 return TokenizedPrompt(
@@ -200,23 +149,34 @@ class MLXInProcessTokenizerAdapter:
                     unavailable_reason="tokenization_failed",
                 )
 
-            # Incremental rendering: stable-prefix messages only
+            # ── Conservative stable-prefix split ──────────────────────
+            stable_prefix_ids: list[int] = []
+            dynamic_tail_ids: list[int] = list(all_ids)
+
             stable_messages = [
                 messages[i] for i, seg in enumerate(graph.segments)
                 if seg.in_stable_prefix and i < len(messages)
             ]
-            stable_prefix_ids: list[int] = []
-            dynamic_tail_ids: list[int] = list(all_ids)
 
             if stable_messages and len(stable_messages) < len(messages):
-                stable_prompt = _render_prompt(self._tokenizer, stable_messages)
-                if stable_prompt is not None:
-                    stable_ids = _tokenize(self._tokenizer, stable_prompt)
-                    if stable_ids is not None and len(stable_ids) <= len(all_ids):
-                        stable_prefix_ids = stable_ids
-                        dynamic_tail_ids = all_ids[len(stable_ids):]
+                stable_prompt = render_mlx_chat_prompt(
+                    self._tokenizer, stable_messages
+                )
+                stable_ids = _tokenize(self._tokenizer, stable_prompt)
 
-            # Build minimal span list for observability
+                # Only accept stable split if the stable-prefix token IDs
+                # are a true leading prefix of the full prompt token IDs.
+                if (
+                    stable_ids is not None
+                    and len(stable_ids) <= len(all_ids)
+                    and all_ids[:len(stable_ids)] == stable_ids
+                ):
+                    stable_prefix_ids = stable_ids
+                    dynamic_tail_ids = all_ids[len(stable_ids):]
+                # else: non-prefix stable render — leave stable_prefix_ids empty;
+                #        do not claim reusable prefix tokens.
+
+            # Build minimal span list for observability.
             spans: list[TokenSpan] = []
             for i, seg in enumerate(graph.segments):
                 spans.append(TokenSpan(
