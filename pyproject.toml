@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "whooshd"
-version = "0.1.0"
+version = "0.1.0rc3"
 description = "Whoosh'd — Memory-aware local inference broker for Apple Silicon"
 readme = "README.md"
 license = { text = "MIT" }
@@ -26,6 +26,12 @@ dev = [
 mlx = [
     "mlx-lm>=0.20.0",
 ]
+
+[project.scripts]
+whoosh = "whooshd.cli:main"
+whooshd = "whooshd.cli:main"
+whooshd-up = "whooshd.cli:up_main"
+whooshd-down = "whooshd.cli:down_main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["whooshd"]

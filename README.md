@@ -2,15 +2,31 @@
 
 <img width="1672" height="941" alt="blue-balloon-whoosh" src="https://github.com/user-attachments/assets/25ed7dae-9d3a-4c8e-9e54-3185ced18831" />
 
-**Local-first inference broker for Apple Silicon systems.**
+**A local-first inference gateway for Apple Silicon and self-hosted AI
+workflows.** It exposes OpenAI-compatible chat and model surfaces while
+coordinating local runtimes like MLX and llama.cpp — with explicit
+health, readiness, runtime visibility, and safety boundaries.
 
-Whoosh'd coordinates local model backends such as MLX, llama.cpp, and
-related runtimes behind a unified routing surface, with support for
-memory-aware orchestration and Codexify-compatible workflows.
+Whoosh'd is built to be useful as a standalone local inference server,
+but especially sharp as the local runtime layer beneath
+[Codexify](https://codexify.ai).
+
+**Why not just Ollama or a raw MLX script?**
+
+- **Multi-runtime routing** — run MLX, llama.cpp, and future backends
+  behind a single `POST /v1/chat/completions` surface
+- **Health and readiness** — distinguish "process alive" from "model
+  warm and ready to serve" without guessing
+- **Runtime visibility** — `/health/runtime`, `/ready`, `/runtime`,
+  structured model inventory
+- **ThreadWake cache** — prompt-prefix reuse optimization (metadata
+  milestone — analysis and visibility available, KV materialization
+  deferred)
+- **Codexify-native** — designed as the local inference backend for
+  Codexify's local-first posture
 
 Whoosh'd does **not** replace lower-level inference engines. It sits
-above them as a lightweight broker for local AI applications that need
-routing, task boundaries, model inventory, and model-aware execution.
+above them as a lightweight broker.
 
 - **Use with Codexify** as a managed local sidecar, or
 - **Use standalone** with any OpenAI-compatible client, or
@@ -51,27 +67,94 @@ Runtime Router
 ## Quick Start
 
 ```bash
-# Create venv and install
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -e ".[dev]"
 
-# Copy example env
-cp examples/env.stub .env
+# Start Whoosh'd
+whoosh -d
 
-# Run with stub adapter (no models needed)
-WHOOSHD_ADAPTER=stub python -m uvicorn whooshd.app:app --reload
+# Check status
+whoosh status
 
-# Run with MLX-LM Server (subprocess-supervised)
-WHOOSHD_MLX_ENABLED=true \
-  WHOOSHD_MLX_MODEL=mlx-community/Llama-3.2-3B-Instruct-4bit \
-  python -m uvicorn whooshd.app:app --reload
+# Show logs
+whoosh logs
 
-# Run with MLX in-process (legacy, requires mlx-lm)
-WHOOSHD_ADAPTER=mlx \
-  WHOOSHD_MLX_MODEL=mlx-community/Llama-3.2-3B-Instruct-4bit \
-  python -m uvicorn whooshd.app:app --reload
+# Stop Whoosh'd
+whoosh down
+```
 
+Alternate entrypoints:
+
+```bash
+whooshd-up
+whooshd-down
+whoosh up
+whooshd up
+whooshd down
+```
+
+One implementation, multiple affordance routes.
+
+These start commands all launch the same server path:
+
+```bash
+whoosh -d
+whoosh up
+whooshd up
+whooshd-up
+```
+
+These stop commands all stop the same tracked process:
+
+```bash
+whoosh down
+whooshd down
+whooshd-down
+```
+
+### One tracked daemon at a time
+
+The Whoosh'd CLI currently tracks one daemon process at a time via:
+
+```text
+~/.whooshd/whooshd.pid
+~/.whooshd/whooshd.log
+```
+
+Custom `--port` values are supported for startup and status probes, but PID and
+log state are global, not per-port.
+
+That means:
+
+```bash
+whoosh -d --port 8010
+whoosh status --port 8010
+whoosh down
+```
+
+will start and inspect Whoosh'd on port 8010, then stop the globally tracked
+Whoosh'd process group.
+
+`whoosh down --port 8010` does not select a separate daemon by port. It stops
+the one tracked daemon.
+
+The CLI will not kill unknown processes occupying a port. If a port is already
+in use and no tracked Whoosh'd PID exists, inspect it manually:
+
+```bash
+lsof -nP -iTCP:8000 -sTCP:LISTEN
+```
+
+Developer/debug startup remains available:
+
+```bash
+python -m uvicorn whooshd.app:app --host 127.0.0.1 --port 8000
+```
+
+Useful validation commands:
+
+```bash
 # Run tests (no MLX or model downloads required)
 python -m pytest -v
 
@@ -134,8 +217,8 @@ Open http://127.0.0.1:8000/docs for the auto-generated Swagger UI.
 ### Local Sanity Checklist
 
 ```bash
-# 1. Start stub server (no models needed)
-WHOOSHD_ADAPTER=stub uvicorn whooshd.app:app --port 8000
+# 1. Start server
+whoosh -d
 
 # 2. Confirm liveness
 curl http://127.0.0.1:8000/health
@@ -227,9 +310,33 @@ See **[docs/threadwake/README.md](docs/threadwake/README.md)** for the full docu
 
 ## Troubleshooting
 
+### `whooshd --help` still shows Uvicorn help
+
+You may have an old shell function or alias named `whooshd`.
+Check:
+
+```bash
+type -a whooshd
+```
+
+If it says `whooshd` is a shell function from `~/.zshrc`, remove or rename the old function, then reload your shell:
+
+```bash
+source ~/.zshrc
+hash -r
+```
+
+### Port 8000 is already in use
+
+Whoosh'd will not kill unknown processes automatically. If startup reports a port conflict, inspect the listener:
+
+```bash
+lsof -nP -iTCP:8000 -sTCP:LISTEN
+```
+
 | Symptom | Check |
 |---|---|
-| Server not responding | `curl http://127.0.0.1:8000/health` — is uvicorn running? |
+| Server not responding | `whoosh status` or `curl http://127.0.0.1:8000/health` |
 | `GET /ready` returns 503 | Model may be warming. Check `/runtime/model` for lifecycle state. |
 | Warmup hangs | Check model path exists. MLX downloads on first load — wait or check logs. |
 | 429 Too Many Requests | Admission control at capacity. Increase `WHOOSHD_MAX_ACTIVE_REQUESTS` or wait. |
@@ -286,5 +393,5 @@ See **[docs/threadwake/README.md](docs/threadwake/README.md)** for the full docu
 - **[Model Management](docs/model-management.md)** — downloading, storing, and switching models
 - **[Benchmarking](docs/benchmarking.md)** — throughput measurement harness
 - **[Release Notes](docs/releases/v0.1-rc.md)** — v0.1 release candidate
-- **[Queue Policy](docs/queue-policy.md)** — future queue design (not implemented)
+- **[Queue Policy](docs/queue-policy.md)** — bounded FIFO request queue (implemented behind `WHOOSHD_ENABLE_QUEUE`, disabled by default)
 - **[ThreadWake Cache](docs/threadwake/README.md)** — prompt-prefix reuse optimization (overview, configuration, metrics, security, operator runbook, architecture)

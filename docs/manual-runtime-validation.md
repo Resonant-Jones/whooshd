@@ -11,6 +11,20 @@ How to manually validate both Whoosh'd runtime lanes (llama.cpp and MLX-LM Serve
 
 ## Start Whoosh'd
 
+For first-run validation, use the CLI:
+
+```bash
+whoosh -d
+whoosh status
+```
+
+One implementation, multiple affordance routes: `whoosh -d`, `whoosh up`,
+`whooshd up`, and `whooshd-up` all start the same server path. `whoosh down`,
+`whooshd down`, and `whooshd-down` all stop the same tracked process.
+
+Developer/debug startup remains available when you need explicit environment
+control:
+
 ```bash
 # With stub adapter (no models needed — for baseline testing)
 WHOOSHD_ADAPTER=stub python -m uvicorn whooshd.app:app --host 127.0.0.1 --port 8000
@@ -86,7 +100,7 @@ When a registry is configured, model inventory includes all registered models:
 
 ```bash
 WHOOSHD_MODEL_REGISTRY_PATH=configs/models.yaml \
-  python -m uvicorn whooshd.app:app --host 127.0.0.1 --port 8000
+  whoosh -d
 ```
 
 ```bash
@@ -228,7 +242,7 @@ llama-server --model /path/to/model.gguf --host 127.0.0.1 --port 8080
 WHOOSHD_ADAPTER=llama_cpp \
   WHOOSHD_LLAMA_CPP_SERVER_URL=http://127.0.0.1:8080 \
   WHOOSHD_LLAMA_CPP_MODEL_PATH=/path/to/model.gguf \
-  python -m uvicorn whooshd.app:app --host 127.0.0.1 --port 8000
+  whoosh -d
 
 # ── MLX-LM Server ───────────────────────────────────────────────────
 # Start mlx_lm.server directly
@@ -240,7 +254,7 @@ WHOOSHD_MLX_ENABLED=true \
   WHOOSHD_MLX_MODEL=mlx-community/Llama-3.2-3B-Instruct-4bit \
   WHOOSHD_MLX_HOST=127.0.0.1 \
   WHOOSHD_MLX_PORT=8081 \
-  python -m uvicorn whooshd.app:app --host 127.0.0.1 --port 8000
+  whoosh -d
 ```
 
 ### Validation Commands (to run against both runtimes)
