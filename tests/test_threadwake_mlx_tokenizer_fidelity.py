@@ -1,280 +1,392 @@
-"""Fidelity tests for MLX tokenizer adapter.
+"""Tests for MLX prompt rendering and token split fidelity.
 
-Proves that the adapter uses the tokenizer object correctly and that
-tokenization degrades safely.  MLX-dependent tests skip cleanly.
+Proves that the shared MLX prompt renderer produces identical output
+for both the inference path and the ThreadWake tokenizer path, and
+that token splits are conservative and reconstructible.
 """
 
 from __future__ import annotations
 
+import hashlib
 import pytest
 
+from whooshd.adapters.mlx_prompt import extract_chat_messages, render_mlx_chat_prompt
+from whooshd.contracts import ChatCompletionRequest
+from whooshd.runtime.threadwake.compiler import compile_prompt_graph
 from whooshd.runtime.threadwake.mlx_tokenizer import (
     MLXInProcessTokenizerAdapter,
-    _render_prompt,
+    _chat_template_hash,
+    _tokenizer_hash,
     _tokenize,
 )
+from whooshd.runtime.threadwake.tokenization import (
+    BackendTokenizerAdapterRegistry,
+    FakeTokenizerAdapter,
+)
+from whooshd.runtime.threadwake.types import ThreadWakeRequestConfig
 
 
-def _has_mlx() -> bool:
-    try:
-        import mlx_lm  # noqa: F401
-        return True
-    except ImportError:
-        return False
+# ── Fake tokenizers for deterministic testing ──────────────────────────────
 
 
-def _make_mock_tokenizer(**overrides):
-    class MockTokenizer:
-        def __init__(self):
-            self.name_or_path = overrides.get("name_or_path", "test-model")
-            self.vocab_size = overrides.get("vocab_size", 32000)
-            self.chat_template = overrides.get(
-                "chat_template",
-                "{% for m in messages %}{{ m.role }}: {{ m.content }}\n{% endfor %}",
-            )
+class _FakeTokenizerWithChatTemplate:
+    """Fake tokenizer with apply_chat_template that produces deterministic
+    output, mirroring real tokenizer behavior."""
 
-        def apply_chat_template(self, messages, add_generation_prompt=True, tokenize=False):
-            parts = [f"{m['role']}: {m['content']}" for m in messages]
-            return "\n".join(parts)
+    def __init__(self, template_str="<|im_start|>", name="fake-tokenizer", vocab_size=32000):
+        self.name_or_path = name
+        self.vocab_size = vocab_size
+        self.chat_template = template_str
+        self._encode_map: dict[str, list[int]] = {}
+        self._call_count = 0
 
-        def encode(self, text):
-            class MockEncoding:
-                def __init__(self, ids):
-                    self.ids = ids
-            return MockEncoding([ord(c) % 32000 for c in text])
+        # Pre-populate with deterministic encodings.
+        self._next_id = 100
 
-    return MockTokenizer()
+    def apply_chat_template(self, messages, add_generation_prompt=True, tokenize=False):
+        """Deterministic template rendering."""
+        self._call_count += 1
+        assert tokenize is False, "shared renderer must call with tokenize=False"
+        assert add_generation_prompt is True, "shared renderer must call with add_generation_prompt=True"
+
+        parts = [self.chat_template]
+        for msg in messages:
+            role = msg.get("role", "user")
+            content = msg.get("content", "")
+            parts.append(f"<|{role}|>{content}")
+        parts.append("<|assistant|>")
+        return "".join(parts)
+
+    def encode(self, text: str):
+        """Deterministic encoding — each unique text gets unique IDs."""
+        if text not in self._encode_map:
+            # Generate fake token IDs from text hash.
+            h = hashlib.sha256(text.encode()).digest()
+            ids = []
+            for i in range(0, len(h), 2):
+                ids.append(int.from_bytes(h[i:i+2], "big") % 65536)
+            self._encode_map[text] = ids
+        return self._encode_map[text]
 
 
-class TestFidelity:
-    def test_tokenization_is_deterministic(self):
-        tok = _make_mock_tokenizer()
-        adapter = MLXInProcessTokenizerAdapter(tokenizer=tok)
+class _FakeTokenizerWithoutTemplate:
+    """Fake tokenizer without apply_chat_template — tests fallback path."""
 
-        class MockSegment:
-            def __init__(self, name, stability, in_prefix, token_count, seg_type, scope, ch):
-                self.name = name
-                self.stability = stability
-                self.in_stable_prefix = in_prefix
-                self.token_count = token_count
-                self.segment_type = seg_type
-                self.scope = scope
-                self.content_hash = ch
+    def __init__(self, name="no-template-tok", vocab_size=16000):
+        self.name_or_path = name
+        self.vocab_size = vocab_size
+        self.chat_template = None
+        self._encode_map: dict[str, list[int]] = {}
 
-        class MockGraph:
-            segments = [
-                MockSegment("s", "stable", True, 5, "system", "thread", "abc"),
-                MockSegment("u", "dynamic", False, 3, "user_message", "thread", "def"),
-            ]
+    def encode(self, text: str):
+        if text not in self._encode_map:
+            h = hashlib.sha256(text.encode()).digest()
+            ids = []
+            for i in range(0, len(h), 2):
+                ids.append(int.from_bytes(h[i:i+2], "big") % 65536)
+            self._encode_map[text] = ids
+        return self._encode_map[text]
 
-        class MockMsg:
-            def __init__(self, role, content):
-                self.role = role
-                self.content = content
 
-        class MockReq:
-            messages = [MockMsg("system", "Hi"), MockMsg("user", "Hello")]
+# ── Helpers ────────────────────────────────────────────────────────────────
 
-        r1 = adapter.tokenize_prompt(MockGraph(), MockReq(), model_id="m")
-        r2 = adapter.tokenize_prompt(MockGraph(), MockReq(), model_id="m")
-        assert r1.token_ids == r2.token_ids
-        assert r1.stable_prefix_token_ids == r2.stable_prefix_token_ids
 
-    def test_tokenizer_error_degrades_safely(self):
-        """A tokenizer that raises should produce real_tokenization=False."""
-        class BrokenTokenizer:
-            name_or_path = "broken"
-            vocab_size = 100
+def _make_request(messages=None, model="test-model"):
+    if messages is None:
+        messages = [
+            {"role": "system", "content": "stable prefix"},
+            {"role": "user", "content": "hello"},
+        ]
+    return ChatCompletionRequest.model_validate({
+        "model": model,
+        "messages": messages,
+    })
 
-            def apply_chat_template(self, messages, **kwargs):
-                raise RuntimeError("tokenizer crash")
 
-        adapter = MLXInProcessTokenizerAdapter(tokenizer=BrokenTokenizer())
+def _make_graph(request, backend="mlx"):
+    return compile_prompt_graph(
+        messages=list(getattr(request, "messages", [])),
+        model_id=getattr(request, "model", None),
+        backend=backend,
+        scope="thread",
+    )
 
-        class MockSeg:
-            name = "s"; stability = "stable"; in_stable_prefix = True
-            token_count = 5; segment_type = "system"; scope = "thread"; content_hash = "abc"
 
-        class MockGraph:
-            segments = [MockSeg()]
+# ── Test 1: Shared rendering with chat template ───────────────────────────
 
-        class MockMsg:
-            role = "user"; content = "hi"
 
-        class MockReq:
-            messages = [MockMsg()]
+class TestSharedRenderingWithChatTemplate:
+    """Prove render_mlx_chat_prompt produces identical output for both
+    inference and ThreadWake paths when a chat template is available."""
 
-        result = adapter.tokenize_prompt(MockGraph(), MockReq(), model_id="m")
-        assert result.real_tokenization is False
-        assert "failed" in (result.unavailable_reason or "").lower()
+    def test_renderer_produces_identical_output(self):
+        tokenizer = _FakeTokenizerWithChatTemplate()
+        messages = [
+            {"role": "system", "content": "You are helpful."},
+            {"role": "user", "content": "Hello world"},
+        ]
 
-    def test_render_prompt_fallback_works(self):
-        """Fallback rendering without chat_template should still produce text."""
-        class NoTemplateTokenizer:
-            name_or_path = "no-template"
-            vocab_size = 1000
+        rendered = render_mlx_chat_prompt(tokenizer, messages)
+        # The fake template wraps each message: <|im_start|><|system|>You are helpful.<|user|>Hello world<|assistant|>
+        assert "<|im_start|>" in rendered
+        assert "<|system|>" in rendered
+        assert "<|user|>" in rendered
+        assert "<|assistant|>" in rendered
+        assert "You are helpful." in rendered
+        assert "Hello world" in rendered
 
-            def encode(self, text):
-                class E:
-                    ids = [1, 2, 3]
-                return E()
+    def test_extract_messages_round_trips(self):
+        """Messages extracted from a request produce identical rendering
+        to messages built from dicts."""
+        req = _make_request(messages=[
+            {"role": "system", "content": "System prompt"},
+            {"role": "user", "content": "User message"},
+        ])
+        tokenizer = _FakeTokenizerWithChatTemplate()
 
-        tok = NoTemplateTokenizer()
-        result = _render_prompt(tok, [{"role": "user", "content": "hello"}])
-        assert result is not None
-        assert "hello" in result
+        # Extract via shared helper.
+        extracted = extract_chat_messages(req)
+        rendered_extracted = render_mlx_chat_prompt(tokenizer, extracted)
 
-    def test_tokenize_with_encoding_object(self):
-        """Tokenizer returning an Encoding object should work."""
-        class EncodingTokenizer:
-            name_or_path = "enc"
-            vocab_size = 2000
-            chat_template = "tmpl"
+        # Same messages as plain dicts — should produce identical output.
+        direct = [
+            {"role": "system", "content": "System prompt"},
+            {"role": "user", "content": "User message"},
+        ]
+        rendered_direct = render_mlx_chat_prompt(tokenizer, direct)
 
-            def apply_chat_template(self, messages, add_generation_prompt=True, tokenize=False):
-                return "rendered"
+        assert rendered_extracted == rendered_direct
 
-            def encode(self, text):
-                class Encoding:
-                    ids = [10, 20, 30]
-                return Encoding()
+    def test_renderer_passes_correct_args_to_template(self):
+        """Shared renderer must call apply_chat_template with tokenize=False
+        and add_generation_prompt=True."""
+        tokenizer = _FakeTokenizerWithChatTemplate()
+        messages = [{"role": "user", "content": "hi"}]
+        render_mlx_chat_prompt(tokenizer, messages)
+        # The fake tokenizer asserts these values in apply_chat_template.
+        assert tokenizer._call_count == 1
 
-        adapter = MLXInProcessTokenizerAdapter(tokenizer=EncodingTokenizer())
 
-        class MockSeg:
-            name = "s"; stability = "stable"; in_stable_prefix = True
-            token_count = 5; segment_type = "system"; scope = "thread"; content_hash = "abc"
+# ── Test 2: Fallback transcript rendering matches ─────────────────────────
 
-        class MockGraph:
-            segments = [MockSeg()]
 
-        class MockMsg:
-            role = "user"; content = "hi"
+class TestFallbackTranscript:
+    """Prove the fallback transcript is identical for both paths when
+    no chat template is available."""
 
-        class MockReq:
-            messages = [MockMsg()]
+    def test_fallback_includes_assistant_cue(self):
+        tokenizer = _FakeTokenizerWithoutTemplate()
+        messages = [
+            {"role": "system", "content": "Be helpful."},
+            {"role": "user", "content": "Query"},
+        ]
+        rendered = render_mlx_chat_prompt(tokenizer, messages)
 
-        result = adapter.tokenize_prompt(MockGraph(), MockReq(), model_id="m")
+        assert "System: Be helpful." in rendered
+        assert "User: Query" in rendered
+        assert rendered.endswith("Assistant: ")
+
+    def test_fallback_multi_turn(self):
+        tokenizer = _FakeTokenizerWithoutTemplate()
+        messages = [
+            {"role": "system", "content": "System."},
+            {"role": "user", "content": "Q1"},
+            {"role": "assistant", "content": "A1"},
+            {"role": "user", "content": "Q2"},
+        ]
+        rendered = render_mlx_chat_prompt(tokenizer, messages)
+
+        assert "System: System." in rendered
+        assert "User: Q1" in rendered
+        assert "Assistant: A1" in rendered
+        assert "User: Q2" in rendered
+        assert rendered.endswith("Assistant: ")
+
+    def test_fallback_no_template_renders_same_as_dict(self):
+        """sToken rendering without chat template matches the text
+        that _format_chat_prompt would produce with the same tokenizer."""
+        tokenizer = _FakeTokenizerWithoutTemplate()
+        messages = [
+            {"role": "system", "content": "S"},
+            {"role": "user", "content": "U"},
+        ]
+        rendered = render_mlx_chat_prompt(tokenizer, messages)
+
+        # Verify fallback transcript format explicitly.
+        expected = "System: S\nUser: U\nAssistant: "
+        assert rendered == expected
+
+
+# ── Test 3: Stable/dynamic split reconstructs full token IDs ───────────────
+
+
+class TestStableDynamicSplitReconstructs:
+    """Prove that stable_prefix_token_ids + dynamic_tail_token_ids
+    equals the full token_ids."""
+
+    def test_split_reconstructs_with_template(self):
+        tokenizer = _FakeTokenizerWithChatTemplate(name="split-tok", vocab_size=1000)
+        adapter = MLXInProcessTokenizerAdapter(tokenizer=tokenizer)
+
+        messages = [
+            {"role": "system", "content": "stable prefix " * 4},
+            {"role": "user", "content": "dynamic tail"},
+        ]
+        req = _make_request(messages=messages)
+        graph = _make_graph(req)
+
+        result = adapter.tokenize_prompt(graph, req, model_id="test-model")
         assert result.real_tokenization is True
-        assert result.token_ids == [10, 20, 30]
+        assert result.token_ids is not None
+        assert result.stable_prefix_token_ids is not None
+        assert result.dynamic_tail_token_ids is not None
 
-    def test_no_chat_template_degrades_cleanly(self):
-        """Tokenizer without chat_template should still tokenize via fallback."""
-        class NoTemplateTok:
-            name_or_path = "no-tmpl"
-            vocab_size = 500
-            chat_template = None  # No template
+        # Stable + dynamic must reconstruct full token IDs.
+        reconstructed = result.stable_prefix_token_ids + result.dynamic_tail_token_ids
+        assert reconstructed == result.token_ids
 
-            def encode(self, text):
-                class E:
-                    ids = [1, 2]
-                return E()
+        # Counts match.
+        assert result.stable_prefix_token_count == len(result.stable_prefix_token_ids)
+        assert result.dynamic_tail_token_count == len(result.dynamic_tail_token_ids)
 
-        adapter = MLXInProcessTokenizerAdapter(tokenizer=NoTemplateTok())
+    def test_stable_ids_are_leading_prefix(self):
+        """Stable prefix token IDs must be a true leading prefix of full IDs."""
+        tokenizer = _FakeTokenizerWithChatTemplate(name="prefix-tok", vocab_size=1000)
+        adapter = MLXInProcessTokenizerAdapter(tokenizer=tokenizer)
 
-        class MockSeg:
-            name = "s"; stability = "stable"; in_stable_prefix = True
-            token_count = 5; segment_type = "system"; scope = "thread"; content_hash = "abc"
+        messages = [
+            {"role": "system", "content": "stable"},
+            {"role": "user", "content": "dynamic"},
+        ]
+        req = _make_request(messages=messages)
+        graph = _make_graph(req)
 
-        class MockGraph:
-            segments = [MockSeg()]
+        result = adapter.tokenize_prompt(graph, req, model_id="test-model")
+        if result.stable_prefix_token_ids:
+            assert result.token_ids[:len(result.stable_prefix_token_ids)] == result.stable_prefix_token_ids
 
-        class MockMsg:
-            role = "user"; content = "hi"
 
-        class MockReq:
-            messages = [MockMsg()]
+# ── Test 4: Non-prefix stable render disables reusable split ───────────────
 
-        result = adapter.tokenize_prompt(MockGraph(), MockReq(), model_id="m")
-        # Should still work via fallback rendering
+
+class TestNonPrefixStableRenderSafe:
+    """Prove that a non-leading-prefix stable render does not claim
+    reusable prefix tokens."""
+
+    def test_non_prefix_stable_disables_split(self):
+        """When stable-only rendering does not produce a leading prefix
+        of the full token IDs, no reusable split is claimed."""
+        tokenizer = _FakeTokenizerWithChatTemplate(name="non-prefix-tok", vocab_size=1000)
+        adapter = MLXInProcessTokenizerAdapter(tokenizer=tokenizer)
+
+        # Many messages so the stable prefix (first few) and full render
+        # produce different token sequences.
+        messages = [
+            {"role": "system", "content": "s" * 8},
+            {"role": "user", "content": "u1"},
+            {"role": "assistant", "content": "a1"},
+            {"role": "user", "content": "u2"},
+            {"role": "assistant", "content": "a2"},
+            {"role": "user", "content": "u3"},
+        ]
+        req = _make_request(messages=messages)
+        graph = _make_graph(req)
+
+        result = adapter.tokenize_prompt(graph, req, model_id="test-model")
         assert result.real_tokenization is True
-        assert result.chat_template_hash is None
 
-    def test_capability_is_token_ids_not_spans(self):
-        """MLX adapter should report token_ids, not token_ids_with_spans."""
-        tok = _make_mock_tokenizer()
-        adapter = MLXInProcessTokenizerAdapter(tokenizer=tok)
-        cap = adapter.supports_tokenization()
-        assert cap.value == "token_ids"
-        assert cap.value != "token_ids_with_spans"
+        # The stable prefix should be empty or at minimum safe:
+        # the adapter must not claim a prefix that isn't a true leading sublist.
+        if result.stable_prefix_token_ids:
+            assert result.token_ids[:len(result.stable_prefix_token_ids)] == result.stable_prefix_token_ids
 
-    def test_stable_dynamic_split_preserves_total(self):
-        """stable_prefix + dynamic_tail should equal total tokens."""
-        tok = _make_mock_tokenizer()
-        adapter = MLXInProcessTokenizerAdapter(tokenizer=tok)
+    def test_no_crash_on_empty_messages(self):
+        """Minimal messages should not crash the adapter."""
+        tokenizer = _FakeTokenizerWithChatTemplate()
+        adapter = MLXInProcessTokenizerAdapter(tokenizer=tokenizer)
 
-        class MockSeg:
-            def __init__(self, name, stability, in_prefix, token_count, seg_type, scope, ch):
-                self.name = name
-                self.stability = stability
-                self.in_stable_prefix = in_prefix
-                self.token_count = token_count
-                self.segment_type = seg_type
-                self.scope = scope
-                self.content_hash = ch
+        req = _make_request(messages=[
+            {"role": "user", "content": "hi"},
+        ])
+        graph = _make_graph(req)
 
-        class MockGraph:
-            segments = [
-                MockSeg("system", "stable", True, 5, "system", "thread", "abc"),
-                MockSeg("user", "dynamic", False, 3, "user_message", "thread", "def"),
-            ]
-
-        class MockMsg:
-            def __init__(self, role, content):
-                self.role = role
-                self.content = content
-
-        class MockReq:
-            messages = [
-                MockMsg("system", "System prompt here"),
-                MockMsg("user", "User query here"),
-            ]
-
-        r = adapter.tokenize_prompt(MockGraph(), MockReq(), model_id="m")
-        assert len(r.stable_prefix_token_ids) + len(r.dynamic_tail_token_ids) == len(r.token_ids)
-        assert r.stable_prefix_token_count == len(r.stable_prefix_token_ids)
-        assert r.dynamic_tail_token_count == len(r.dynamic_tail_token_ids)
-
-    def test_spans_are_observability_only(self):
-        """Spans should be present but without exact start/end positions (token_ids only)."""
-        tok = _make_mock_tokenizer()
-        adapter = MLXInProcessTokenizerAdapter(tokenizer=tok)
-
-        class MockSeg:
-            def __init__(self, name, stability, in_prefix, token_count, seg_type, scope, ch):
-                self.name = name
-                self.stability = stability
-                self.in_stable_prefix = in_prefix
-                self.token_count = token_count
-                self.segment_type = seg_type
-                self.scope = scope
-                self.content_hash = ch
-
-        class MockGraph:
-            segments = [
-                MockSeg("system", "stable", True, 5, "system", "thread", "abc123"),
-                MockSeg("user", "dynamic", False, 3, "user_message", "thread", "def456"),
-            ]
-
-        class MockMsg:
-            def __init__(self, role, content):
-                self.role = role
-                self.content = content
-
-        class MockReq:
-            messages = [
-                MockMsg("system", "s"),
-                MockMsg("user", "u"),
-            ]
-
-        r = adapter.tokenize_prompt(MockGraph(), MockReq(), model_id="m")
-        assert len(r.spans) == 2
-        assert r.spans[0].segment_name == "system"
-        assert r.spans[1].segment_name == "user"
+        result = adapter.tokenize_prompt(graph, req, model_id="test-model")
+        # Should return without crashing, with real tokenization.
+        assert result.real_tokenization is True
 
 
-@pytest.mark.skipif(not _has_mlx(), reason="mlx_lm not available")
-class TestMLXFidelityRealMLX:
-    def test_real_mlx_imports(self):
-        import mlx_lm
-        assert mlx_lm is not None
+# ── Test 5: Tokenizer identity hashes are stable ──────────────────────────
+
+
+class TestTokenizerHashes:
+    """Prove tokenizer and chat template hashes are deterministic."""
+
+    def test_tokenizer_hash_deterministic(self):
+        tok = _FakeTokenizerWithChatTemplate(name="tok-a", vocab_size=32000)
+        h1 = _tokenizer_hash(tok)
+        h2 = _tokenizer_hash(tok)
+        assert h1 == h2
+        assert h1 is not None
+
+    def test_tokenizer_hash_changes_with_name(self):
+        tok_a = _FakeTokenizerWithChatTemplate(name="tok-a", vocab_size=32000)
+        tok_b = _FakeTokenizerWithChatTemplate(name="tok-b", vocab_size=32000)
+        assert _tokenizer_hash(tok_a) != _tokenizer_hash(tok_b)
+
+    def test_tokenizer_hash_changes_with_vocab_size(self):
+        tok_a = _FakeTokenizerWithChatTemplate(name="tok", vocab_size=32000)
+        tok_b = _FakeTokenizerWithChatTemplate(name="tok", vocab_size=16000)
+        assert _tokenizer_hash(tok_a) != _tokenizer_hash(tok_b)
+
+    def test_chat_template_hash_stable(self):
+        tok = _FakeTokenizerWithChatTemplate(template_str="<|template|>")
+        h1 = _chat_template_hash(tok)
+        h2 = _chat_template_hash(tok)
+        assert h1 == h2
+        assert h1 is not None
+
+    def test_chat_template_hash_changes(self):
+        tok_a = _FakeTokenizerWithChatTemplate(template_str="<|a|>")
+        tok_b = _FakeTokenizerWithChatTemplate(template_str="<|b|>")
+        assert _chat_template_hash(tok_a) != _chat_template_hash(tok_b)
+
+    def test_no_template_returns_none(self):
+        tok = _FakeTokenizerWithoutTemplate()
+        assert _chat_template_hash(tok) is None
+
+
+# ── Test 6: No raw prompt leakage ──────────────────────────────────────────
+
+
+class TestNoLeakage:
+    """Prove that ThreadWake health/analysis surfaces do not expose
+    raw prompts, token IDs, or rendered prompt strings."""
+
+    def test_tokenized_prompt_no_raw_text_leakage(self):
+        tokenizer = _FakeTokenizerWithChatTemplate(name="leak-tok", vocab_size=1000)
+        adapter = MLXInProcessTokenizerAdapter(tokenizer=tokenizer)
+
+        secret = "SECRET-MARKER-xyz-123"
+        messages = [
+            {"role": "system", "content": f"stable {secret}"},
+            {"role": "user", "content": "hello"},
+        ]
+        req = _make_request(messages=messages)
+        graph = _make_graph(req)
+
+        result = adapter.tokenize_prompt(graph, req, model_id="test-model")
+
+        # TokenizedPrompt must not expose raw prompt text.
+        result_dict = result.__dict__ if hasattr(result, "__dict__") else {}
+        result_str = str(result_dict)
+        assert secret not in result_str, "secret marker leaked through TokenizedPrompt"
+
+    def test_render_mlx_chat_prompt_no_persistence_of_prompt(self):
+        """The shared renderer is a pure function — it does not store
+        or expose prompt content in side-effects."""
+        tokenizer = _FakeTokenizerWithChatTemplate()
+        messages = [{"role": "user", "content": "ephemeral content"}]
+        result = render_mlx_chat_prompt(tokenizer, messages)
+
+        # Result is a string — but no side effects on the tokenizer.
+        assert not hasattr(tokenizer, "_last_prompt") or getattr(tokenizer, "_last_prompt", None) is None

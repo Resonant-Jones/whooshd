@@ -16,6 +16,7 @@ from whooshd.config import (
     get_mlx_max_tokens_default,
     get_mlx_model_path,
 )
+from whooshd.adapters.mlx_prompt import extract_chat_messages, render_mlx_chat_prompt
 from whooshd.contracts import (
     ChatCompletionChoice,
     ChatCompletionChunk,
@@ -123,31 +124,11 @@ class MLXInferenceAdapter:
     def _format_chat_prompt(self, request: ChatCompletionRequest) -> str:
         """Convert OpenAI chat messages into a model-ready prompt string.
 
-        Uses the tokenizer's chat template when available, falling back
-        to a simple text transcript otherwise.
+        Uses the shared MLX prompt renderer so that inference and
+        ThreadWake tokenization use identical rendering.
         """
-        messages = [{"role": m.role, "content": m.content} for m in request.messages]
-
-        if self._tokenizer is not None and hasattr(self._tokenizer, "apply_chat_template"):
-            return self._tokenizer.apply_chat_template(
-                messages,
-                add_generation_prompt=True,
-                tokenize=False,
-            )
-
-        # Fallback transcript for tokenizers without a chat template.
-        parts: list[str] = []
-        for msg in messages:
-            role = msg["role"]
-            content = msg["content"]
-            if role == "system":
-                parts.append(f"System: {content}")
-            elif role == "assistant":
-                parts.append(f"Assistant: {content}")
-            else:
-                parts.append(f"User: {content}")
-        parts.append("Assistant: ")
-        return "\n".join(parts)
+        messages = extract_chat_messages(request)
+        return render_mlx_chat_prompt(self._tokenizer, messages)
 
     # ── Chat completion (non-streaming) ─────────────────────────────────
 
