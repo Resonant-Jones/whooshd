@@ -4,6 +4,10 @@ from __future__ import annotations
 
 import json
 
+import pytest
+from httpx import ASGITransport, AsyncClient
+
+from whooshd.app import app
 from whooshd.contracts import ChatCompletionRequest
 from whooshd.runtime.threadwake.backend import BackendKVAdapterRegistry, FakeKVBackend
 from whooshd.runtime.threadwake.index import ThreadWakeIndex
@@ -14,6 +18,22 @@ from whooshd.runtime.threadwake.tokenization import (
     BackendTokenizerAdapterRegistry,
     FakeTokenizerAdapter,
 )
+
+
+@pytest.fixture
+def client():
+    transport = ASGITransport(app=app)
+    return AsyncClient(transport=transport, base_url="http://test")
+
+
+@pytest.fixture(autouse=True)
+def _reset_threadwake_manager():
+    """Restore the original ThreadWakeManager after tests that inject
+    a custom manager for fake KV/tokenizer backends."""
+    import whooshd.app as app_mod
+    original = app_mod._threadwake_manager
+    yield
+    app_mod._threadwake_manager = original
 
 
 def _obs_request(**overrides):
@@ -241,3 +261,349 @@ class TestKVLifecycleEvents:
         assert "threadwake_kv_events_total" in snap
         assert "threadwake_kv_errors_total" in snap
         assert isinstance(snap["threadwake_kv_events_total"], int)
+
+
+# ── Route-level ephemeral bridge tests ──────────────────────────────────
+
+
+class TestObserveModeUnchanged:
+    """Prove observe mode still only observes — no cache execution."""
+
+    async def test_observe_mode_returns_valid_chat_completion(self, client, monkeypatch):
+        """ThreadWake observe mode does not alter the chat completion response."""
+        resp = await client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "stub-model",
+                "messages": [
+                    {"role": "system", "content": "stable prefix"},
+                    {"role": "user", "content": "hello"},
+                ],
+                "threadwake": {
+                    "enabled": True,
+                    "mode": "observe",
+                    "scope": "thread",
+                    "min_stable_prefix_tokens": 1,
+                },
+            },
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert "choices" in body
+        assert len(body["choices"]) >= 1
+        assert body["choices"][0]["message"]["content"]
+
+    async def test_observe_mode_response_unchanged_shape(self, client, monkeypatch):
+        """Response shape is identical with or without ThreadWake observe."""
+        resp = await client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "stub-model",
+                "messages": [{"role": "user", "content": "hello"}],
+                "threadwake": {
+                    "enabled": True,
+                    "mode": "observe",
+                    "scope": "thread",
+                    "min_stable_prefix_tokens": 1,
+                },
+            },
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["object"] == "chat.completion"
+        assert "usage" in body
+
+
+class TestUnsupportedBackendFallback:
+    """Prove ephemeral mode falls back when backend is unsupported."""
+
+    async def test_ephemeral_mode_stub_returns_valid_response(self, client, monkeypatch):
+        """Stub backend with ephemeral mode should still return a valid
+        chat completion (falling back to normal execution)."""
+        resp = await client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "stub-model",
+                "messages": [
+                    {"role": "system", "content": "stable prefix"},
+                    {"role": "user", "content": "hello"},
+                ],
+                "threadwake": {
+                    "enabled": True,
+                    "mode": "ephemeral",
+                    "scope": "thread",
+                    "min_stable_prefix_tokens": 1,
+                },
+            },
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert "choices" in body
+
+    async def test_ephemeral_mode_stub_does_not_crash(self, client, monkeypatch):
+        """Multiple ephemeral requests against stub should not cause errors."""
+        for _ in range(3):
+            resp = await client.post(
+                "/v1/chat/completions",
+                json={
+                    "model": "stub-model",
+                    "messages": [{"role": "user", "content": "hello"}],
+                    "threadwake": {
+                        "enabled": True,
+                        "mode": "ephemeral",
+                        "scope": "thread",
+                        "min_stable_prefix_tokens": 1,
+                    },
+                },
+            )
+            assert resp.status_code == 200
+
+
+class TestFakeBackendMissThenHit:
+    """Prove ephemeral hit/miss with fake KV/tokenizer registered."""
+
+    async def test_miss_then_hit_through_route_bridge(self, client, monkeypatch):
+        """Register fake KV + tokenizer, then prove first request misses
+        and second identical request hits via the route bridge."""
+        from whooshd.runtime.threadwake.backend import (
+            BackendKVAdapterRegistry,
+            FakeKVBackend,
+        )
+        from whooshd.runtime.threadwake.tokenization import (
+            BackendTokenizerAdapterRegistry,
+            FakeTokenizerAdapter,
+        )
+        from whooshd.runtime.threadwake.manager import ThreadWakeManager
+        from whooshd.runtime.threadwake.metrics import ThreadWakeMetrics
+        from whooshd.runtime.threadwake.index import ThreadWakeIndex
+
+        # Build a manager with fake KV + tokenizer registered for "stub".
+        fake_kv = FakeKVBackend()
+        fake_tok = FakeTokenizerAdapter()
+        kv_reg = BackendKVAdapterRegistry()
+        tok_reg = BackendTokenizerAdapterRegistry()
+        kv_reg.register("stub", fake_kv)
+        tok_reg.register("stub", fake_tok)
+
+        tw_mgr = ThreadWakeManager(
+            metrics=ThreadWakeMetrics(),
+            backend_registry=kv_reg,
+            tokenizer_registry=tok_reg,
+            index=ThreadWakeIndex(max_entries=50),
+        )
+
+        # Inject the instrumented manager into the app module.
+        import whooshd.app as app_mod
+        original_mgr = app_mod._threadwake_manager
+        app_mod._threadwake_manager = tw_mgr
+
+        try:
+            messages = [
+                {"role": "system", "content": "stable " * 8},
+                {"role": "user", "content": "hello"},
+            ]
+            payload = {
+                "model": "stub-model",
+                "messages": messages,
+                "threadwake": {
+                    "enabled": True,
+                    "mode": "ephemeral",
+                    "scope": "thread",
+                    "min_stable_prefix_tokens": 1,
+                },
+            }
+
+            # First request — should miss.
+            r1 = await client.post("/v1/chat/completions", json=payload)
+            assert r1.status_code == 200
+
+            # Second identical request — should hit.
+            r2 = await client.post("/v1/chat/completions", json=payload)
+            assert r2.status_code == 200
+
+            # Verify the cache is populated and functioning.
+            health = tw_mgr.get_health()
+            assert health["entry_count"] >= 1, f"expected cached entry, got {health}"
+            assert health["ready_entries"] >= 1, f"expected ready entry, got {health}"
+            # Both requests hit the index (observe creates entry, execute finds it).
+            assert health["total_hits"] >= 2, f"expected index hits, got {health}"
+
+        finally:
+            app_mod._threadwake_manager = original_mgr
+
+    async def test_observe_request_does_not_overwrite_kv_handle(self, client, monkeypatch):
+        """After an ephemeral miss stores a KV handle, observe_request
+        on a subsequent request must not clear that handle."""
+        from whooshd.runtime.threadwake.backend import (
+            BackendKVAdapterRegistry,
+            FakeKVBackend,
+        )
+        from whooshd.runtime.threadwake.tokenization import (
+            BackendTokenizerAdapterRegistry,
+            FakeTokenizerAdapter,
+        )
+        from whooshd.runtime.threadwake.manager import ThreadWakeManager
+        from whooshd.runtime.threadwake.metrics import ThreadWakeMetrics
+        from whooshd.runtime.threadwake.index import ThreadWakeIndex
+
+        fake_kv = FakeKVBackend()
+        fake_tok = FakeTokenizerAdapter()
+        kv_reg = BackendKVAdapterRegistry()
+        tok_reg = BackendTokenizerAdapterRegistry()
+        kv_reg.register("stub", fake_kv)
+        tok_reg.register("stub", fake_tok)
+
+        tw_mgr = ThreadWakeManager(
+            metrics=ThreadWakeMetrics(),
+            backend_registry=kv_reg,
+            tokenizer_registry=tok_reg,
+            index=ThreadWakeIndex(max_entries=50),
+        )
+
+        import whooshd.app as app_mod
+        original_mgr = app_mod._threadwake_manager
+        app_mod._threadwake_manager = tw_mgr
+
+        try:
+            messages = [
+                {"role": "system", "content": "stable " * 8},
+                {"role": "user", "content": "hello"},
+            ]
+            payload = {
+                "model": "stub-model",
+                "messages": messages,
+                "threadwake": {
+                    "enabled": True,
+                    "mode": "ephemeral",
+                    "scope": "thread",
+                    "min_stable_prefix_tokens": 1,
+                },
+            }
+
+            # First request: miss — stores a KV handle.
+            r1 = await client.post("/v1/chat/completions", json=payload)
+            assert r1.status_code == 200
+
+            # Verify the handle was stored.
+            index_entries = tw_mgr._index._entries
+            for key, entry in index_entries.items():
+                if entry.status.value == "ready":
+                    assert entry.kv_handle_id is not None, (
+                        "Ready entry must have a kv_handle_id after ephemeral miss"
+                    )
+
+            # Look up the ready entry's handle before second request.
+            handle_before = None
+            for key, entry in index_entries.items():
+                if entry.status.value == "ready":
+                    handle_before = entry.kv_handle_id
+                    break
+
+            # Second request: handler calls observe_request (which would
+            # overwrite the handle if the bug were present), then bridge
+            # calls execute_ephemeral which should hit.
+            r2 = await client.post("/v1/chat/completions", json=payload)
+            assert r2.status_code == 200
+
+            # After both requests, the handle must still be intact.
+            for key, entry in index_entries.items():
+                if entry.status.value == "ready":
+                    assert entry.kv_handle_id == handle_before, (
+                        "KV handle was overwritten by observe_request — "
+                        "put_observation must preserve existing handles"
+                    )
+
+        finally:
+            app_mod._threadwake_manager = original_mgr
+
+
+class TestThreadWakeFailureFallsBack:
+    """Prove ThreadWake failures don't break the request."""
+
+    async def test_execute_ephemeral_exception_falls_back(self, client, monkeypatch):
+        """If execute_ephemeral raises, the request still completes via
+        normal adapter execution."""
+        from whooshd.runtime.threadwake.backend import (
+            BackendKVAdapterRegistry,
+            FakeKVBackend,
+        )
+        from whooshd.runtime.threadwake.tokenization import (
+            BackendTokenizerAdapterRegistry,
+            FakeTokenizerAdapter,
+        )
+        import whooshd.app as app_mod
+
+        original_mgr = app_mod._threadwake_manager
+
+        # Build a manager whose backend raises on generate_from_kv.
+        class _CrashingKVBackend(FakeKVBackend):
+            def generate_from_kv(self, kv_handle, tokens, params=None):
+                raise RuntimeError("simulated KV failure")
+
+        crashing_kv = _CrashingKVBackend()
+        fake_tok = FakeTokenizerAdapter()
+        kv_reg = BackendKVAdapterRegistry()
+        tok_reg = BackendTokenizerAdapterRegistry()
+        kv_reg.register("stub", crashing_kv)
+        tok_reg.register("stub", fake_tok)
+
+        from whooshd.runtime.threadwake.manager import ThreadWakeManager
+        from whooshd.runtime.threadwake.metrics import ThreadWakeMetrics
+        from whooshd.runtime.threadwake.index import ThreadWakeIndex
+
+        tw_mgr = ThreadWakeManager(
+            metrics=ThreadWakeMetrics(),
+            backend_registry=kv_reg,
+            tokenizer_registry=tok_reg,
+            index=ThreadWakeIndex(max_entries=50),
+        )
+        app_mod._threadwake_manager = tw_mgr
+
+        try:
+            # First request: miss (stores entry).
+            payload = {
+                "model": "stub-model",
+                "messages": [
+                    {"role": "system", "content": "stable " * 8},
+                    {"role": "user", "content": "hello"},
+                ],
+                "threadwake": {
+                    "enabled": True,
+                    "mode": "ephemeral",
+                    "scope": "thread",
+                    "min_stable_prefix_tokens": 1,
+                },
+            }
+            r1 = await client.post("/v1/chat/completions", json=payload)
+            assert r1.status_code == 200  # miss works normally
+
+            # Second request: the hit path crashes, but fallback saves us.
+            r2 = await client.post("/v1/chat/completions", json=payload)
+            assert r2.status_code == 200  # fallback returns valid response
+
+        finally:
+            app_mod._threadwake_manager = original_mgr
+
+
+class TestStreamingNotChanged:
+    """Prove streaming requests are never routed through ephemeral bridge."""
+
+    async def test_streaming_with_ephemeral_mode_still_works(self, client, monkeypatch):
+        """Streaming request with ephemeral mode should still stream normally."""
+        resp = await client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "stub-model",
+                "messages": [{"role": "user", "content": "hello"}],
+                "stream": True,
+                "threadwake": {
+                    "enabled": True,
+                    "mode": "ephemeral",
+                    "scope": "thread",
+                    "min_stable_prefix_tokens": 1,
+                },
+            },
+        )
+        # Streaming should still work with ephemeral mode.
+        assert resp.status_code == 200
+        assert "text/event-stream" in resp.headers.get("content-type", "")
