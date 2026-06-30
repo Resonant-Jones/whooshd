@@ -514,6 +514,36 @@ async def _execute_streaming(adapter, req, ctx, rt, request_id):
     )
 
 
+# ── ThreadWake ephemeral execution bridge ────────────────────────────────
+
+
+async def _execute_non_streaming_with_threadwake(
+    adapter, req, ctx, rt, request_id,
+    *,
+    backend: str | None,
+):
+    """Execute non-streaming chat with optional ThreadWake ephemeral KV reuse.
+
+    When ThreadWake is in ephemeral/session mode and the backend has
+    registered KV + tokenizer capability, attempt ephemeral execution.
+    On cache hit, returns the cached response.  On miss or fallback,
+    delegates to the normal adapter execution path.
+
+    Streaming requests are never routed through this bridge.
+    """
+    result = await _threadwake_manager.execute_ephemeral_chat_completion(
+        req,
+        backend=backend or "unknown",
+        full_generation_fn=lambda: adapter.chat_completion(req, context=ctx),
+    )
+    if result is not None:
+        rt.complete_request(request_id)
+        return result
+
+    # Fall through to normal adapter execution.
+    return await _execute_non_streaming(adapter, req, ctx, rt, request_id)
+
+
 # ── OpenAI-compatible Chat Completions ─────────────────────────────────────
 
 
@@ -672,7 +702,10 @@ async def chat_completions(req: ChatCompletionRequest):
             ctx = RequestExecutionContext(
                 request_id=request_id, cancellation_token=token, stream=False
             ) if token else None
-            return await _execute_non_streaming(adapter, req, ctx, rt, request_id)
+            return await _execute_non_streaming_with_threadwake(
+                adapter, req, ctx, rt, request_id,
+                backend=getattr(adapter, "kind", None),
+            )
 
         # ── Streaming: dequeue then stream ────────────────────────────
         # Note: no SSE chunks are emitted while queued — the connection
@@ -695,7 +728,10 @@ async def chat_completions(req: ChatCompletionRequest):
         ctx = RequestExecutionContext(
             request_id=request_id, cancellation_token=token, stream=False
         ) if token else None
-        return await _execute_non_streaming(adapter, req, ctx, rt, request_id)
+        return await _execute_non_streaming_with_threadwake(
+            adapter, req, ctx, rt, request_id,
+            backend=getattr(adapter, "kind", None),
+        )
 
     # ── Streaming path (immediate execution) ──────────────────────────
     if not adapter.supports_streaming:

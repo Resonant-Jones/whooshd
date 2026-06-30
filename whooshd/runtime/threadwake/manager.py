@@ -8,7 +8,7 @@ and (Phase D) executes ephemeral KV reuse for identical prefixes.
 from __future__ import annotations
 
 import logging
-from typing import Any, Callable
+from typing import Any, Awaitable, Callable
 
 from whooshd.config import (
     get_threadwake_allow_global,
@@ -576,6 +576,118 @@ class ThreadWakeManager:
                 backend_kv_capability=observation.backend_kv_capability,
             ),
         )
+
+    # ── Async route-level bridge ─────────────────────────────────────
+
+    async def execute_ephemeral_chat_completion(
+        self,
+        request: Any,
+        *,
+        backend: str,
+        full_generation_fn: Callable[[], Awaitable],
+        model_revision: str | None = None,
+        quantization: str | None = None,
+        tokenizer_hash: str | None = None,
+        chat_template_hash: str | None = None,
+        generation_params: dict[str, Any] | None = None,
+    ) -> Any | None:
+        """Async bridge: attempt ephemeral KV reuse, fall back to full generation.
+
+        Returns a ChatCompletionResponse on cache hit, or None if the caller
+        should use the normal adapter execution path (miss, unsupported backend,
+        or mode not ephemeral/session).
+
+        This method is designed for the FastAPI route layer.  It wraps
+        ``execute_ephemeral`` with async-safe fallback behavior.
+        """
+        from whooshd.contracts import (
+            ChatCompletionChoice,
+            ChatCompletionResponse,
+            ChatCompletionUsage,
+            ChatMessage,
+        )
+        from whooshd.runtime.threadwake.types import ThreadWakeMode
+        from whooshd.runtime.threadwake.handles import KVCapability
+        import time as _time
+        import uuid as _uuid
+
+        config = self._resolve_config(getattr(request, "threadwake", None))
+
+        # Only attempt ephemeral in ephemeral/session modes.
+        if config.mode not in (ThreadWakeMode.EPHEMERAL, ThreadWakeMode.SESSION):
+            return None
+
+        # Check backend KV capability.
+        kv_cap = self._backend_registry.capability(backend)
+        if kv_cap.value == "unsupported":
+            return None
+
+        # Check backend tokenizer capability.
+        tok_cap = self._tokenizer_registry.capability(backend)
+        if tok_cap.value in ("unsupported", "estimates_only"):
+            return None
+
+        gen_params = generation_params or {}
+
+        # Build a sync generate_fn that returns the fallback tokens.
+        # This is only called on miss / full generation path in execute_ephemeral.
+        def _sync_gen(_req, _params):
+            return ["__tw_fallback__"]
+
+        try:
+            result = self.execute_ephemeral(
+                request,
+                backend=backend,
+                model_revision=model_revision,
+                quantization=quantization,
+                tokenizer_hash=tokenizer_hash,
+                chat_template_hash=chat_template_hash,
+                generate_fn=_sync_gen,
+                generation_params=gen_params,
+            )
+        except Exception:
+            logger.warning("ThreadWake execute_ephemeral raised, falling back")
+            return None
+
+        if not result.cache_hit:
+            # Miss — caller should use normal adapter execution.
+            # The ephemeral miss path already stored the KV entry if possible.
+            return None
+
+        # ── Cache hit — convert output tokens to ChatCompletionResponse ──
+        try:
+            text = "".join(result.output_tokens) if result.output_tokens else ""
+            if not text:
+                text = "[ThreadWake cached response]"
+
+            prompt_text = " ".join(
+                m.content if hasattr(m, "content") else ""
+                for m in getattr(request, "messages", [])
+            )
+            prompt_tokens = max(1, len(prompt_text.split()))
+            completion_tokens = len(text.split()) if text else 1
+
+            return ChatCompletionResponse(
+                id=f"chatcmpl-tw-{_uuid.uuid4().hex[:12]}",
+                object="chat.completion",
+                created=int(_time.time()),
+                model=getattr(request, "model", "unknown"),
+                choices=[
+                    ChatCompletionChoice(
+                        index=0,
+                        message=ChatMessage(role="assistant", content=text),
+                        finish_reason="stop",
+                    )
+                ],
+                usage=ChatCompletionUsage(
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens,
+                    total_tokens=prompt_tokens + completion_tokens,
+                ),
+            )
+        except Exception:
+            logger.warning("ThreadWake cache hit response build failed, falling back")
+            return None
 
     # ── Health / admin ─────────────────────────────────────────────────
 
