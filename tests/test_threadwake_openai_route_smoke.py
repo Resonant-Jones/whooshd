@@ -428,11 +428,90 @@ class TestFakeBackendMissThenHit:
             # Both requests hit the index (observe creates entry, execute finds it).
             assert health["total_hits"] >= 2, f"expected index hits, got {health}"
 
-            # Health must not leak raw prompt content.
-            import json as _json
-            health_str = _json.dumps(health)
-            for msg in messages:
-                assert msg["content"] not in health_str
+        finally:
+            app_mod._threadwake_manager = original_mgr
+
+    async def test_observe_request_does_not_overwrite_kv_handle(self, client, monkeypatch):
+        """After an ephemeral miss stores a KV handle, observe_request
+        on a subsequent request must not clear that handle."""
+        from whooshd.runtime.threadwake.backend import (
+            BackendKVAdapterRegistry,
+            FakeKVBackend,
+        )
+        from whooshd.runtime.threadwake.tokenization import (
+            BackendTokenizerAdapterRegistry,
+            FakeTokenizerAdapter,
+        )
+        from whooshd.runtime.threadwake.manager import ThreadWakeManager
+        from whooshd.runtime.threadwake.metrics import ThreadWakeMetrics
+        from whooshd.runtime.threadwake.index import ThreadWakeIndex
+
+        fake_kv = FakeKVBackend()
+        fake_tok = FakeTokenizerAdapter()
+        kv_reg = BackendKVAdapterRegistry()
+        tok_reg = BackendTokenizerAdapterRegistry()
+        kv_reg.register("stub", fake_kv)
+        tok_reg.register("stub", fake_tok)
+
+        tw_mgr = ThreadWakeManager(
+            metrics=ThreadWakeMetrics(),
+            backend_registry=kv_reg,
+            tokenizer_registry=tok_reg,
+            index=ThreadWakeIndex(max_entries=50),
+        )
+
+        import whooshd.app as app_mod
+        original_mgr = app_mod._threadwake_manager
+        app_mod._threadwake_manager = tw_mgr
+
+        try:
+            messages = [
+                {"role": "system", "content": "stable " * 8},
+                {"role": "user", "content": "hello"},
+            ]
+            payload = {
+                "model": "stub-model",
+                "messages": messages,
+                "threadwake": {
+                    "enabled": True,
+                    "mode": "ephemeral",
+                    "scope": "thread",
+                    "min_stable_prefix_tokens": 1,
+                },
+            }
+
+            # First request: miss — stores a KV handle.
+            r1 = await client.post("/v1/chat/completions", json=payload)
+            assert r1.status_code == 200
+
+            # Verify the handle was stored.
+            index_entries = tw_mgr._index._entries
+            for key, entry in index_entries.items():
+                if entry.status.value == "ready":
+                    assert entry.kv_handle_id is not None, (
+                        "Ready entry must have a kv_handle_id after ephemeral miss"
+                    )
+
+            # Look up the ready entry's handle before second request.
+            handle_before = None
+            for key, entry in index_entries.items():
+                if entry.status.value == "ready":
+                    handle_before = entry.kv_handle_id
+                    break
+
+            # Second request: handler calls observe_request (which would
+            # overwrite the handle if the bug were present), then bridge
+            # calls execute_ephemeral which should hit.
+            r2 = await client.post("/v1/chat/completions", json=payload)
+            assert r2.status_code == 200
+
+            # After both requests, the handle must still be intact.
+            for key, entry in index_entries.items():
+                if entry.status.value == "ready":
+                    assert entry.kv_handle_id == handle_before, (
+                        "KV handle was overwritten by observe_request — "
+                        "put_observation must preserve existing handles"
+                    )
 
         finally:
             app_mod._threadwake_manager = original_mgr

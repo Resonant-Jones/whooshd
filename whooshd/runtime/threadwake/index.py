@@ -256,7 +256,10 @@ class ThreadWakeIndex:
                 existing.touch()
                 existing.token_count = token_count
                 existing.estimated_memory_bytes = estimated_memory
-                existing.kv_handle_id = kv_handle_id
+                # Preserve an existing KV handle — observe_request must not
+                # overwrite a handle stored by execute_ephemeral.
+                if kv_handle_id is not None:
+                    existing.kv_handle_id = kv_handle_id
                 existing.scope = scope
                 existing.scope_id = scope_id
                 self._promote_lru(cache_key)
