@@ -446,6 +446,19 @@ def get_mlx_vlm_health_timeout_seconds() -> float:
 # ── Model-store settings ──────────────────────────────────────────────────
 
 
+def get_stub_response_delay_seconds() -> float:
+    """Optional delay for stub responses, used by live smoke tests.
+
+    Default 0.0 preserves current deterministic fast behavior.
+    When set > 0, the stub adapter delays chat completions so smoke
+    scripts can observe active_jobs and queue overlap.
+    """
+    try:
+        return float(_env("WHOOSHD_STUB_RESPONSE_DELAY_SECONDS", "0"))
+    except ValueError:
+        return 0.0
+
+
 def get_model_store_root() -> str | None:
     """Root path for the persistent Whoosh'd model-store.
 

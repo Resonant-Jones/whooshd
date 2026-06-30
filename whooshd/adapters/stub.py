@@ -10,6 +10,7 @@ import time
 import uuid
 from typing import AsyncIterator
 
+from whooshd.config import get_stub_response_delay_seconds
 from whooshd.contracts import (
     ChatCompletionChunk,
     ChatCompletionChunkChoice,
@@ -101,6 +102,11 @@ class StubInferenceAdapter:
 
         t0 = time.monotonic()
 
+        # Apply optional stub delay for live queue smoke tests.
+        delay = get_stub_response_delay_seconds()
+        if delay > 0:
+            await asyncio.sleep(delay)
+
         # Approximate prompt tokens from concatenated message content.
         prompt_text = " ".join(m.content for m in request.messages)
         prompt_tokens = max(1, len(prompt_text.split()))
@@ -145,6 +151,11 @@ class StubInferenceAdapter:
         # Check cancellation before starting.
         if context and context.cancellation_token.is_cancelled():
             return
+
+        # Apply optional stub delay for live queue smoke tests.
+        delay = get_stub_response_delay_seconds()
+        if delay > 0:
+            await asyncio.sleep(delay)
 
         # Yield control so the caller can observe the request is in-flight.
         await asyncio.sleep(0)

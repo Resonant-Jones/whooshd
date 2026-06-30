@@ -257,7 +257,22 @@ Or run the smoke scripts (server must already be running):
 sh scripts/smoke_stub.sh
 sh scripts/smoke_threadwake.sh
 sh scripts/smoke_openai_compat.sh
+sh scripts/smoke_queue_live.sh
 ```
+
+**FIFO queue smoke** requires the server to be started with queueing and stub delay enabled:
+
+```bash
+WHOOSHD_ADAPTER=stub \
+WHOOSHD_ENABLE_QUEUE=true \
+WHOOSHD_MAX_ACTIVE_REQUESTS=1 \
+WHOOSHD_MAX_QUEUE_DEPTH=8 \
+WHOOSHD_QUEUE_TIMEOUT_SECONDS=10 \
+WHOOSHD_STUB_RESPONSE_DELAY_SECONDS=2 \
+python -m uvicorn whooshd.app:app --host 127.0.0.1 --port 8000
+```
+
+Then run `sh scripts/smoke_queue_live.sh` in another terminal.
 
 Example env files are in `examples/` — copy and adapt for your setup:
 
