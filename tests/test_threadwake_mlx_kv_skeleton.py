@@ -64,14 +64,14 @@ class TestMLXKVCapability:
 class TestMLXKVUnsafeOperations:
     def test_prefill_to_kv_raises(self):
         adapter = MLXKVBackendAdapter()
-        with pytest.raises(RuntimeError, match="not implemented"):
+        with pytest.raises(RuntimeError, match="MLX KV prefill"):
             adapter.prefill_to_kv([1, 2, 3], model_id="test")
 
     def test_generate_from_kv_raises(self):
         adapter = MLXKVBackendAdapter()
         from whooshd.runtime.threadwake.handles import KVHandle
         handle = KVHandle(backend="mlx", model_id="test", token_count=0, opaque_ref={})
-        with pytest.raises(RuntimeError, match="not implemented"):
+        with pytest.raises(RuntimeError, match="MLX KV generate"):
             list(adapter.generate_from_kv(handle, [1, 2, 3], {}))
 
     def test_clone_kv_raises(self):

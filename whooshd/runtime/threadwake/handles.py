@@ -24,6 +24,7 @@ class KVCapability(str, Enum):
     """
 
     UNSUPPORTED = "unsupported"
+    EXPERIMENTAL = "experimental"
     PREFILL_ONLY = "prefill_only"
     RESUMABLE = "resumable"
     CLONEABLE = "cloneable"
