@@ -101,6 +101,22 @@ class RequestQueue:
             for e in self._deque
         ]
 
+    def build_batch_candidates(self) -> list:
+        """Build safe batching analysis candidates from queue entries.
+
+        Returns only metadata — no prompts, messages, or opaque refs.
+        """
+        from whooshd.batching import BatchCandidate
+        return [
+            BatchCandidate(
+                request_id=e.request_id,
+                queued_at=e.enqueued_at,
+                model=getattr(e.request, "model", "unknown"),
+                stream=getattr(e.request, "stream", False),
+            )
+            for e in self._deque
+        ]
+
     # ── Queue operations ──────────────────────────────────────────────
 
     def enqueue(self, entry: QueueEntry) -> None:
