@@ -30,7 +30,6 @@ from whooshd.contracts import CancellationToken, ChatCompletionRequest
 from whooshd.scheduler import (
     Scheduler,
     SchedulerCandidate,
-    SchedulerPolicy,
 )
 
 logger = logging.getLogger(__name__)
@@ -53,7 +52,7 @@ class RequestQueue:
     def __init__(self) -> None:
         self._deque: deque[QueueEntry] = deque()
         self._capacity_event = asyncio.Event()
-        self._scheduler = Scheduler(policy=SchedulerPolicy.FIFO)
+        self._scheduler = Scheduler()
 
     # ── Properties ────────────────────────────────────────────────────
 
@@ -96,6 +95,8 @@ class RequestQueue:
                 queued_at=e.enqueued_at,
                 model=getattr(e.request, "model", None),
                 stream=getattr(e.request, "stream", False),
+                threadwake_cache_ready=getattr(e, "cache_ready", False),
+                bypass_count=self._scheduler._bypass_counts.get(e.request_id, 0),
             )
             for e in self._deque
         ]
@@ -109,7 +110,9 @@ class RequestQueue:
     def dequeue(self) -> Optional[QueueEntry]:
         """Remove and return the oldest entry, or None if empty."""
         if self._deque:
-            return self._deque.popleft()
+            entry = self._deque.popleft()
+            self._scheduler.remove_request(entry.request_id)
+            return entry
         return None
 
     def remove(self, request_id: str) -> Optional[QueueEntry]:
@@ -120,6 +123,7 @@ class RequestQueue:
         for i, entry in enumerate(self._deque):
             if entry.request_id == request_id:
                 del self._deque[i]
+                self._scheduler.remove_request(request_id)
                 return entry
         return None
 

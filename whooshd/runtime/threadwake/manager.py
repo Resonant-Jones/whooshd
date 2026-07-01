@@ -778,6 +778,24 @@ class ThreadWakeManager:
             for backend in self._backend_registry.registered_backends()
         }
 
+    def has_ready_entry(self, cache_key: Optional[str]) -> bool:
+        """Return True if a ready cache entry exists for the given key.
+
+        Safe for external callers — returns only a boolean, never exposes
+        handles, token IDs, prompts, rendered prompts, or cache internals.
+        """
+        if cache_key is None:
+            return False
+        try:
+            from .index import ScopeContext
+            entry = self._index.get(cache_key, ScopeContext())
+            if entry is None:
+                return False
+            from .index import EntryStatus
+            return entry.status == EntryStatus.READY
+        except Exception:
+            return False
+
     def flush_cache(
         self,
         scope: str | None = None,
