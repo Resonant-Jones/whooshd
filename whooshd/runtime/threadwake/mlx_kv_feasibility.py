@@ -81,17 +81,23 @@ def probe_mlx_prompt_cache_api() -> dict[str, Any]:
     except ImportError:
         result["blockers"].append("mlx_lm.models.cache not importable")
 
-    # Check if stream_generate accepts prompt_cache.
+    # Check if the generate module contains prompt_cache support.
+    # prompt_cache travels through **kwargs in stream_generate, so we
+    # scan the full module source for any function accepting it.
     try:
-        import inspect
-        from mlx_lm.generate import stream_generate
-        src = inspect.getsource(stream_generate)
-        if "prompt_cache" in src:
-            result["stream_generate_accepts_prompt_cache"] = True
-        if "prompt_cache=" in src or "prompt_cache:" in src:
-            result["generate_accepts_prompt_cache"] = True
+        import importlib
+        gen_mod = importlib.import_module("mlx_lm.generate")
+        src_path = getattr(gen_mod, "__file__", None)
+        if src_path:
+            with open(src_path) as f:
+                has_pc = "prompt_cache" in f.read()
+        else:
+            import inspect
+            has_pc = "prompt_cache" in inspect.getsource(gen_mod)
+        result["stream_generate_accepts_prompt_cache"] = has_pc
+        result["generate_accepts_prompt_cache"] = has_pc
     except Exception:
-        result["blockers"].append("could not inspect stream_generate source")
+        result["blockers"].append("could not inspect mlx_lm.generate source")
 
     if not result["blockers"] and result["make_prompt_cache"] and result.get("stream_generate_accepts_prompt_cache"):
         result["available"] = True
