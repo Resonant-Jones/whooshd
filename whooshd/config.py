@@ -490,6 +490,25 @@ def get_batch_max_group_size() -> int:
 def get_batch_max_total_tokens() -> int:
     """Maximum combined prompt+max_tokens for a batch group."""
     return _env_int("WHOOSHD_BATCH_MAX_TOTAL_TOKENS", 8192)
+
+
+def get_batch_execution_enabled() -> bool:
+    """Whether batch execution is enabled.
+
+    Default False.  Execution is capability-gated — the backend must
+    also explicitly support batch chat completions.
+    """
+    return _env_bool("WHOOSHD_BATCH_EXECUTION_ENABLED", False)
+
+
+def get_batch_execution_min_size() -> int:
+    """Minimum batch size for execution.  Must be >= 2."""
+    return max(_env_int("WHOOSHD_BATCH_EXECUTION_MIN_SIZE", 2), 2)
+
+
+def get_batch_execution_max_size() -> int:
+    """Maximum batch size for execution."""
+    return max(_env_int("WHOOSHD_BATCH_EXECUTION_MAX_SIZE", 4), 2)
 # ── Scheduler config ───────────────────────────────────────────────────────
 
 

@@ -247,3 +247,23 @@ def _check_compatibility(
         reasons.append(BatchIncompatibilityReason.SAMPLING_MISMATCH)
 
     return reasons
+
+
+# ── Batch execution ───────────────────────────────────────────────────────
+
+
+class BatchExecutionCapability(str, Enum):
+    """Backend batch execution capability level."""
+
+    UNSUPPORTED = "unsupported"
+    EXPERIMENTAL = "experimental"
+
+
+@dataclass(frozen=True)
+class BatchExecutionResult:
+    """Result of executing a single request within a batch."""
+
+    request_id: str
+    response: Any = None
+    error: Optional[str] = None
+    completed: bool = False

@@ -58,6 +58,28 @@ class StubInferenceAdapter:
     def supports_streaming(self) -> bool:
         return True
 
+    # ── Batch execution ────────────────────────────────────────────────
+
+    def supports_chat_batching(self) -> str:
+        """Stub supports experimental chat batching for tests."""
+        from whooshd.config import get_batch_execution_enabled
+        if get_batch_execution_enabled():
+            return "experimental"
+        return "unsupported"
+
+    async def chat_completion_batch(
+        self,
+        requests,
+        contexts=None,
+    ):
+        """Execute a batch of chat completions — deterministic stub output."""
+        results = []
+        for i, req in enumerate(requests):
+            ctx = contexts[i] if contexts and i < len(contexts) else None
+            result = await self.chat_completion(req, context=ctx)
+            results.append(result)
+        return results
+
     # ── Codexify-style generate ────────────────────────────────────────
 
     async def generate(self, request: GenerateRequest) -> GenerateResponse:
