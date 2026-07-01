@@ -47,13 +47,14 @@ class MLXInferenceAdapter:
     completions are both supported.
     """
 
-    def __init__(self, tokenizer_registry: object = None) -> None:
+    def __init__(self, tokenizer_registry: object = None, kv_backend_registry: object = None) -> None:
         self._model: object = None
         self._tokenizer: object = None
         self._model_path: Optional[str] = None
         self._load_lock = asyncio.Lock()
         self._loaded = False
         self._tokenizer_registry = tokenizer_registry
+        self._kv_backend_registry = kv_backend_registry
 
     # ── Protocol properties ────────────────────────────────────────────
 
@@ -111,6 +112,10 @@ class MLXInferenceAdapter:
                 # Register MLX tokenizer adapter for ThreadWake if enabled
                 if self._tokenizer_registry is not None and self._tokenizer is not None:
                     self._register_tokenizer_adapter()
+
+                # Register MLX KV backend skeleton for ThreadWake boundary.
+                if self._kv_backend_registry is not None:
+                    self._register_kv_adapter()
             except Exception:
                 _update_runner_status(RunnerStatus.DEGRADED)
                 _update_model_lifecycle(ModelLifecycleState.FAILED)
@@ -371,6 +376,12 @@ class MLXInferenceAdapter:
                 self._tokenizer_registry.unregister("mlx")
             except Exception:
                 pass
+        # Clear KV backend registration
+        if self._kv_backend_registry is not None:
+            try:
+                self._kv_backend_registry.unregister("mlx")
+            except Exception:
+                pass
         import gc
         gc.collect()
 
@@ -387,6 +398,22 @@ class MLXInferenceAdapter:
             from whooshd.runtime.threadwake.mlx_tokenizer import MLXInProcessTokenizerAdapter
             adapter = MLXInProcessTokenizerAdapter(tokenizer=self._tokenizer)
             self._tokenizer_registry.register("mlx", adapter)
+        except Exception:
+            pass  # Best-effort; never crash inference for observability wiring
+
+    def _register_kv_adapter(self) -> None:
+        """Register the MLX KV backend skeleton for ThreadWake.
+
+        The skeleton reports unsupported — this establishes the adapter
+        boundary without enabling real KV reuse yet.
+        """
+        try:
+            from whooshd.runtime.threadwake.mlx_kv import MLXKVBackendAdapter
+            adapter = MLXKVBackendAdapter(
+                model=self._model,
+                tokenizer=self._tokenizer,
+            )
+            self._kv_backend_registry.register("mlx", adapter)
         except Exception:
             pass  # Best-effort; never crash inference for observability wiring
 
