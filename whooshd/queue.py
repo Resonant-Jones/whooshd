@@ -27,6 +27,11 @@ from whooshd.config import (
     get_queue_timeout_seconds,
 )
 from whooshd.contracts import CancellationToken, ChatCompletionRequest
+from whooshd.scheduler import (
+    Scheduler,
+    SchedulerCandidate,
+    SchedulerPolicy,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -48,7 +53,7 @@ class RequestQueue:
     def __init__(self) -> None:
         self._deque: deque[QueueEntry] = deque()
         self._capacity_event = asyncio.Event()
-        # Start unset — capacity events are signalled externally.
+        self._scheduler = Scheduler(policy=SchedulerPolicy.FIFO)
 
     # ── Properties ────────────────────────────────────────────────────
 
@@ -75,6 +80,25 @@ class RequestQueue:
     @property
     def is_full(self) -> bool:
         return self.depth >= self.max_depth
+
+    @property
+    def scheduler(self) -> Scheduler:
+        return self._scheduler
+
+    def build_candidates(self) -> list[SchedulerCandidate]:
+        """Build scheduler candidates from the current queue contents.
+
+        Only safe metadata is included — no prompts, messages, or opaque refs.
+        """
+        return [
+            SchedulerCandidate(
+                request_id=e.request_id,
+                queued_at=e.enqueued_at,
+                model=getattr(e.request, "model", None),
+                stream=getattr(e.request, "stream", False),
+            )
+            for e in self._deque
+        ]
 
     # ── Queue operations ──────────────────────────────────────────────
 
