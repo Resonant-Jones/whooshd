@@ -468,3 +468,25 @@ def get_model_store_root() -> str | None:
     """
     val = _env("WHOOSHD_MODEL_STORE_ROOT", "")
     return val if val else None
+
+
+# ── Batching config ─────────────────────────────────────────────────────────
+
+
+def get_batch_analysis_enabled() -> bool:
+    """Whether batch feasibility analysis is enabled.
+
+    Default False.  Analysis is metadata-only and does not execute
+    batched requests.
+    """
+    return _env_bool("WHOOSHD_BATCH_ANALYSIS_ENABLED", False)
+
+
+def get_batch_max_group_size() -> int:
+    """Maximum number of requests in a batch group."""
+    return _env_int("WHOOSHD_BATCH_MAX_GROUP_SIZE", 4)
+
+
+def get_batch_max_total_tokens() -> int:
+    """Maximum combined prompt+max_tokens for a batch group."""
+    return _env_int("WHOOSHD_BATCH_MAX_TOTAL_TOKENS", 8192)
