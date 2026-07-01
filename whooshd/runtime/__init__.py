@@ -363,9 +363,19 @@ class RuntimeState:
                 "queue_timeout": self.total_queue_timeout,
                 "queue_cancelled": self.total_queue_cancelled,
             },
+            "scheduler": self._build_scheduler_snapshot(),
         }
 
     # ── Model registry accessor ──────────────────────────────────────
+
+    @staticmethod
+    def _build_scheduler_snapshot() -> dict:
+        """Return a safe scheduler observability snapshot."""
+        try:
+            from whooshd.queue import get_queue
+            return get_queue().scheduler.build_snapshot()
+        except Exception:
+            return {"policy": "fifo"}
 
     def _load_registry(self) -> object | None:
         """Load the model registry, or None if no registry file is present.
