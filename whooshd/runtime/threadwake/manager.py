@@ -368,6 +368,7 @@ class ThreadWakeManager:
 
         kv_adapter = self._backend_registry.get(backend)
         can_reuse = kv_adapter.supports_kv_cache() in (
+            KVCapability.EXPERIMENTAL,
             KVCapability.RESUMABLE, KVCapability.CLONEABLE, KVCapability.SERIALIZABLE,
         )
         if not can_reuse or not tokenized.real_tokenization:
