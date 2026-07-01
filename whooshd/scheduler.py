@@ -1,13 +1,14 @@
 """Scheduler policy skeleton over the FIFO request queue.
 
-This module provides a small scheduling decision layer above the existing
-bounded FIFO queue.  The default policy is FIFO — oldest queued request
-runs first.  No priority lanes, cache affinity, batching, or reordering
-are implemented yet.
+This module provides a scheduling decision layer above the existing
+bounded FIFO queue.  Policies:
 
-Future schedulers will add cache-aware selection, batch grouping, and
-fairness policies using the same decision interface.  For now, the
-courthouse has a bench and a gavel, but no cases on the docket.  ⚖️
+* ``FIFO`` — oldest queued request runs first (default).
+* ``CACHE_AWARE_FIFO`` — prefers ThreadWake cache-ready candidates while
+  respecting a fairness bypass limit.
+
+Future schedulers will add batch grouping and continuous batching
+policies.  For now, the courthouse has heard its first case.  ⚖️
 """
 
 from __future__ import annotations
@@ -15,6 +16,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Optional, Sequence
+
+from whooshd.config import get_scheduler_max_bypass, get_scheduler_policy
 
 
 # ── Enums ──────────────────────────────────────────────────────────────────
@@ -24,12 +27,15 @@ class SchedulerPolicy(str, Enum):
     """Available scheduling policies."""
 
     FIFO = "fifo"
+    CACHE_AWARE_FIFO = "cache_aware_fifo"
 
 
 class SchedulerDecisionReason(str, Enum):
     """Why the scheduler chose (or did not choose) a request."""
 
     FIFO_OLDEST = "fifo_oldest"
+    CACHE_AFFINITY = "cache_affinity"
+    FAIRNESS_FIFO = "fairness_fifo"
     NO_ELIGIBLE_REQUEST = "no_eligible_request"
     CAPACITY_UNAVAILABLE = "capacity_unavailable"
 
@@ -52,6 +58,8 @@ class SchedulerCandidate:
     estimated_tokens: Optional[int] = None
     threadwake_cache_key: Optional[str] = None
     threadwake_stable_prefix_hash: Optional[str] = None
+    threadwake_cache_ready: bool = False
+    bypass_count: int = 0
 
 
 @dataclass(frozen=True)
@@ -72,21 +80,32 @@ class SchedulerDecision:
 
 
 class Scheduler:
-    """FIFO-only scheduling policy skeleton.
+    """FIFO-first scheduling with experimental cache-aware mode.
 
-    When capacity is available, the oldest queued request is selected.
-    This preserves the existing FIFO behavior while providing a clean
-    integration point for future cache-aware, priority, and batching
-    policies.
+    Default policy is ``FIFO``.  When ``CACHE_AWARE_FIFO`` is enabled,
+    the scheduler may prefer a newer cache-ready candidate over an older
+    non-ready candidate, bounded by a fairness bypass limit.
     """
 
-    def __init__(self, policy: SchedulerPolicy = SchedulerPolicy.FIFO) -> None:
-        self.policy = policy
+    def __init__(self) -> None:
         self._last_decision: Optional[SchedulerDecision] = None
+        self._bypass_counts: dict[str, int] = {}
+        self._cache_affinity_candidates: int = 0
+        self._fairness_bypasses: int = 0
+
+    @property
+    def policy(self) -> SchedulerPolicy:
+        val = get_scheduler_policy()
+        if val == "cache_aware_fifo":
+            return SchedulerPolicy.CACHE_AWARE_FIFO
+        return SchedulerPolicy.FIFO
+
+    @property
+    def max_bypass(self) -> int:
+        return get_scheduler_max_bypass()
 
     @property
     def last_decision(self) -> Optional[SchedulerDecision]:
-        """The most recent scheduling decision, for observability."""
         return self._last_decision
 
     def choose_next(
@@ -125,17 +144,86 @@ class Scheduler:
             self._last_decision = decision
             return decision
 
-        # FIFO: select the oldest queued request.
-        # Candidates should already be ordered by queued_at by the queue.
+        # Count cache-ready candidates for observability.
+        policy = self.policy
+        self._cache_affinity_candidates = sum(
+            1 for c in candidates if c.threadwake_cache_ready
+        )
+
+        if policy == SchedulerPolicy.FIFO:
+            return self._choose_fifo(candidates)
+
+        return self._choose_cache_aware(candidates)
+
+    def _choose_fifo(
+        self, candidates: Sequence[SchedulerCandidate]
+    ) -> SchedulerDecision:
         oldest = min(candidates, key=lambda c: c.queued_at)
         decision = SchedulerDecision(
             request_id=oldest.request_id,
-            policy=self.policy,
+            policy=SchedulerPolicy.FIFO,
             reason=SchedulerDecisionReason.FIFO_OLDEST,
             eligible_count=len(candidates),
         )
         self._last_decision = decision
         return decision
+
+    def _choose_cache_aware(
+        self, candidates: Sequence[SchedulerCandidate]
+    ) -> SchedulerDecision:
+        # Find oldest candidate.
+        oldest = min(candidates, key=lambda c: c.queued_at)
+
+        # Fairness: if oldest has been bypassed too many times, it must run.
+        bypass_count = self._bypass_counts.get(oldest.request_id, 0)
+        if bypass_count >= self.max_bypass:
+            decision = SchedulerDecision(
+                request_id=oldest.request_id,
+                policy=SchedulerPolicy.CACHE_AWARE_FIFO,
+                reason=SchedulerDecisionReason.FAIRNESS_FIFO,
+                eligible_count=len(candidates),
+            )
+            self._last_decision = decision
+            return decision
+
+        # Find first cache-ready candidate in queue order.
+        cache_ready = next(
+            (c for c in candidates if c.threadwake_cache_ready),
+            None,
+        )
+
+        if cache_ready is None or cache_ready.request_id == oldest.request_id:
+            # No cache-ready candidate, or oldest is already cache-ready.
+            decision = SchedulerDecision(
+                request_id=oldest.request_id,
+                policy=SchedulerPolicy.CACHE_AWARE_FIFO,
+                reason=SchedulerDecisionReason.FIFO_OLDEST,
+                eligible_count=len(candidates),
+            )
+            self._last_decision = decision
+            return decision
+
+        # Cache-ready candidate exists and is not the oldest.
+        # Increment bypass counts for all older skipped candidates.
+        for c in candidates:
+            if c.queued_at < cache_ready.queued_at:
+                self._bypass_counts[c.request_id] = (
+                    self._bypass_counts.get(c.request_id, 0) + 1
+                )
+                self._fairness_bypasses += 1
+
+        decision = SchedulerDecision(
+            request_id=cache_ready.request_id,
+            policy=SchedulerPolicy.CACHE_AWARE_FIFO,
+            reason=SchedulerDecisionReason.CACHE_AFFINITY,
+            eligible_count=len(candidates),
+        )
+        self._last_decision = decision
+        return decision
+
+    def remove_request(self, request_id: str) -> None:
+        """Clean up bypass count when a request leaves the queue."""
+        self._bypass_counts.pop(request_id, None)
 
     def build_snapshot(self) -> dict:
         """Return a safe observability snapshot.
@@ -148,4 +236,7 @@ class Scheduler:
             "policy": self.policy.value,
             "last_decision_reason": last.reason.value if last else None,
             "eligible_count": last.eligible_count if last else 0,
+            "cache_affinity_candidates": self._cache_affinity_candidates,
+            "fairness_bypasses": self._fairness_bypasses,
+            "max_bypass": self.max_bypass,
         }

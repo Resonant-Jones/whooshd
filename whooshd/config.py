@@ -468,3 +468,27 @@ def get_model_store_root() -> str | None:
     """
     val = _env("WHOOSHD_MODEL_STORE_ROOT", "")
     return val if val else None
+
+
+# ── Scheduler config ───────────────────────────────────────────────────────
+
+
+def get_scheduler_policy() -> str:
+    """Scheduler policy.  Valid values: fifo, cache_aware_fifo.
+
+    Default is fifo.  Invalid values fall back to fifo.
+    """
+    val = _env("WHOOSHD_SCHEDULER_POLICY", "fifo").strip().lower()
+    if val in ("fifo", "cache_aware_fifo"):
+        return val
+    return "fifo"
+
+
+def get_scheduler_max_bypass() -> int:
+    """Maximum times a queued request can be bypassed by cache-aware
+    scheduling before FIFO fairness forces it to the front.
+
+    Default 1.  Must be >= 0.
+    """
+    val = _env_int("WHOOSHD_SCHEDULER_MAX_BYPASS", 1)
+    return max(val, 0)
