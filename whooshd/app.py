@@ -107,7 +107,7 @@ def _init_router():
     # ── MLX in-process adapter (legacy, when WHOOSHD_ADAPTER=mlx)
     if backend == "mlx":
         from whooshd.adapters.mlx import MLXInferenceAdapter
-        router.register(MLXInferenceAdapter(tokenizer_registry=_tokenizer_registry))
+        router.register(MLXInferenceAdapter(tokenizer_registry=_tokenizer_registry, kv_backend_registry=_threadwake_manager._backend_registry))
 
     # ── MLX-VLM adapter (vision-language, subprocess-supervised) ──
     if get_mlx_vlm_enabled():
