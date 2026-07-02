@@ -41,6 +41,9 @@ class QueueEntry:
     request_id: str
     request: ChatCompletionRequest
     enqueued_at: float = field(default_factory=time.time)
+    # ── Batch execution ────────────────────────────────────────────
+    batch_claimed: bool = False
+    batch_result_future: Any = None  # asyncio.Future, set at runtime
 
 
 class RequestQueue:
@@ -116,6 +119,73 @@ class RequestQueue:
             )
             for e in self._deque
         ]
+
+    # ── Batch group and claiming ─────────────────────────────────────
+
+    def find_batch_group(
+        self,
+        selected_request_id: str,
+        *,
+        analyzer: Any,
+        backend: str | None,
+        enabled: bool = False,
+    ) -> list[QueueEntry] | None:
+        """Find an eligible batch group containing the selected entry.
+
+        Returns a list of QueueEntry in queue order, or None if batching
+        is not possible for the selected entry.
+        """
+        if not enabled:
+            return None
+
+        candidates = self.build_batch_candidates()
+        analysis = analyzer.analyze(candidates, enabled=enabled)
+
+        for group in analysis.groups:
+            if group.eligible and selected_request_id in group.request_ids:
+                entries = [
+                    e for e in self._deque
+                    if e.request_id in group.request_ids
+                ]
+                if len(entries) >= 2:
+                    return entries
+        return None
+
+    def claim_batch_entries(
+        self,
+        entries: list[QueueEntry],
+    ) -> list[asyncio.Future]:
+        """Atomically claim entries for batch execution.
+
+        Sets ``batch_claimed=True`` and creates a ``batch_result_future``
+        for each entry.  Returns the futures in the same order as entries.
+        """
+        futures: list[asyncio.Future] = []
+        for entry in entries:
+            if entry.batch_claimed:
+                continue
+            entry.batch_claimed = True
+            future = asyncio.get_event_loop().create_future()
+            entry.batch_result_future = future
+            futures.append(future)
+        return futures
+
+    def resolve_batch_results(
+        self,
+        entries: list[QueueEntry],
+        results: list[tuple[str, Any]],
+    ) -> None:
+        """Resolve batch result futures with mapped responses.
+
+        ``results`` is a list of (request_id, response) tuples.
+        Unmatched entries get None.
+        """
+        result_map = {rid: resp for rid, resp in results}
+        for entry in entries:
+            future = entry.batch_result_future
+            if future is not None and not future.done():
+                response = result_map.get(entry.request_id)
+                future.set_result(response)
 
     # ── Queue operations ──────────────────────────────────────────────
 

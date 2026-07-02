@@ -547,6 +547,100 @@ async def _execute_non_streaming_with_threadwake(
 # ── OpenAI-compatible Chat Completions ─────────────────────────────────────
 
 
+# ── OpenAI-compatible Chat Completions ─────────────────────────────────────
+
+
+async def _try_execute_live_batch(
+    *,
+    selected_request_id: str,
+    adapter,
+    queue: Any,
+    rt: Any,
+) -> Any | None:
+    """Attempt live-path batch execution for the selected request.
+
+    Returns a ChatCompletionResponse on success, or None if batching
+    is not possible (disabled, unsupported backend, no eligible group,
+    or streaming/vision).
+
+    When a batch is executed, peer entries get their results via
+    the batch_result_future handoff.  The caller only handles the
+    selected entry's response.
+    """
+    from whooshd.batching import BatchAnalyzer
+    from whooshd.config import (
+        get_batch_analysis_enabled,
+        get_batch_execution_enabled,
+        get_batch_execution_min_size,
+        get_batch_execution_max_size,
+    )
+
+    if not get_batch_execution_enabled():
+        return None
+
+    backend = getattr(adapter, "kind", None)
+    cap = getattr(adapter, "supports_chat_batching", lambda: "unsupported")()
+    if cap not in ("experimental",):
+        return None
+
+    analyzer = BatchAnalyzer(
+        max_group_size=get_batch_execution_max_size(),
+    )
+    group = queue.find_batch_group(
+        selected_request_id,
+        analyzer=analyzer,
+        backend=backend,
+        enabled=get_batch_analysis_enabled(),
+    )
+    if group is None:
+        return None
+
+    if len(group) < get_batch_execution_min_size():
+        return None
+
+    # Claim entries atomically.
+    futures = queue.claim_batch_entries(group)
+    if not futures:
+        return None
+
+    try:
+        requests = [e.request for e in group]
+        batch_responses = await adapter.chat_completion_batch(requests)
+
+        if len(batch_responses) != len(group):
+            raise RuntimeError(
+                f"Batch backend returned {len(batch_responses)} responses "
+                f"for {len(group)} requests"
+            )
+
+        # Resolve futures for peer entries.
+        results = []
+        for entry, response in zip(group, batch_responses):
+            rt.mark_running(entry.request_id)
+            rt.complete_request(entry.request_id)
+            results.append((entry.request_id, response))
+
+        queue.resolve_batch_results(group, results)
+
+        # Return the selected entry's response.
+        for entry, response in zip(group, batch_responses):
+            if entry.request_id == selected_request_id:
+                queue.notify_capacity()
+                return response
+
+        return None
+    except Exception:
+        # Batch failed — fall back to normal execution for the selected entry.
+        logger.warning("Batch execution failed, falling back to single request")
+        # Unclaim entries so they can execute normally.
+        for entry in group:
+            entry.batch_claimed = False
+            if entry.batch_result_future is not None:
+                entry.batch_result_future.cancel()
+                entry.batch_result_future = None
+        return None
+
+
 @app.post("/v1/chat/completions")
 async def chat_completions(req: ChatCompletionRequest):
     """OpenAI-compatible chat completion endpoint.
@@ -695,6 +789,17 @@ async def chat_completions(req: ChatCompletionRequest):
 
         # Successfully dequeued — proceed to execution.
         rt.mark_dequeued(request_id)
+
+        # ── Live-path batch attempt (non-streaming, stub, gated) ─────
+        if not req.stream:
+            batch_response = await _try_execute_live_batch(
+                selected_request_id=request_id,
+                adapter=adapter,
+                queue=queue,
+                rt=rt,
+            )
+            if batch_response is not None:
+                return batch_response
 
         # ── Non-streaming: dequeue then execute ───────────────────────
         if not req.stream:
