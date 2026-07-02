@@ -309,3 +309,44 @@ class BatchExecutionResult:
     response: Any = None
     error: Optional[str] = None
     completed: bool = False
+
+
+# ── Continuous batching feasibility ───────────────────────────────────────
+
+
+class ContinuousBatchingContract(str, Enum):
+    EXPLICIT_BATCH = "explicit_batch"
+    SERVER_SIDE_CONTINUOUS = "server_side_continuous"
+    WHOOSHD_OWNED_CONTINUOUS = "whooshd_owned_continuous"
+
+
+class ContinuousBatchingStatus(str, Enum):
+    UNKNOWN = "unknown"
+    UNSUPPORTED = "unsupported"
+    OBSERVABLE = "observable"
+    FEASIBLE_WITH_BACKEND_SERVER = "feasible_with_backend_server"
+    REQUIRES_NEW_TOKEN_LEVEL_RUNTIME = "requires_new_token_level_runtime"
+    INCONCLUSIVE = "inconclusive"
+
+
+class ContinuousBatchingBackend(str, Enum):
+    MLX = "mlx"
+    LLAMA_CPP = "llama_cpp"
+    STUB = "stub"
+
+
+@dataclass(frozen=True)
+class ContinuousBatchingFeasibilityReport:
+    backend: ContinuousBatchingBackend
+    contract: ContinuousBatchingContract
+    status: ContinuousBatchingStatus
+    explicit_batch_supported: bool = False
+    server_side_continuous_supported: bool = False
+    whooshd_owned_continuous_supported: bool = False
+    requires_token_level_scheduler: bool = False
+    requires_slot_accounting: bool = False
+    requires_stream_multiplexing: bool = False
+    requires_cancellation_protocol: bool = False
+    requires_per_request_rng_sampling_state: bool = False
+    live_path_changed: bool = False
+    notes: tuple[str, ...] = ()
