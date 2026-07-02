@@ -249,6 +249,48 @@ def _check_compatibility(
     return reasons
 
 
+# ── Real backend feasibility ──────────────────────────────────────────────
+
+
+class RealBatchFeasibilityStatus(str, Enum):
+    """Probe status for real backend batch execution."""
+
+    UNKNOWN = "unknown"
+    UNSUPPORTED = "unsupported"
+    PROBE_ONLY = "probe_only"
+    FEASIBLE = "feasible"
+    INCONCLUSIVE = "inconclusive"
+
+
+class RealBatchBackend(str, Enum):
+    """Real backend identifiers for batch feasibility probes."""
+
+    MLX = "mlx"
+    LLAMA_CPP = "llama_cpp"
+
+
+@dataclass(frozen=True)
+class RealBatchFeasibilityReport:
+    """Metadata-only batch feasibility report for a real backend.
+
+    Contains no raw prompts, rendered prompts, token IDs, generated
+    text, cache handles, or model object reprs.
+    """
+
+    backend: RealBatchBackend
+    status: RealBatchFeasibilityStatus
+    explicit_batch_contract: bool = False
+    server_side_batching_only: bool = False
+    response_order_verified: bool = False
+    response_count_verified: bool = False
+    prompt_rendering_verified: bool = False
+    streaming_supported: bool = False
+    vision_supported: bool = False
+    prompt_cache_supported: bool = False
+    live_path_enabled: bool = False
+    notes: tuple[str, ...] = ()
+
+
 # ── Batch execution ───────────────────────────────────────────────────────
 
 
