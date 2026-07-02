@@ -259,6 +259,7 @@ sh scripts/smoke_threadwake.sh
 sh scripts/smoke_openai_compat.sh
 sh scripts/smoke_queue_live.sh
 sh scripts/smoke_threadwake_mlx_live.sh
+sh scripts/smoke_mlx_batch_manual.sh
 ```
 
 **FIFO queue smoke** requires the server to be started with queueing and stub delay enabled:
