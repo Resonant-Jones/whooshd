@@ -509,6 +509,15 @@ def get_batch_execution_min_size() -> int:
 def get_batch_execution_max_size() -> int:
     """Maximum batch size for execution."""
     return max(_env_int("WHOOSHD_BATCH_EXECUTION_MAX_SIZE", 4), 2)
+
+
+def get_mlx_batch_execution_enabled() -> bool:
+    """Whether experimental MLX live batching is enabled.
+
+    Requires WHOOSHD_BATCH_EXECUTION_ENABLED=true as well.
+    Default False.
+    """
+    return _env_bool("WHOOSHD_MLX_BATCH_EXECUTION_ENABLED", False)
 # ── Scheduler config ───────────────────────────────────────────────────────
 
 
