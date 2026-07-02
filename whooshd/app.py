@@ -560,12 +560,9 @@ async def _try_execute_live_batch(
     """Attempt live-path batch execution for the selected request.
 
     Returns a ChatCompletionResponse on success, or None if batching
-    is not possible (disabled, unsupported backend, no eligible group,
-    or streaming/vision).
-
-    When a batch is executed, peer entries get their results via
-    the batch_result_future handoff.  The caller only handles the
-    selected entry's response.
+    is not possible.  On batch failure after the backend call, resolves
+    all claimed futures with an error response — no fallback to avoid
+    duplicate execution.
     """
     from whooshd.batching import BatchAnalyzer
     from whooshd.config import (
@@ -574,6 +571,9 @@ async def _try_execute_live_batch(
         get_batch_execution_min_size,
         get_batch_execution_max_size,
     )
+    from whooshd.contracts import ErrorCode, ErrorResponse, ChatCompletionResponse, ChatCompletionChoice, ChatCompletionUsage, ChatMessage
+    import time as _time
+    import uuid as _uuid
 
     if not get_batch_execution_enabled():
         return None
@@ -595,50 +595,87 @@ async def _try_execute_live_batch(
     if group is None:
         return None
 
-    if len(group) < get_batch_execution_min_size():
+    # Exclude cancelled entries before claiming.
+    group = [e for e in group if not getattr(e, "batch_claimed", False)]
+    active_group = []
+    for e in group:
+        token = rt.get_cancellation_token(e.request_id)
+        if token is not None and token.is_cancelled():
+            logger.debug("batch: excluding cancelled entry %s", e.request_id)
+            continue
+        active_group.append(e)
+
+    if len(active_group) < get_batch_execution_min_size():
         return None
 
     # Claim entries atomically.
-    futures = queue.claim_batch_entries(group)
+    futures = queue.claim_batch_entries(active_group)
     if not futures:
         return None
 
+    def _batch_error_response(request_id: str, message: str) -> ChatCompletionResponse:
+        """Build a safe error response for a batch peer."""
+        return ChatCompletionResponse(
+            id=f"chatcmpl-batch-err-{_uuid.uuid4().hex[:8]}",
+            object="chat.completion",
+            created=int(_time.time()),
+            model="batch-error",
+            choices=[
+                ChatCompletionChoice(
+                    index=0,
+                    message=ChatMessage(role="assistant", content=f"[batch error: {message}]"),
+                    finish_reason="error",
+                )
+            ],
+            usage=ChatCompletionUsage(prompt_tokens=0, completion_tokens=0, total_tokens=0),
+        )
+
+    def _resolve_all_with_error(message: str) -> Any | None:
+        """Resolve all claimed futures with an error response."""
+        error_results = [
+            (e.request_id, _batch_error_response(e.request_id, message))
+            for e in active_group
+        ]
+        for e in active_group:
+            rt.mark_running(e.request_id)
+            rt.fail_request(e.request_id, error_code="BATCH_ERROR")
+        queue.resolve_batch_results(active_group, error_results)
+
+        for e in active_group:
+            if e.request_id == selected_request_id:
+                return error_results[0][1] if error_results else None
+        return None
+
     try:
-        requests = [e.request for e in group]
+        requests = [e.request for e in active_group]
         batch_responses = await adapter.chat_completion_batch(requests)
 
-        if len(batch_responses) != len(group):
-            raise RuntimeError(
-                f"Batch backend returned {len(batch_responses)} responses "
-                f"for {len(group)} requests"
+        if len(batch_responses) != len(active_group):
+            logger.warning(
+                "batch: response count mismatch expected=%d got=%d",
+                len(active_group), len(batch_responses),
             )
+            return _resolve_all_with_error("response count mismatch")
 
         # Resolve futures for peer entries.
         results = []
-        for entry, response in zip(group, batch_responses):
+        for entry, response in zip(active_group, batch_responses):
             rt.mark_running(entry.request_id)
             rt.complete_request(entry.request_id)
             results.append((entry.request_id, response))
 
-        queue.resolve_batch_results(group, results)
+        queue.resolve_batch_results(active_group, results)
 
         # Return the selected entry's response.
-        for entry, response in zip(group, batch_responses):
+        for entry, response in zip(active_group, batch_responses):
             if entry.request_id == selected_request_id:
                 queue.notify_capacity()
                 return response
 
         return None
     except Exception:
-        # Batch failed — fall back to normal execution for the selected entry.
-        logger.warning("Batch execution failed, falling back to single request")
-        # Unclaim entries so they can execute normally.
-        for entry in group:
-            entry.batch_claimed = False
-            if entry.batch_result_future is not None:
-                entry.batch_result_future.cancel()
-                entry.batch_result_future = None
-        return None
+        logger.warning("Batch execution failed, resolving all entries with error")
+        return _resolve_all_with_error("backend error")
 
 
 @app.post("/v1/chat/completions")

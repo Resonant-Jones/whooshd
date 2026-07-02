@@ -147,3 +147,128 @@ class TestLiveBatchTwoRequests:
 
         resp = await asyncio.wait_for(task, timeout=5)
         assert resp.status_code == 200
+
+class TestBatchHardening:
+    """Gremlin traps — wrong counts, cancelled peers, idempotent cleanup."""
+
+    async def test_wrong_response_count_resolves_all_entries(self, client, monkeypatch):
+        """Backend returns fewer responses than entries — all must resolve."""
+        monkeypatch.setenv("WHOOSHD_ENABLE_QUEUE", "true")
+        monkeypatch.setenv("WHOOSHD_MAX_ACTIVE_REQUESTS", "1")
+        monkeypatch.setenv("WHOOSHD_BATCH_ANALYSIS_ENABLED", "true")
+        monkeypatch.setenv("WHOOSHD_BATCH_EXECUTION_ENABLED", "true")
+        monkeypatch.setenv("WHOOSHD_STUB_RESPONSE_DELAY_SECONDS", "2")
+
+        from whooshd.runtime import get_runtime
+        from whooshd.adapters.stub import StubInferenceAdapter
+        rt = get_runtime()
+
+        # Use a custom adapter that returns wrong count.
+        class WrongCountAdapter(StubInferenceAdapter):
+            async def chat_completion_batch(self, requests, contexts=None):
+                # Only return 1 response for 2 requests.
+                result = await super().chat_completion_batch(requests[:1])
+                return result
+
+        # Inject via monkeypatching the router's adapter resolution.
+        import whooshd.routing as routing
+        router = routing.get_router()
+        wrong_adapter = WrongCountAdapter()
+        original_stub = router._adapters.get("stub")
+        router._adapters["stub"] = wrong_adapter
+
+        try:
+            blocker = rt.begin_request(model="stub-model", stream=False)
+            rt.mark_running(blocker)
+
+            task_a = asyncio.ensure_future(client.post("/v1/chat/completions", json=_payload(content="a")))
+            task_b = asyncio.ensure_future(client.post("/v1/chat/completions", json=_payload(content="b")))
+
+            await asyncio.sleep(0.3)
+            assert rt.queue_depth == 2
+            rt.complete_request(blocker)
+
+            ra = await asyncio.wait_for(task_a, timeout=10)
+            rb = await asyncio.wait_for(task_b, timeout=10)
+
+            # Both should return 200 (batch error responses).
+            assert ra.status_code == 200
+            assert rb.status_code == 200
+
+            await asyncio.sleep(0.2)
+            assert rt.queue_depth == 0
+            assert rt.active_jobs == 0
+        finally:
+            router._adapters["stub"] = original_stub
+
+    async def test_cancelled_peer_excluded(self, client, monkeypatch):
+        """Cancelled peer is excluded from batch, remaining request falls back."""
+        monkeypatch.setenv("WHOOSHD_ENABLE_QUEUE", "true")
+        monkeypatch.setenv("WHOOSHD_MAX_ACTIVE_REQUESTS", "1")
+        monkeypatch.setenv("WHOOSHD_BATCH_ANALYSIS_ENABLED", "true")
+        monkeypatch.setenv("WHOOSHD_BATCH_EXECUTION_ENABLED", "true")
+        monkeypatch.setenv("WHOOSHD_BATCH_EXECUTION_MIN_SIZE", "2")
+        monkeypatch.setenv("WHOOSHD_STUB_RESPONSE_DELAY_SECONDS", "2")
+
+        from whooshd.runtime import get_runtime
+        rt = get_runtime()
+
+        blocker = rt.begin_request(model="stub-model", stream=False)
+        rt.mark_running(blocker)
+
+        task_a = asyncio.ensure_future(client.post("/v1/chat/completions", json=_payload(content="a")))
+        task_b = asyncio.ensure_future(client.post("/v1/chat/completions", json=_payload(content="b")))
+
+        await asyncio.sleep(0.3)
+        assert rt.queue_depth == 2
+
+        # Cancel one peer before release.
+        snap = rt.build_request_list()
+        for req in snap.requests:
+            if req.status.value == "queued":
+                rt.request_cancellation(req.request_id)
+                break
+
+        rt.complete_request(blocker)
+        ra = await asyncio.wait_for(task_a, timeout=10)
+        rb = await asyncio.wait_for(task_b, timeout=10)
+
+        # At least one should succeed (the non-cancelled one falls back to single execution).
+        assert ra.status_code in (200, 409)
+        assert rb.status_code in (200, 409)
+        # Both should have resolved.
+        await asyncio.sleep(0.2)
+        assert rt.queue_depth == 0
+        assert rt.active_jobs == 0
+
+    async def test_batch_cleanup_idempotent(self, client, monkeypatch):
+        """Resolving a batch twice does not double-complete or corrupt state."""
+        from whooshd.queue import QueueEntry, RequestQueue
+        from whooshd.contracts import ChatCompletionRequest, ChatMessage
+
+        queue = RequestQueue()
+        loop = asyncio.get_event_loop()
+
+        req = ChatCompletionRequest(model="m", messages=[ChatMessage(role="user", content="x")], stream=False)
+        e1 = QueueEntry(request_id="a", request=req)
+        f1 = loop.create_future()
+        e1.batch_result_future = f1
+        e1.batch_claimed = True
+
+        e2 = QueueEntry(request_id="b", request=req)
+        f2 = loop.create_future()
+        e2.batch_result_future = f2
+        e2.batch_claimed = True
+
+        queue.enqueue(e1)
+        queue.enqueue(e2)
+
+        # Resolve once.
+        queue.resolve_batch_results([e1, e2], [("a", "r1"), ("b", "r2")])
+        assert f1.result() == "r1"
+        assert f2.result() == "r2"
+
+        # Resolve again — idempotent, no crash.
+        queue.resolve_batch_results([e1, e2], [("a", "wrong"), ("b", "wrong")])
+        assert f1.result() == "r1"  # unchanged
+        assert f2.result() == "r2"  # unchanged

@@ -178,14 +178,18 @@ class RequestQueue:
         """Resolve batch result futures with mapped responses.
 
         ``results`` is a list of (request_id, response) tuples.
-        Unmatched entries get None.
+        Unmatched entries get None (batch error).
+        Safe to call multiple times — already-resolved futures are skipped.
         """
         result_map = {rid: resp for rid, resp in results}
         for entry in entries:
             future = entry.batch_result_future
-            if future is not None and not future.done():
-                response = result_map.get(entry.request_id)
-                future.set_result(response)
+            if future is None:
+                continue
+            if future.done():
+                continue  # Idempotent — already resolved.
+            response = result_map.get(entry.request_id)
+            future.set_result(response)
 
     # ── Queue operations ──────────────────────────────────────────────
 
