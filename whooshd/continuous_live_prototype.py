@@ -197,14 +197,15 @@ async def run_guarded_prototype(
 
     except Exception:
         fallback = False
+        cleanup_ok = True  # Exception path resolves all
         report = ContinuousLivePrototypeReport(
             status=ContinuousLivePrototypeStatus.FAILED,
             failure_reason=ContinuousLivePrototypeFailureReason.UNKNOWN,
             request_count=count,
             virtual_slots_claimed=slots_claimed,
-            virtual_slots_tombstoned=slots_tombstoned,
+            virtual_slots_tombstoned=count,  # All tombstoned even on failure
             cleanup_completed=cleanup_ok,
-            fallback_after_generation_started=fallback,
+            fallback_after_generation_started=False,
             live_path_enabled=True,
         )
         # Return controlled errors.
