@@ -540,3 +540,39 @@ def get_scheduler_max_bypass() -> int:
     """
     val = _env_int("WHOOSHD_SCHEDULER_MAX_BYPASS", 1)
     return max(val, 0)
+
+
+# ── Guarded continuous batching prototype config ───────────────────────────
+
+
+def get_continuous_batching_prototype_enabled() -> bool:
+    """Whether the guarded live continuous batching prototype is enabled.
+    Default False.  Both this AND the MLX-specific flag must be true.
+    """
+    return _env_bool("WHOOSHD_CONTINUOUS_BATCHING_PROTOTYPE_ENABLED", False)
+
+
+def get_mlx_continuous_batching_prototype_enabled() -> bool:
+    """Whether the MLX continuous batching prototype is enabled.
+    Default False.
+    """
+    return _env_bool("WHOOSHD_MLX_CONTINUOUS_BATCHING_PROTOTYPE_ENABLED", False)
+
+
+def get_continuous_batching_prototype_min_group_size() -> int:
+    return max(_env_int("WHOOSHD_CONTINUOUS_BATCHING_PROTOTYPE_MIN_GROUP_SIZE", 2), 2)
+
+
+def get_continuous_batching_prototype_max_group_size() -> int:
+    return max(_env_int("WHOOSHD_CONTINUOUS_BATCHING_PROTOTYPE_MAX_GROUP_SIZE", 2), 2)
+
+
+def get_continuous_batching_prototype_max_tokens() -> int:
+    return _env_int("WHOOSHD_CONTINUOUS_BATCHING_PROTOTYPE_MAX_TOKENS", 128)
+
+
+def get_continuous_batching_prototype_timeout_seconds() -> float:
+    try:
+        return float(_env("WHOOSHD_CONTINUOUS_BATCHING_PROTOTYPE_TIMEOUT_SECONDS", "30"))
+    except ValueError:
+        return 30.0
