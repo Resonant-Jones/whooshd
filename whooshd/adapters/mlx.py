@@ -70,6 +70,70 @@ class MLXInferenceAdapter:
     def supports_streaming(self) -> bool:
         return True
 
+    # ── Batch execution ────────────────────────────────────────────────
+
+    def supports_chat_batching(self) -> str:
+        """MLX reports experimental only when all gates pass."""
+        from whooshd.config import (
+            get_batch_execution_enabled,
+            get_mlx_batch_execution_enabled,
+        )
+        if not get_batch_execution_enabled():
+            return "unsupported"
+        if not get_mlx_batch_execution_enabled():
+            return "unsupported"
+        try:
+            from mlx_lm import batch_generate  # noqa: F401
+            return "experimental"
+        except ImportError:
+            return "unsupported"
+
+    async def chat_completion_batch(self, requests, contexts=None):
+        """Execute a batch of chat completions through MLX batch_generate."""
+        from mlx_lm import batch_generate
+        from whooshd.adapters.mlx_prompt import render_mlx_chat_prompt, extract_chat_messages
+        from whooshd.contracts import (
+            ChatCompletionChoice, ChatCompletionResponse,
+            ChatCompletionUsage, ChatMessage,
+        )
+        import uuid
+        import time as _time
+
+        if not requests:
+            raise ValueError("Batch must contain at least one request")
+        if not self._loaded or self._model is None or self._tokenizer is None:
+            raise RuntimeError("MLX model not loaded")
+
+        tokenized = []
+        rendered = []
+        for req in requests:
+            messages = extract_chat_messages(req)
+            prompt = render_mlx_chat_prompt(self._tokenizer, messages)
+            rendered.append(prompt)
+            ids = self._tokenizer.encode(prompt)
+            if hasattr(ids, "ids"):
+                tokenized.append(list(ids.ids))
+            else:
+                tokenized.append(list(ids))
+
+        max_tokens = max((r.max_tokens or 256) for r in requests)
+        result = batch_generate(self._model, self._tokenizer, prompts=tokenized, max_tokens=max_tokens)
+        texts = result.texts if hasattr(result, "texts") else getattr(result, "outputs", [])
+        if not isinstance(texts, (list, tuple)):
+            texts = [texts]
+        if len(texts) != len(requests):
+            raise RuntimeError(f"MLX returned {len(texts)} outputs for {len(requests)} requests")
+
+        responses = []
+        for i, (req, text) in enumerate(zip(requests, texts)):
+            responses.append(ChatCompletionResponse(
+                id=f"chatcmpl-mlx-batch-{uuid.uuid4().hex[:8]}",
+                object="chat.completion", created=int(_time.time()), model=req.model,
+                choices=[ChatCompletionChoice(index=0, message=ChatMessage(role="assistant", content=text), finish_reason="stop")],
+                usage=ChatCompletionUsage(prompt_tokens=len(rendered[i].split()) if i < len(rendered) else 0, completion_tokens=len(text.split()), total_tokens=(len(rendered[i].split()) if i < len(rendered) else 0) + len(text.split())),
+            ))
+        return responses
+
     @property
     def tokenizer(self) -> object | None:
         """Return the loaded tokenizer, or None."""
