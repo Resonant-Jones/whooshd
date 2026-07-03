@@ -404,6 +404,19 @@ lsof -nP -iTCP:8000 -sTCP:LISTEN
 
 ## Documentation
 
+## Documentation
+
+Start with the documentation portal: **[docs/README.md](docs/README.md)**
+
+Quick links:
+- **[Architecture](docs/architecture.md)**
+- **[Operator Guide](docs/operator-guide.md)**
+- **[Developer Guide](docs/developer-guide.md)**
+- **[Subsystems](docs/subsystems.md)**
+- **[Glossary](docs/glossary.md)**
+- **[Validation Index](docs/validation-index.md)**
+- **[Arc Index](docs/arc-index.md)**
+
 - **[Codexify Integration Guide](docs/codexify-integration.md)** — configuration, health vs readiness, streaming
 - **[Codexify Live Rehearsal Runbook](docs/codexify-live-rehearsal.md)** — step-by-step integration test
 - **[MLX Environment Setup](docs/mlx-environment.md)** — Apple Silicon MLX backend
