@@ -1,6 +1,6 @@
 # Guarded MLX Adapter-Batching Operator Guide
 
-Experimental. Explicitly gated. Disabled by default. Smoke-harness validated.
+Experimental. Explicitly gated. Disabled by default. Smoke-harness and HTTP grouping validated.
 Not production-ready.
 
 ## What It Is
@@ -14,29 +14,36 @@ and OpenAI-compatible response-shape checks.
 ## What It Is Not
 
 Guarded MLX adapter batching is **not true token-step continuous batching**.
-It does not implement shared decode-loop scheduling. It does not validate
-HTTP queue/admission grouping. It is not enabled by default. It is not
-production-ready. It does not claim latency or throughput improvement.
+It does not implement shared decode-loop scheduling. It is not enabled by
+default. It is not production-ready. It does not claim latency or throughput
+improvement.
 
-## Current Support Envelope
+HTTP queue/admission grouping has been validated under explicit guarded
+adapter-batch test conditions, but that validation does not make the
+feature production-ready and does not imply performance improvement.
 
-| Feature | Supported? |
-|---|---|
-| Backend | MLX only |
-| Request type | Chat completion |
-| Content | Text-only |
-| Streaming | No |
-| Tools | No |
-| VLM/images | No |
-| Group size | Controlled by flags |
-| Token-step scheduler | No |
-| Production ready | No |
+## Validation Status
+
+- Initial runtime validation: **inconclusive** (enabled live-path grouping not configured)
+- Smoke-harness validation: **passed** with `group_formed=true`
+- HTTP queue/admission grouping validation: **passed** under explicit test conditions
+
+Two compatible requests entered the full HTTP queue/admission path, queued
+behind a blocker, completed successfully, preserved OpenAI-compatible
+response shape, leaked no internal metadata, drained the queue, and
+returned `active_jobs` to 0.
 
 ## Enablement Flags
 
 ```bash
 export WHOOSHD_GUARDED_ADAPTER_BATCHING_ENABLED=true
 export WHOOSHD_MLX_GUARDED_ADAPTER_BATCHING_ENABLED=true
+```
+
+**Both flags required.** Default: `false`.
+
+## Disablement and Rollback
+
 export WHOOSHD_GUARDED_ADAPTER_BATCHING_MIN_GROUP_SIZE=2
 export WHOOSHD_GUARDED_ADAPTER_BATCHING_MAX_GROUP_SIZE=2
 export WHOOSHD_GUARDED_ADAPTER_BATCHING_MAX_TOKENS=128
@@ -94,17 +101,20 @@ Generated text may appear only in normal user-facing completion output.
 | Claim | Allowed? | Notes |
 |---|---|---|
 | Guarded MLX adapter batching exists | Yes | Experimental, gated |
-| Smoke harness passes | Yes | Smoke-harness scope only |
+| Smoke harness passes | Yes | Smoke-harness scope |
+| HTTP queue/admission grouping validated | Yes | Explicit test conditions |
+| Metadata/privacy checks pass | Yes | No internal metadata leak |
 | Production-ready | No | `production_ready=false` |
 | Latency improvement | No | Not benchmarked |
 | Throughput improvement | No | Not benchmarked |
 | True token-step continuous batching | No | Future work |
-| HTTP queue/admission grouping validated | No | Not validated |
+| Shared decode-loop scheduling | No | Future work |
 | VLM batching | No | Unsupported |
 | Streaming batching | No | Unsupported |
 
 ## Related Docs
 
 - `docs/guarded-adapter-batch-runtime-validation.md`
+- `docs/guarded-adapter-batch-http-grouping-validation.md`
 - `docs/runtime-validation-results-guarded-adapter-batching-2026-07-02-updated.md`
 - `docs/continuous-batching-implementation-plan.md`

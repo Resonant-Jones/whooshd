@@ -1,49 +1,52 @@
 # Guarded MLX Adapter Batching
 
-Experimental, explicitly gated, smoke-harness validated. Not production-ready.
+Experimental, explicitly gated, disabled by default. Smoke-harness and HTTP grouping
+validated. Not production-ready.
 
 ## Summary
 
 Whoosh'd now includes an experimental guarded MLX adapter-batch path for
 compatible text-only non-streaming requests. The path is explicitly gated,
-disabled by default, and validated within smoke-harness scope. It is not
-true token-step continuous batching, not production-ready, and does not
-claim latency or throughput improvement.
+disabled by default, and validated within smoke-harness scope and HTTP
+queue/admission grouping scope. It is not true token-step continuous
+batching, not production-ready, and does not claim latency or throughput
+improvement.
 
 ## What Changed
 
 - Added guarded MLX adapter-batch implementation
-- Added runtime validation packet
-- Added smoke harness for enabled-smoke grouping
-- Initial runtime validation: inconclusive (grouping lane not configured)
-- Updated validation: passed within smoke-harness scope (`group_formed=true`)
+- Smoke-harness validation passed (`group_formed=true`)
+- HTTP queue/admission grouping validation passed under explicit test conditions
+
+The HTTP validation used two compatible requests through the full HTTP
+queue/admission path. Both completed successfully, response shape remained
+OpenAI-compatible, no internal metadata leaked, the queue drained, and
+`active_jobs` returned to 0.
 
 ## Operator Impact
 
 No operator action is required by default. Existing behavior remains
 unchanged unless guarded adapter-batch flags are explicitly enabled.
 
-## Enablement
-
-```bash
-export WHOOSHD_GUARDED_ADAPTER_BATCHING_ENABLED=true
-export WHOOSHD_MLX_GUARDED_ADAPTER_BATCHING_ENABLED=true
-```
-
-Both flags required. See operator guide for full configuration.
-
 ## Validation Status
 
 - Smoke harness: passed (`group_formed=true`)
-- HTTP queue/admission grouping: not validated
+- HTTP queue/admission grouping: passed (explicit test conditions)
 - Production readiness: not claimed
+
+These validation results do not claim production readiness, latency
+improvement, throughput improvement, true token-step continuous batching,
+or shared decode-loop scheduling.
 
 ## Known Limitations
 
-- HTTP queue/admission grouping not validated
-- Production queue behavior not covered
-- True token-step shared decode scheduler not implemented
-- No streaming, tools, VLM, or non-MLX support
+- Not production-ready
+- No latency or throughput claim
+- Not true token-step continuous batching
+- No shared decode-loop scheduling
+- No public streaming demux
+- No VLM batching
+- No llama.cpp Whoosh'd-owned batching
 
 ## Rollback
 
@@ -54,13 +57,12 @@ unset WHOOSHD_MLX_GUARDED_ADAPTER_BATCHING_ENABLED
 
 ## Not Included
 
-Default enablement, production queue behavior, HTTP queue/admission validation,
-token-step shared decode scheduling, public streaming demux, VLM/llama.cpp
-batching, benchmark reporting, latency/throughput claims, production readiness.
+Default enablement, production queue behavior, token-step shared decode
+scheduling, public streaming demux, VLM/llama.cpp batching, benchmark
+reporting, latency/throughput claims, production readiness.
 
 ## Future Work
 
-HTTP queue/admission grouping validation, operator-facing server-path validation,
-benchmark methodology, true token-step shared decode scheduler research,
-backend decode-loop ownership proof, shared-loop sampling/cancellation/timeout
-proof, backend resource cleanup proof.
+Benchmark methodology, true token-step shared decode scheduler research,
+backend decode-loop ownership proof, shared-loop sampling/cancellation/
+timeout proof, backend resource cleanup proof.

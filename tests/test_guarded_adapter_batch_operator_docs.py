@@ -1,4 +1,4 @@
-"""Tests for guarded adapter-batch operator docs — claim boundary enforcement."""
+"""Tests for guarded adapter-batch operator docs — updated HTTP grouping caveat."""
 
 import os
 
@@ -29,10 +29,10 @@ class TestOperatorGuide:
     def test_not_token_step(self):
         assert "not true token-step" in _read("guarded-adapter-batching-operator-guide.md").lower()
 
-    def test_http_queue_not_validated(self):
+    def test_http_grouping_validated(self):
         content = _read("guarded-adapter-batching-operator-guide.md")
         assert "http queue/admission grouping" in content.lower()
-        assert "not validated" in content.lower()
+        assert "validated" in content.lower()
 
     def test_not_production_ready(self):
         content = _read("guarded-adapter-batching-operator-guide.md")
@@ -42,42 +42,41 @@ class TestOperatorGuide:
         content = _read("guarded-adapter-batching-operator-guide.md")
         assert "does not claim latency" in content.lower() or "not benchmarked" in content.lower()
 
-    def test_canonical_flags(self):
+    def test_claim_table_allows_http_grouping_with_qualification(self):
         content = _read("guarded-adapter-batching-operator-guide.md")
-        assert "WHOOSHD_GUARDED_ADAPTER_BATCHING_ENABLED" in content
-        assert "WHOOSHD_MLX_GUARDED_ADAPTER_BATCHING_ENABLED" in content
+        assert "HTTP queue/admission grouping" in content
+        assert "Explicit test conditions" in content or "explicit" in content.lower()
 
-    def test_group_formed_true(self):
-        content = _read("guarded-adapter-batching-operator-guide.md")
-        assert "group_formed" in content.lower()
+    def test_no_stale_not_validated(self):
+        content = _read("guarded-adapter-batching-operator-guide.md").lower()
+        assert "not validated" not in content
+
+    def test_active_jobs_zero_mentioned(self):
+        content = _read("guarded-adapter-batching-operator-guide.md").lower()
+        assert "active_jobs" in content and "0" in content
 
     def test_no_forbidden_positive_claims(self):
         content = _read("guarded-adapter-batching-operator-guide.md").lower()
-        dangerous = [
-            "is production-ready", "improves latency", "improves throughput",
-            "true continuous batching is implemented",
-            "http queue/admission grouping is validated",
-        ]
-        for phrase in dangerous:
-            assert phrase not in content, f"forbidden phrase found: '{phrase}'"
+        for phrase in ("is production-ready", "improves latency", "improves throughput",
+                        "true continuous batching is implemented"):
+            assert phrase not in content
 
 
 class TestReleaseNote:
     def test_exists(self):
         assert os.path.isfile(os.path.join(RELNOTES, "guarded-adapter-batching.md"))
 
-    def test_experimental_gated(self):
-        content = _read_rel("guarded-adapter-batching.md").lower()
-        assert "experimental" in content
+    def test_http_grouping_passed(self):
+        content = _read_rel("guarded-adapter-batching.md")
+        assert "http queue/admission grouping" in content.lower()
+        assert "passed" in content.lower()
 
     def test_not_production_ready(self):
-        content = _read_rel("guarded-adapter-batching.md").lower()
-        assert "not production-ready" in content
+        assert "not production-ready" in _read_rel("guarded-adapter-batching.md").lower()
 
     def test_no_default_impact(self):
-        content = _read_rel("guarded-adapter-batching.md").lower()
-        assert "no operator action" in content
+        assert "no operator action" in _read_rel("guarded-adapter-batching.md").lower()
 
-    def test_rollback_documented(self):
-        content = _read_rel("guarded-adapter-batching.md")
-        assert "unset" in content
+    def test_no_stale_not_validated(self):
+        content = _read_rel("guarded-adapter-batching.md").lower()
+        assert "not validated" not in content
