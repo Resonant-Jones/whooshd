@@ -95,8 +95,15 @@ MLX capability proof.
 |---|---|---|
 | `WHOOSHD_ENABLE_QUEUE` | `false` | Enable queue |
 | `WHOOSHD_MAX_ACTIVE_REQUESTS` | `2` | Max active jobs |
-| `WHOOSHD_GUARDED_ADAPTER_BATCHING_ENABLED` | `false` | Enable guarded batching |
-| `WHOOSHD_MLX_GUARDED_ADAPTER_BATCHING_ENABLED` | `false` | Enable MLX guarded batching |
+| `WHOOSHD_SCHEDULER_POLICY` | `fifo` | Select scheduler ordering policy; valid values are `fifo` and experimental `cache_aware_fifo` |
+| `WHOOSHD_SCHEDULER_MAX_BYPASS` | `1` | Maximum times cache-aware scheduling may bypass a queued request before FIFO fairness forces it forward |
+| `WHOOSHD_GUARDED_ADAPTER_BATCHING_ENABLED` | `false` | Enable guarded adapter batching; this is a separate batching gate and does not select scheduler policy |
+| `WHOOSHD_MLX_GUARDED_ADAPTER_BATCHING_ENABLED` | `false` | Enable MLX guarded adapter batching; this is a separate MLX batching gate and does not select scheduler policy |
+
+Use `WHOOSHD_SCHEDULER_POLICY=cache_aware_fifo` to opt into the
+experimental cache-aware scheduler. Guarded adapter-batching flags do not
+enable cache-aware scheduling or change the scheduler fairness bypass
+limit.
 
 Configuration flags do not imply production readiness or performance
 improvement.

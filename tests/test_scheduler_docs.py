@@ -41,3 +41,9 @@ class TestSchedulerDocs:
         c = _read("scheduler.md").lower()
         assert "metadata-only" in c
         assert "raw prompts" in c or "token IDs" in c
+
+    def test_documents_scheduler_configuration_knobs(self):
+        c = _read("scheduler.md")
+        assert "WHOOSHD_SCHEDULER_POLICY" in c
+        assert "WHOOSHD_SCHEDULER_MAX_BYPASS" in c
+        assert "cache_aware_fifo" in c
