@@ -7,8 +7,9 @@ suspicious confidence.
 
 Admission decides whether a request enters execution or queue.
 The queue holds requests until capacity is available.
-Together they prevent overload, preserve FIFO ordering, and enable
-guarded adapter-batch grouping.
+Together they prevent overload and preserve FIFO ordering. Guarded
+adapter-batch grouping is a separate experimental path with additional
+batch gates described below.
 
 ## Current Status
 
@@ -41,8 +42,8 @@ and `/health`.
 
 ## FIFO Behavior
 
-By default, the oldest queued request runs first. The scheduler
-preserves FIFO ordering by default.
+By default, the oldest queued request runs first. The live queue path
+preserves FIFO ordering.
 
 ## Queue Configuration
 
@@ -65,14 +66,25 @@ request → admission → accepted → queue → scheduler → runtime → respo
 
 ## Scheduler Handoff
 
-When capacity opens, the queue notifies the scheduler.
-The scheduler selects the next request (FIFO default or cache-aware).
+When capacity opens, the live queue path wakes waiters and lets only the
+front FIFO entry dequeue when an active slot is available.
+`WHOOSHD_SCHEDULER_POLICY` describes scheduler policy objects, but the
+production HTTP queue path does not currently call cache-aware selection
+to reorder queued requests.
 
 ## Guarded Adapter-Batch Relationship
 
-The queue groups compatible requests for guarded adapter batching.
+The queue has helper support for finding compatible guarded adapter-batch
+groups, but live batch execution is gated separately from queue admission.
+The live batch path returns without grouping unless
+`WHOOSHD_BATCH_EXECUTION_ENABLED` is true, and group analysis is controlled
+by `WHOOSHD_BATCH_ANALYSIS_ENABLED`. Enabling only the queue/admission
+variables above gives FIFO single-request execution rather than a formed
+batch group.
+
 HTTP grouping validation confirms two compatible requests can enter
-the queue/admission path and form a group under test conditions.
+the queue/admission path and form a group under explicit guarded
+adapter-batch test conditions.
 
 See `docs/guarded-adapter-batch-http-grouping-validation.md`.
 
