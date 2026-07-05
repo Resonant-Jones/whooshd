@@ -7,8 +7,9 @@ suspicious confidence.
 
 Admission decides whether a request enters execution or queue.
 The queue holds requests until capacity is available.
-Together they prevent overload, preserve FIFO ordering, and enable
-guarded adapter-batch grouping.
+Together they prevent overload and preserve FIFO ordering. Guarded
+adapter-batch grouping is a separate experimental path with additional
+batch gates described below.
 
 ## Current Status
 
@@ -41,8 +42,8 @@ and `/health`.
 
 ## FIFO Behavior
 
-By default, the oldest queued request runs first. The scheduler
-preserves FIFO ordering by default.
+By default, the oldest queued request runs first. The live queue path
+preserves FIFO ordering.
 
 ## Queue Configuration
 
