@@ -84,8 +84,10 @@ settings above should expect FIFO single-request execution, not a formed
 batch group.
 
 HTTP grouping validation confirms two compatible requests can enter
-the queue/admission path and form a group under explicit guarded
-adapter-batch test conditions.
+the queue/admission path, wait behind a blocker, and complete under
+explicit guarded adapter-batch queue/admission test conditions; those
+conditions do not enable the live batch execution and analysis gates,
+so they do not demonstrate live-path batch-group formation.
 
 See `docs/guarded-adapter-batch-http-grouping-validation.md`.
 
