@@ -7,8 +7,9 @@ suspicious confidence.
 
 Admission decides whether a request enters execution or queue.
 The queue holds requests until capacity is available.
-Together they prevent overload, preserve FIFO ordering, and enable
-guarded adapter-batch grouping.
+Together they prevent overload and preserve FIFO ordering. Guarded
+adapter-batch grouping is a separate experimental path with additional
+batch gates described below.
 
 ## Current Status
 
@@ -41,8 +42,8 @@ and `/health`.
 
 ## FIFO Behavior
 
-By default, the oldest queued request runs first. The scheduler
-preserves FIFO ordering by default.
+By default, the oldest queued request runs first. The live queue path
+preserves FIFO ordering.
 
 ## Queue Configuration
 
@@ -65,14 +66,29 @@ request → admission → accepted → queue → scheduler → runtime → respo
 
 ## Scheduler Handoff
 
-When capacity opens, the queue notifies the scheduler.
-The scheduler selects the next request (FIFO default or cache-aware).
+When capacity opens, the live queue path wakes waiters and lets only
+the front queue entry proceed. `RequestQueue.wait_for_execution()`
+checks `peek()` for the waiting entry and then `dequeue()`s that front
+entry, so production request handling remains FIFO even if
+`WHOOSHD_SCHEDULER_POLICY=cache_aware_fifo` is configured. Cache-aware
+selection is not part of the live queued HTTP execution path.
 
 ## Guarded Adapter-Batch Relationship
 
-The queue groups compatible requests for guarded adapter batching.
+The queue can identify compatible requests for guarded adapter batching,
+but live-path grouping is gated separately from queue admission. The live
+batch path returns without grouping unless
+`WHOOSHD_BATCH_EXECUTION_ENABLED=true`; when enabled, it calls
+`find_batch_group()` only with batch analysis enabled by
+`WHOOSHD_BATCH_ANALYSIS_ENABLED`. Operators who enable only the queue
+settings above should expect FIFO single-request execution, not a formed
+batch group.
+
 HTTP grouping validation confirms two compatible requests can enter
-the queue/admission path and form a group under test conditions.
+the queue/admission path, wait behind a blocker, and complete under
+explicit guarded adapter-batch queue/admission test conditions; those
+conditions do not enable the live batch execution and analysis gates,
+so they do not demonstrate live-path batch-group formation.
 
 See `docs/guarded-adapter-batch-http-grouping-validation.md`.
 
