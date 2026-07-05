@@ -45,7 +45,10 @@ class TestThreadWakeDocs:
         assert "scheduler.md" in _read("threadwake-prefix-cache.md")
 
     def test_queue_link(self):
-        assert "queue-and-admission.md" in _read("threadwake-prefix-cache.md")
+        c = _read("threadwake-prefix-cache.md")
+        target = "queue-policy.md"
+        assert target in c
+        assert os.path.isfile(os.path.join(DOCS, target))
 
     def test_metadata_only(self):
         c = _read("threadwake-prefix-cache.md").lower()
@@ -59,4 +62,19 @@ class TestThreadWakeDocs:
             assert p not in c
 
     def test_no_production_or_performance_claim(self):
-        return  # Doc lists these in Non-Goals — acceptable negative mention
+        c = _read("threadwake-prefix-cache.md").lower()
+        assert "non-goals" in c
+        assert "production readiness" in c
+        assert "latency/throughput claims" in c
+        for p in (
+            "threadwake is production-ready",
+            "threadwake is production ready",
+            "threadwake is ready for production",
+            "threadwake improves latency",
+            "threadwake improves throughput",
+            "threadwake improves performance",
+            "threadwake reduces latency",
+            "threadwake increases throughput",
+            "threadwake is always faster",
+        ):
+            assert p not in c

@@ -93,7 +93,7 @@ metadata must not block inference.
 
 Queue/admission decides whether requests may proceed, wait, or be
 rejected. ThreadWake does not replace admission control and must not
-bypass queue/admission boundaries. See [queue-and-admission.md](queue-and-admission.md).
+bypass queue/admission boundaries. See [queue-policy.md](queue-policy.md).
 
 ## Scheduler Relationship
 
@@ -161,6 +161,6 @@ continuous batching claims, MLX token-step claims, durable snapshots.
 - [threadwake/overview.md](threadwake/overview.md)
 - [threadwake/configuration.md](threadwake/configuration.md)
 - [threadwake/security.md](threadwake/security.md)
-- [queue-and-admission.md](queue-and-admission.md)
+- [queue-policy.md](queue-policy.md)
 - [scheduler.md](scheduler.md)
 - [batching-arc-closeout-digest.md](batching-arc-closeout-digest.md)
