@@ -115,14 +115,14 @@ and HTTP queue/admission grouping records. That validation supports
 the claim that guarded adapter batching exists and was validated under
 recorded conditions. It does not support claims of production readiness,
 latency/throughput improvement, true continuous batching, or token-step
-shared decode scheduling. See [guarded-batching.md](guarded-batching.md).
+shared decode scheduling. See [guarded-adapter-batch-runtime-validation.md](guarded-adapter-batch-runtime-validation.md).
 
 ## Queue/Admission Grouping
 
 HTTP queue/admission grouping validation records that compatible work
 grouped under explicit guarded adapter-batch test conditions. This does
 not imply production batching or performance improvement.
-See [queue-and-admission.md](queue-and-admission.md).
+See [queue-policy.md](queue-policy.md).
 
 ## Cave Thunder
 
@@ -186,10 +186,10 @@ token-step scheduling, claiming durable cache safety.
 ## Related Docs
 
 - [validation-index.md](validation-index.md)
-- [guarded-batching.md](guarded-batching.md)
+- [guarded-adapter-batch-runtime-validation.md](guarded-adapter-batch-runtime-validation.md)
 - [batching-arc-closeout-digest.md](batching-arc-closeout-digest.md)
 - [token-step-cave-thunder-decision.md](token-step-cave-thunder-decision.md)
-- [queue-and-admission.md](queue-and-admission.md)
+- [queue-policy.md](queue-policy.md)
 - [scheduler.md](scheduler.md)
-- [threadwake-prefix-cache.md](threadwake-prefix-cache.md)
+- [threadwake/overview.md](threadwake/overview.md)
 - [subsystems.md](subsystems.md)

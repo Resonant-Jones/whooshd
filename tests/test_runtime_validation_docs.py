@@ -43,8 +43,18 @@ class TestRuntimeValidationDocs:
 
     def test_guarded_batching_link(self):
         c = _read("runtime-validation.md")
-        assert "guarded-batching.md" in c
+        assert "guarded-adapter-batch-runtime-validation.md" in c
         assert "guarded adapter batching" in c.lower()
+
+    def test_related_docs_links_exist(self):
+        c = _read("runtime-validation.md")
+        links = []
+        for line in c.splitlines():
+            if line.startswith("- [") and "](" in line and line.endswith(")"):
+                links.append(line.rsplit("(", 1)[1][:-1])
+
+        missing = [link for link in links if not os.path.isfile(os.path.join(DOCS, link))]
+        assert missing == []
 
     def test_cave_thunder(self):
         c = _read("runtime-validation.md")
