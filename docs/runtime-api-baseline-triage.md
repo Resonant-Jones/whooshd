@@ -18,7 +18,7 @@ full suite. Excludes unrelated pre-existing backend-gated failures.
 ## Current Result
 
 ```
-2063 passed, 45 failed, 2 warnings
+2071 passed, 45 failed, 2 warnings
 ```
 
 ## Failure Clusters

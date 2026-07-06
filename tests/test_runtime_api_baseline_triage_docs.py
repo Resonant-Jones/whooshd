@@ -36,7 +36,9 @@ class TestTriageDoc:
         assert "Claim" in c and "Status" in c
 
     def test_no_full_suite_pass_claim(self):
-        return  # Claim table lists this as 'Not claimed' — acceptable
+        c = _read("runtime-api-baseline-triage.md")
+        assert "| Full suite currently passes | Not claimed |" in c
+        assert "Full suite currently passes | Allowed" not in c
 
     def test_no_production_claim(self):
         c = _read("runtime-api-baseline-triage.md").lower()
