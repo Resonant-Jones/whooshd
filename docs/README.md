@@ -4,6 +4,16 @@ Local-first inference orchestration: queueing, scheduling, runtime
 validation, model routing, guarded batching, and operator-safe local
 model serving.
 
+## Closure Digests
+
+Start here for current state, safe claims, experimental areas, and evidence:
+
+- [Release-facing closure](release-notes/whooshd-queue-batching-docs-closure.md)
+- [Claim ledger](release-notes/whooshd-queue-batching-docs-claim-ledger.md)
+- [Documentation pass closeout](documentation-pass-closeout-digest.md)
+- [Batching arc closeout](batching-arc-closeout-digest.md)
+- [Cave Thunder decision](token-step-cave-thunder-decision.md)
+
 ## Start Here
 
 - **Operators**: [Operator Guide](operator-guide.md)

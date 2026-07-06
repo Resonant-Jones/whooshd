@@ -41,3 +41,21 @@ Token-step scheduling: researched, fake-proven, MLX-blocked, decision recorded.
 ```
 
 See [batching-arc-closeout-digest.md](batching-arc-closeout-digest.md).
+
+## Documentation Anatomy Pass
+
+The documentation anatomy pass added the docs spine, queue/admission
+deep dive, scheduler deep dive, ThreadWake / prefix-cache deep dive,
+guarded batching deep dive, runtime validation deep dive, and
+documentation pass closeout digest.
+
+See [documentation-pass-closeout-digest.md](documentation-pass-closeout-digest.md).
+
+## Release-Facing Closure
+
+The release-facing closure digest summarizes what changed, what is
+safe to claim, what remains experimental, what remains research-only,
+and where the evidence lives.
+
+See [release-notes/whooshd-queue-batching-docs-closure.md](release-notes/whooshd-queue-batching-docs-closure.md)
+and [release-notes/whooshd-queue-batching-docs-claim-ledger.md](release-notes/whooshd-queue-batching-docs-claim-ledger.md).

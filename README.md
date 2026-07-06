@@ -408,6 +408,10 @@ lsof -nP -iTCP:8000 -sTCP:LISTEN
 
 Start with the documentation portal: **[docs/README.md](docs/README.md)**
 
+For release-facing state, see:
+- **[Release-facing closure](docs/release-notes/whooshd-queue-batching-docs-closure.md)**
+- **[Claim ledger](docs/release-notes/whooshd-queue-batching-docs-claim-ledger.md)**
+
 Quick links:
 - **[Architecture](docs/architecture.md)**
 - **[Operator Guide](docs/operator-guide.md)**
