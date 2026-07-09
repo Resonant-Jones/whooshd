@@ -2,64 +2,73 @@
 
 <img width="1672" height="941" alt="blue-balloon-whoosh" src="https://github.com/user-attachments/assets/25ed7dae-9d3a-4c8e-9e54-3185ced18831" />
 
-**A local-first inference gateway for Apple Silicon and self-hosted AI
-workflows.** It exposes OpenAI-compatible chat and model surfaces while
-coordinating local runtimes like MLX and llama.cpp — with explicit
-health, readiness, runtime visibility, and safety boundaries.
+**A local-first inference gateway for Apple Silicon and self-hosted AI workflows.**
 
-Whoosh'd is built to be useful as a standalone local inference server,
-but especially sharp as the local runtime layer beneath
-[Codexify](https://codexify.ai).
+Whoosh'd provides an OpenAI-compatible API over local runtimes such as MLX-LM Server, MLX-VLM, llama.cpp / GGUF, and test adapters. It is built for systems that need local inference without surrendering routing, readiness, runtime visibility, model inventory, cancellation, overload behavior, or privacy boundaries.
 
-**Why not just Ollama or a raw MLX script?**
+Whoosh'd is useful as a standalone local inference broker, but it is especially sharp as the managed local sidecar beneath [Codexify](https://codexify.ai).
 
-- **Multi-runtime routing** — run MLX, llama.cpp, and future backends
-  behind a single `POST /v1/chat/completions` surface
-- **Health and readiness** — distinguish "process alive" from "model
-  warm and ready to serve" without guessing
-- **Runtime visibility** — `/health/runtime`, `/ready`, `/runtime`,
-  structured model inventory
-- **ThreadWake cache** — prompt-prefix reuse optimization (metadata
-  milestone — analysis and visibility available, KV materialization
-  deferred)
-- **Codexify-native** — designed as the local inference backend for
-  Codexify's local-first posture
+It does **not** replace lower-level inference engines. It sits above them as a small control plane:
 
-Whoosh'd does **not** replace lower-level inference engines. It sits
-above them as a lightweight broker.
+- **Routing** across local runtime adapters
+- **Health and readiness** that distinguish alive, warming, ready, degraded, and overloaded states
+- **Model inventory** through OpenAI-compatible and Ollama-compatible surfaces
+- **Runtime lifecycle control** for warmup, unload, cancellation, and request visibility
+- **Admission control** with structured `429 RUNNER_OVERLOADED` responses
+- **ThreadWake observation** for prompt-prefix reuse analysis, with KV reuse gated behind backend capability
+- **Codexify-native operation** as a local-first provider boundary
 
-- **Use with Codexify** as a managed local sidecar, or
-- **Use standalone** with any OpenAI-compatible client, or
-- **Use with any LLM tool** that speaks `/v1/chat/completions`.
+Use Whoosh'd when you want local inference to behave less like a pile of scripts and more like infrastructure.
+
+## Why not just Ollama or a raw MLX script?
+
+Whoosh'd is for the layer above raw inference: provider boundaries, runtime state, compatibility contracts, and local orchestration.
+
+- **Multi-runtime routing** — run MLX, llama.cpp, vision, and future backends behind one `POST /v1/chat/completions` surface
+- **Health and readiness** — distinguish "process alive" from "model warm and ready to serve"
+- **Runtime visibility** — inspect `/health/runtime`, `/ready`, `/runtime`, request lifecycle, and structured model inventory
+- **Model registry** — advertise validated runtime promises instead of mirroring random files on disk
+- **ThreadWake analysis** — observe prompt-prefix reuse potential without pretending cache is memory
+- **Codexify-native operation** — designed as the local inference backend for Codexify's local-first posture
+
+Use Whoosh'd:
+
+- **With Codexify** as a managed local sidecar
+- **Standalone** with any OpenAI-compatible client
+- **With any LLM tool** that speaks `/v1/chat/completions`
 
 ## Core Compatibility
 
-| Surface | Format | Status |
+|Surface|Format|Status|
 |---|---|---|
-| `POST /v1/chat/completions` | OpenAI-compatible (streaming + non-streaming) | ✅ |
+| `POST /v1/chat/completions` | OpenAI-compatible, streaming + non-streaming | ✅ |
 | `GET /v1/models` | OpenAI-compatible model inventory | ✅ |
 | `GET /api/tags` | Ollama-compatible model inventory | ✅ |
-| `GET /health` | Process liveness vs runtime state | ✅ |
+| `GET /health` | Process liveness | ✅ |
 | `GET /ready` | Warmup / ready / degraded / offline distinction | ✅ |
-| Model registry + candidate inspection | Compatibility inspection | ✅ |
+| `GET /health/runtime` | Per-runtime state snapshot | ✅ |
+| Model registry + candidate inspection | Compatibility-gated inventory | ✅ |
 | Streaming | SSE with `data:` chunks + `[DONE]` | ✅ |
 | Cancellation | Request-scoped cancellation endpoint | ✅ |
 | Concurrency | Admission control with structured 429 | ✅ |
 | Large context | Configurable max token limits | ✅ |
 | Telemetry | Off by default; local-first privacy posture | ✅ |
-| Apple Silicon / MLX orientation | Primary backend target | ✅ |
-| llama.cpp / GGUF compatibility | Subprocess-supervised adapter | ✅ |
+| MLX-LM Server | Apple Silicon text runtime | ✅ |
+| MLX-VLM | Apple Silicon vision-language runtime | ✅ |
+| llama.cpp / GGUF | External or managed GGUF runtime | ✅ |
+| ThreadWake durable snapshots | Explicitly deferred | Deferred |
 
 ## Architecture
 
-```
+```text
 Client / Codexify / OpenCode / Xcode
         |
 Whoosh'd OpenAI-compatible API
         |
 Runtime Router
         +-- llama.cpp runtime for GGUF models
-        +-- mlx_lm.server runtime for MLX models
+        +-- mlx_lm.server runtime for MLX text models
+        +-- mlx-vlm runtime for vision-language models
         +-- mlx_lm in-process runtime (legacy)
         +-- stub adapter (testing)
 ```
