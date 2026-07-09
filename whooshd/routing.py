@@ -164,6 +164,14 @@ class RuntimeRouter:
             if loaded_id and loaded_id == model_id:
                 return adapter
 
+        # ── Step 3a: When WHOOSHD_ADAPTER=stub, prefer stub for
+        #            unresolved model IDs (test/default posture). ──
+        from whooshd.config import get_adapter_backend
+        if get_adapter_backend() == "stub":
+            stub_adapter = self._adapters.get(RuntimeKind.STUB.value)
+            if stub_adapter is not None:
+                return stub_adapter
+
         # ── Step 4: If there's exactly one enabled non-stub adapter,
         #            use it as default (backward compat).          ────
         non_stub = [
