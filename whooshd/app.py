@@ -981,14 +981,18 @@ async def runtime_model():
     rt = get_runtime()
     router = get_router()
     configured = get_advertised_model_id()
-    # Use the first non-stub adapter for the snapshot, or stub as fallback.
+    # This is a broker-level snapshot; per-lane detail lives at /health/runtime.
+    # Surface a non-stub lane by name only when it is actually loaded, so an
+    # always-registered-but-offline lane (e.g. llama.cpp) is never reported as
+    # "the" adapter.  Otherwise keep the multi-runtime identity.
     adapter_name = "multi-runtime"
     for kind in router.registered_kinds:
-        if kind != "stub":
-            adapter = router.get_adapter(kind)
-            if adapter:
-                adapter_name = adapter.name
-                break
+        if kind == "stub":
+            continue
+        adapter = router.get_adapter(kind)
+        if adapter and adapter.is_loaded():
+            adapter_name = adapter.name
+            break
     return rt.build_model_snapshot(
         adapter_name=adapter_name, configured_model=configured
     )
