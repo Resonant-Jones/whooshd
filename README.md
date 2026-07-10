@@ -36,7 +36,7 @@ This README is intentionally conservative: supported features are listed separat
 | Request cancellation | Supported | `POST /runtime/requests/{id}/cancel` |
 | Admission control | Supported | Structured `429 RUNNER_OVERLOADED` responses |
 | Stub adapter | Supported | Default no-model test/runtime path |
-| MLX-LM Server lane | Supported | Apple Silicon text runtime, requires `mlx-lm` and validation |
+| MLX-LM Server lane | Supported | Apple Silicon text runtime. Start `mlx_lm.server` separately or use `scripts/start_mlx_lm_runtime.sh`. |
 | MLX in-process lane | Supported, legacy | Still available, but MLX-LM Server is the preferred MLX text path |
 | MLX-VLM lane | Supported | Vision-language runtime, requires `mlx-vlm` and validation |
 | llama.cpp / GGUF lane | Supported | External or managed GGUF runtime |
@@ -215,11 +215,35 @@ python -m uvicorn whooshd.app:app --host 127.0.0.1 --port 8000
 
 ### MLX-LM Server
 
+MLX-LM Server is a two-process setup. `WHOOSHD_MLX_ENABLED=true` tells Whoosh'd to connect to an `mlx_lm.server` process at `WHOOSHD_MLX_HOST:WHOOSHD_MLX_PORT`; it does not start that external server by itself in the normal external-server path.
+
+Terminal 1, start `mlx_lm.server`:
+
+```bash
+export WHOOSHD_MLX_MODEL=mlx-community/Llama-3.2-3B-Instruct-4bit
+export WHOOSHD_MLX_HOST=127.0.0.1
+export WHOOSHD_MLX_PORT=8081
+bash scripts/start_mlx_lm_runtime.sh
+```
+
+Terminal 2, start Whoosh'd configured to proxy that runtime:
+
 ```bash
 WHOOSHD_MLX_ENABLED=true \
 WHOOSHD_MLX_MODEL=mlx-community/Llama-3.2-3B-Instruct-4bit \
+WHOOSHD_MLX_HOST=127.0.0.1 \
+WHOOSHD_MLX_PORT=8081 \
 python -m uvicorn whooshd.app:app --host 127.0.0.1 --port 8000
 ```
+
+Then verify readiness and model inventory:
+
+```bash
+curl -i http://127.0.0.1:8000/ready
+curl -s http://127.0.0.1:8000/v1/models | python3 -m json.tool
+```
+
+If `mlx_lm.server` is not running on the configured host/port, the MLX lane will report offline and requests for that model will fail.
 
 ### MLX in-process, legacy
 
@@ -351,6 +375,7 @@ Start here:
 |---|---|
 | Server not responding | `whoosh status` or `curl http://127.0.0.1:8000/health` |
 | `/ready` returns 503 | Model may be warming, unloaded, failed, or degraded. Check `/runtime/model`. |
+| MLX lane offline | Make sure `mlx_lm.server` is running on `WHOOSHD_MLX_HOST:WHOOSHD_MLX_PORT`; use `bash scripts/start_mlx_lm_runtime.sh`. |
 | Warmup hangs | Check model path exists. MLX may download on first load. |
 | 429 Too Many Requests | Admission control is at capacity. Wait, lower concurrency, or enable queueing intentionally. |
 | Model listed but not runnable | Check adapter registration and `/health/runtime`. |
@@ -374,12 +399,12 @@ Start here:
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `WHOOSHD_MLX_ENABLED` | `false` | Enable the MLX-LM Server runtime |
-| `WHOOSHD_MLX_MODEL` | none | Hugging Face repo ID or local model path |
-| `WHOOSHD_MLX_HOST` | `127.0.0.1` | MLX-LM Server host |
-| `WHOOSHD_MLX_PORT` | `8081` | MLX-LM Server port |
+| `WHOOSHD_MLX_ENABLED` | `false` | Enable the MLX-LM Server runtime lane in Whoosh'd |
+| `WHOOSHD_MLX_MODEL` | none | Hugging Face repo ID or local model path used by both processes |
+| `WHOOSHD_MLX_HOST` | `127.0.0.1` | Host where `mlx_lm.server` listens |
+| `WHOOSHD_MLX_PORT` | `8081` | Port where `mlx_lm.server` listens |
 | `WHOOSHD_MLX_EXTRA_ARGS` | none | Extra CLI args for `mlx_lm.server` |
-| `WHOOSHD_MLX_STARTUP_TIMEOUT_SECONDS` | `30.0` | Startup timeout |
+| `WHOOSHD_MLX_STARTUP_TIMEOUT_SECONDS` | `30.0` | Startup/probe timeout |
 | `WHOOSHD_MLX_HEALTH_TIMEOUT_SECONDS` | `2.0` | Health probe timeout |
 
 ### MLX in-process, legacy
