@@ -183,7 +183,7 @@ curl -N http://127.0.0.1:8000/v1/chat/completions \
 # 6. Codexify-style generate
 curl -s http://127.0.0.1:8000/v1/generate \
   -H "Content-Type: application/json" \
-  -d '{"model":"stub-model","prompt":"Hello from generate"}'
+  -d '{"model_id":"stub-model","prompt":"Hello from generate"}'
 
 # 7. ThreadWake health
 curl http://127.0.0.1:8000/health/threadwake
