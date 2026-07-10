@@ -27,6 +27,41 @@ async def client():
         yield c
 
 
+@pytest.fixture(autouse=True)
+def _isolate_runtime_lifecycle():
+    """Snapshot/restore the global runtime lifecycle around probe tests.
+
+    A prior suite resets the global runtime singleton, leaving behind a
+    fresh, un-warmed instance whose lifecycle is UNLOADED.  These probe
+    tests evaluate the stub posture, which is ready by default, so the
+    natural baseline is restored before each test and the leaked state is
+    put back afterward.  Readiness semantics are unchanged: /ready still
+    excludes the stub lane, and the readiness contract is exercised in
+    tests/test_readiness.py (untouched here).
+    """
+    from whooshd.runtime import get_runtime
+
+    rt = get_runtime()
+    saved = (
+        rt.model_lifecycle,
+        rt._last_load_started_at,
+        rt._last_load_completed_at,
+        rt._last_unloaded_at,
+        rt._last_error_code,
+        rt._last_error_message,
+    )
+    rt.complete_warmup()
+    yield
+    (
+        rt.model_lifecycle,
+        rt._last_load_started_at,
+        rt._last_load_completed_at,
+        rt._last_unloaded_at,
+        rt._last_error_code,
+        rt._last_error_message,
+    ) = saved
+
+
 # ── Docs exist ──────────────────────────────────────────────────────────────
 
 
