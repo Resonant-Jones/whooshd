@@ -114,34 +114,63 @@ class RuntimeRouter:
         Raises ``ModelResolutionError`` if the model cannot be resolved.
         """
         # ── Step 1: Consult the model registry ─────────────────────
+        # An explicitly configured registry is an operator-owned routing
+        # boundary, not merely inventory metadata. Unknown and disabled model
+        # IDs must not fall through to adapter heuristics or the single-runtime
+        # compatibility fallback.
+        from whooshd.config import get_model_registry_path
+
+        authoritative_registry = bool(get_model_registry_path())
+        reg = None
         try:
             from whooshd.runtime import get_runtime
             rt = get_runtime()
             reg = rt._load_registry()
-            if reg and reg is not False and reg:
-                entry = reg.get(model_id)
-                if entry:
-                    engine = entry.engine.value
-                    # Map registry engine → runtime kind
-                    engine_kind_map = {
-                        "llama_cpp": RuntimeKind.LLAMA_CPP.value,
-                        "mlx_lm": RuntimeKind.MLX_LM_SERVER.value,
-                        "mlx_vlm": RuntimeKind.MLX_VLM.value,
-                    }
-                    kind = engine_kind_map.get(engine)
-                    if kind and kind in self._adapters:
-                        return self._adapters[kind]
-                    # Runtime not enabled — raise a clear error so the
-                    # caller knows which runtime needs to be configured.
-                    if kind:
-                        raise ModelResolutionError(
-                            model_id,
-                            f"Model '{model_id}' needs the '{kind}' runtime, "
-                            f"which is not enabled. Available: {self.registered_kinds}",
-                        )
-                    # Unknown engine — fall through to heuristics.
-        except Exception:
-            pass  # Registry lookup is best-effort.
+        except Exception as exc:
+            logger.warning("router.registry_lookup_failed error=%s", type(exc).__name__)
+
+        if authoritative_registry and (reg is None or reg is False):
+            raise ModelResolutionError(
+                model_id,
+                "The configured runtime registry is unavailable.",
+            )
+
+        if reg is not None and reg is not False:
+            entry = reg.get(model_id)
+            if entry is None:
+                if authoritative_registry:
+                    raise ModelResolutionError(
+                        model_id,
+                        "Model is not allowed by the active runtime registry.",
+                    )
+            elif not entry.enabled:
+                if authoritative_registry:
+                    raise ModelResolutionError(
+                        model_id,
+                        "Model is disabled by the active runtime registry.",
+                    )
+            else:
+                engine = entry.engine.value
+                # Map registry engine → runtime kind
+                engine_kind_map = {
+                    "llama_cpp": RuntimeKind.LLAMA_CPP.value,
+                    "mlx_lm": RuntimeKind.MLX_LM_SERVER.value,
+                    "mlx_vlm": RuntimeKind.MLX_VLM.value,
+                }
+                kind = engine_kind_map.get(engine)
+                if kind and kind in self._adapters:
+                    return self._adapters[kind]
+                if kind:
+                    raise ModelResolutionError(
+                        model_id,
+                        f"Model '{model_id}' needs the '{kind}' runtime, "
+                        f"which is not enabled. Available: {self.registered_kinds}",
+                    )
+                if authoritative_registry:
+                    raise ModelResolutionError(
+                        model_id,
+                        "Model uses an unsupported runtime in the active registry.",
+                    )
 
         # ── Step 1b: Check external route inventory ─────────────────
         external = await self._resolve_external_model(model_id)
