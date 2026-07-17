@@ -204,6 +204,93 @@ class TestModelResolution:
         finally:
             rt._registry = original_registry
 
+    def test_explicit_registry_rejects_unknown_model(
+        self, clean_router, mock_mlx_server_adapter, monkeypatch
+    ):
+        """An explicit runtime registry is an authoritative allowlist."""
+        from whooshd.registry import (
+            EngineType,
+            ModelFormat,
+            ModelModality,
+            ModelRegistryConfig,
+            RegistryModelEntry,
+        )
+
+        registry = ModelRegistryConfig(
+            models={
+                "allowed-model": RegistryModelEntry(
+                    display_name="Allowed model",
+                    engine=EngineType.MLX_LM,
+                    format=ModelFormat.MLX,
+                    path="mlx-community/allowed-model",
+                    modalities=[ModelModality.TEXT],
+                )
+            }
+        )
+        rt = get_runtime()
+        original_registry = rt._registry
+        rt._registry = registry
+        monkeypatch.setenv("WHOOSHD_MODEL_REGISTRY_PATH", "/tmp/guest-registry.yaml")
+
+        try:
+            clean_router.register(mock_mlx_server_adapter)
+
+            async def _run():
+                with pytest.raises(
+                    ModelResolutionError,
+                    match="not allowed by the active runtime registry",
+                ):
+                    await clean_router._resolve_model_runtime("hidden-model")
+
+            import asyncio
+            asyncio.run(_run())
+        finally:
+            rt._registry = original_registry
+
+    def test_explicit_registry_rejects_disabled_model(
+        self, clean_router, mock_mlx_server_adapter, monkeypatch
+    ):
+        """Disabled registry entries cannot reach a compatible adapter."""
+        from whooshd.registry import (
+            EngineType,
+            ModelFormat,
+            ModelModality,
+            ModelRegistryConfig,
+            RegistryModelEntry,
+        )
+
+        registry = ModelRegistryConfig(
+            models={
+                "disabled-model": RegistryModelEntry(
+                    display_name="Disabled model",
+                    engine=EngineType.MLX_LM,
+                    format=ModelFormat.MLX,
+                    path="mlx-community/disabled-model",
+                    modalities=[ModelModality.TEXT],
+                    enabled=False,
+                )
+            }
+        )
+        rt = get_runtime()
+        original_registry = rt._registry
+        rt._registry = registry
+        monkeypatch.setenv("WHOOSHD_MODEL_REGISTRY_PATH", "/tmp/guest-registry.yaml")
+
+        try:
+            clean_router.register(mock_mlx_server_adapter)
+
+            async def _run():
+                with pytest.raises(
+                    ModelResolutionError,
+                    match="disabled by the active runtime registry",
+                ):
+                    await clean_router._resolve_model_runtime("disabled-model")
+
+            import asyncio
+            asyncio.run(_run())
+        finally:
+            rt._registry = original_registry
+
     def test_router_fallback_to_only_non_stub_adapter(self, clean_router, mock_mlx_server_adapter):
         """When only one non-stub adapter is registered, unknown models route there."""
         clean_router.register(mock_mlx_server_adapter)

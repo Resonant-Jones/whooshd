@@ -1,0 +1,30 @@
+# Friends & Family guest runtime registry.
+#
+# Operator-owned deployment policy: advertise and route exactly one installed
+# MLX-VLM model so guest traffic does not trigger model-weight swapping. The
+# model remains local to VaultNode; this registry adds no cloud provider or
+# download behavior.
+
+models:
+  gemma-4-12b-it-qat-4bit:
+    display_name: "Gemma 4 12B IT QAT 4-bit"
+    engine: mlx_vlm
+    format: mlx
+    path: "/Volumes/Dev_SSD/whooshd/model-weights/hub/models--mlx-community--gemma-4-12B-it-qat-4bit"
+    modalities:
+      - text
+      - vision
+    context_window: 32768
+    preferred_hardware:
+      - apple_silicon
+      - metal
+    warm_policy: keep_warm
+    priority: guest_chat
+    enabled: true
+    tags:
+      - chat
+      - vision
+      - mlx
+      - local
+      - friends-family
+      - pinned
