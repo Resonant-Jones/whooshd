@@ -143,3 +143,156 @@ plutil -extract EnvironmentVariables.WHOOSHD_HOST raw -o - /Library/LaunchDaemon
 ## Resume condition
 
 From the Whoosh'd repository root, an authorized local operator must run the already-rendered or freshly rendered repository installer and satisfy macOS administrator authorization. The complete listener, loopback health, Docker bridge, non-loopback denial, and restart-stability sequence must then be repeated against the same recorded source HEAD (or a new exact HEAD must be recorded). Until that happens, this proof must remain `BLOCKED` and the wildcard listener must be treated as an unresolved P0 containment issue.
+
+---
+
+## Second attempt — 2026-07-18
+
+### Final outcome
+
+Outcome: `BLOCKED`
+
+Administrator authorization failed before the checked-in installer executed. The installed LaunchDaemon and live process were not changed. The unauthenticated wildcard listener remains an unresolved P0 containment issue.
+
+### Execution window and repository identity
+
+- Window: 17:08:48-17:09:56 EDT
+- Branch: `codex/authoritative-runtime-registry`
+- Exact HEAD tested: `552544a9df6b51de9445f279aa50987452f2e395`
+- Previous proof commit: `552544a9df6b51de9445f279aa50987452f2e395`
+- Relationship: the second attempt began directly on the committed first-attempt proof; `git merge-base --is-ancestor` confirmed that proof commit in the tested ancestry.
+- Initial worktree status: branch was one commit ahead of its same-named origin branch with only the unrelated untracked `.venv311/` directory.
+- Installed artifact relationship: the generated replacement plists came from the tested source HEAD. They were not installed because authorization failed.
+
+### Administrator authorization
+
+The repository installer was prepared and validated, then invoked through the macOS native administrator authorization dialog so no credential would enter task output or the proof. macOS returned error `-60007` (`administrator user name or password was incorrect`) before the shell command ran.
+
+Result: `BLOCKED`. In accordance with the task invariant, no retry, privilege workaround, manual plist edit, unload, or process termination was attempted after this failure.
+
+### Service identity before repair
+
+- LaunchDaemon: `system/com.resonant.whooshd`
+- Installed plist: `/Library/LaunchDaemons/com.resonant.whooshd.plist`
+- Launcher: `/Users/chriscastillo/.local/bin/whooshd`
+- Arguments: `/Users/chriscastillo/.local/bin/whooshd --codexify`
+- Installed bind environment: `WHOOSHD_HOST=0.0.0.0`, `WHOOSHD_PORT=8000`
+- Working directory: `/Volumes/Dev_SSD/ResonantConstructs/Whoosh'd`
+- Service state: `running`
+- PID: `978`
+- Process owner: `chriscastillo`
+- Process start time: `Fri Jul 17 14:35:42 2026`
+- Effective command: Python 3.11 running `uvicorn whooshd.app:app --host 0.0.0.0 --port 8000`
+- Listener: PID `978`, `TCP *:8000 (LISTEN)`
+- Loopback health: connection failed with curl exit `7`
+
+The LaunchDaemon definition, PID 1 parent, executable command, working directory, and port owner confirmed the intended Whoosh'd service before the mutation gate.
+
+### Documented repair procedure attempted
+
+1. Re-read this proof, `docs/ops/whooshd-launchd-local-runtime.md`, `README.md`, and `docs/architecture.md` at the tested HEAD. No ADR index or architecture-decision directory was present.
+2. Re-inspected repository status, proof ancestry, the installed plist, launchd state, PID identity, listener, and loopback health.
+3. Rendered both checked-in launchd templates into `.local/launchd/` with explicit `--host 127.0.0.1 --port 8000` behavior.
+4. Supplied the renderer's supported `--model-registry-path configs/models.friends-family-guest.yaml` option to preserve the installed registry target rather than change model inventory.
+5. Validated both generated plists with `plutil -lint`, syntax-checked the installer and smoke script with `bash -n`, and completed the checked-in installer's dry-run successfully.
+6. Invoked the checked-in installer through the native macOS administrator authorization gate.
+7. Authorization failed before installer execution. The procedure stopped immediately.
+8. Re-probed the installed plist, service state, listener, loopback health, and repository status.
+
+Generated `.local/launchd/` files are ignored machine-local output. No source, model registry, adapter, queue, ThreadWake, Codexify, virtual-environment, or user-data file was modified.
+
+### Service identity after the blocked repair
+
+The state was unchanged:
+
+- LaunchDaemon state: `running`
+- PID: `978`
+- Installed arguments: `/Users/chriscastillo/.local/bin/whooshd --codexify`
+- Installed host: `WHOOSHD_HOST=0.0.0.0`
+- Listener: PID `978`, `TCP *:8000 (LISTEN)`
+
+Listener containment result: `BLOCKED`; loopback-only containment is not true.
+
+### Loopback health
+
+Both the pre-mutation and final probes used:
+
+`curl -fsS --connect-timeout 2 --max-time 5 http://127.0.0.1:8000/health`
+
+Both failed to connect with curl exit `7`.
+
+Result: `BLOCKED`. This does not establish model readiness or generation behavior.
+
+### Docker bridge
+
+The required post-repair Docker probe was not run because administrator authorization failed and no repaired service existed to probe.
+
+Result: `BLOCKED` under the task's failure policy; no Docker bridge claim is made.
+
+### Non-loopback denial
+
+The required post-repair denial probe was not run because the repair did not execute. The unchanged `0.0.0.0` configuration and `*:8000` listener already fail the listener-containment gate.
+
+No private LAN or Tailscale address was captured in this artifact.
+
+Result: `BLOCKED`; non-loopback denial is not proven.
+
+### Restart stability
+
+No post-repair restart was performed because the initial authorized mutation did not occur. Restarting the unchanged wildcard service would not prove containment.
+
+Result: `BLOCKED`; restart-stable containment is not proven.
+
+### Deviations and ambiguity
+
+- The renderer used its supported explicit registry-path option to preserve the installed registry target. No registry file or entry was edited.
+- A temporary apostrophe-free symlink to the repository was used only so AppleScript could invoke the same checked-in installer safely. It did not substitute a different installer or service definition.
+- The installed service reports `running` and `lsof` reports `*:8000`, while loopback HTTP connection attempts fail. That inconsistent liveness surface is recorded without interpretation and does not weaken the containment failure.
+- The installed wildcard artifact's source revision remains unverified. The replacement artifacts were rendered from exact HEAD `552544a9df6b51de9445f279aa50987452f2e395` but were not installed.
+
+### Sanitized commands used
+
+```bash
+git status --short --branch
+git rev-parse HEAD
+git log -1 --oneline
+git merge-base --is-ancestor 552544a9df6b51de9445f279aa50987452f2e395 HEAD
+plutil -extract Label raw -o - /Library/LaunchDaemons/com.resonant.whooshd.plist
+plutil -extract ProgramArguments json -o - /Library/LaunchDaemons/com.resonant.whooshd.plist
+plutil -extract EnvironmentVariables.WHOOSHD_HOST raw -o - /Library/LaunchDaemons/com.resonant.whooshd.plist
+plutil -extract EnvironmentVariables.WHOOSHD_PORT raw -o - /Library/LaunchDaemons/com.resonant.whooshd.plist
+launchctl print system/com.resonant.whooshd
+lsof -nP -iTCP:8000 -sTCP:LISTEN
+ps -o pid=,ppid=,user=,lstart=,command= -p 978
+curl -fsS --connect-timeout 2 --max-time 5 http://127.0.0.1:8000/health
+
+python3 ops/launchd/render_launchd_plists.py \
+  --output-dir .local/launchd \
+  --whooshd-root "/Volumes/Dev_SSD/ResonantConstructs/Whoosh'd" \
+  --user chriscastillo \
+  --model-registry-path configs/models.friends-family-guest.yaml \
+  --dry-run
+
+plutil -lint .local/launchd/com.resonant.whooshd.plist
+plutil -lint .local/launchd/com.resonant.mlx-vlm-gemma12b.plist
+bash -n ops/launchd/install_local_launchd.sh
+bash -n scripts/smoke/whooshd_12b_smoke.sh
+bash ops/launchd/install_local_launchd.sh dry-run
+
+# Invoked through macOS native administrator authorization:
+cd '<temporary-repository-symlink>' && /bin/bash ops/launchd/install_local_launchd.sh install
+```
+
+### Not proven by the second attempt
+
+- Loopback-only containment
+- Local health after repair
+- Docker bridge reachability through `host.docker.internal`
+- Direct non-loopback denial
+- Restart-stable containment
+- Model generation or model-specific readiness
+- Authenticated LAN, Tailscale, sidecar trust, remote-node, service-authentication, or mTLS modes
+
+### Second-attempt resume condition
+
+Completion still requires valid macOS administrator authorization for the checked-in installer, followed by every mandatory listener, loopback health, Docker bridge, non-loopback denial, and restart-stability probe. Until all of those succeed in one execution window, the final outcome remains `BLOCKED`.
