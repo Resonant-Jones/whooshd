@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 
 from whooshd.runtime.threadwake.policy import (
     SnapshotEligibility,
@@ -16,13 +17,16 @@ from whooshd.runtime.threadwake.replay_analysis import (
 )
 
 
+RECENT_LAST_SEEN = datetime.now(timezone.utc).isoformat()
+
+
 def _record(**overrides):
     defaults = {
         "prefix_hash": "abc", "backend": "mlx", "model_id": "m",
         "seen_count": 10, "average_candidate_score": 0.90,
         "average_potential_saved_ratio": 0.75,
         "potential_saved_tokens_total": 3000,
-        "confidence": "high", "last_seen_at": "2026-06-15T00:00:00+00:00",
+        "confidence": "high", "last_seen_at": RECENT_LAST_SEEN,
     }
     defaults.update(overrides)
     return CandidateReplayRecord(**defaults)
