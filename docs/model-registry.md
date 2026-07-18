@@ -265,6 +265,26 @@ Existing registry entries created before this vision-detection correction
 may need to be re-registered manually if they were misclassified as
 vision-capable.
 
+### Local MLX import workflow
+
+Whoosh'd includes a narrow CLI workflow for consolidating local MLX
+cache snapshots into the managed store:
+
+```bash
+whoosh import-models
+```
+
+By default, the importer bootstraps `~/whooshd-models/` or the path in
+`WHOOSHD_MODEL_STORE_ROOT`, scans the common Hugging Face cache roots,
+selects active snapshots from `refs/main`, inspects them with
+`inspect_model_candidate()`, writes candidate records, registers
+compatible models, and then reports the models that are advertisable in
+`/v1/models`.
+
+Use `--store-root` to point at a different managed store and
+`--scan-root` to add explicit cache roots when the defaults are not
+enough.
+
 ### Why registration ≠ runtime visibility
 
 A registered model is *known* to Whoosh'd but not yet *advertised* or

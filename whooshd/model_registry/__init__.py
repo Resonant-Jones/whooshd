@@ -23,6 +23,15 @@ from whooshd.model_registry.compatibility import (
 from whooshd.model_registry.inventory import (
     collect_advertisable_registered_models,
 )
+from whooshd.model_registry.imports import (
+    LocalMlxImportRecord,
+    LocalMlxImportReport,
+    LocalMlxSnapshotSource,
+    default_local_mlx_scan_roots,
+    discover_local_mlx_snapshot_sources,
+    format_local_mlx_import_report,
+    import_local_mlx_models,
+)
 from whooshd.model_registry.contracts import (
     ModelCandidate,
     ModelCandidateFormat,
@@ -44,10 +53,17 @@ from whooshd.model_registry.registration import register_model_candidate
 __all__ = [
     "bootstrap_model_store",
     "collect_advertisable_registered_models",
+    "default_local_mlx_scan_roots",
+    "discover_local_mlx_snapshot_sources",
+    "format_local_mlx_import_report",
     "inspect_model_candidate",
+    "import_local_mlx_models",
     "register_model_candidate",
     "validate_registered_model_compatibility",
     "write_candidate_record",
+    "LocalMlxImportRecord",
+    "LocalMlxImportReport",
+    "LocalMlxSnapshotSource",
     "ModelCandidate",
     "ModelCandidateFormat",
     "ModelCandidateInspectionResult",

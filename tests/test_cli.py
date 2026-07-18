@@ -38,7 +38,9 @@ def test_help_output_is_product_shaped(capsys):
         assert "whoosh -d" in help_text
         assert "whoosh down" in help_text
         assert "whoosh status" in help_text
+        assert "whoosh doctor" in help_text
         assert "whoosh logs" in help_text
+        assert "whoosh import-models" in help_text
         assert "Usage: python -m uvicorn" not in help_text
 
 
@@ -200,6 +202,35 @@ def test_status_reports_probe_states(isolated_home, monkeypatch, capsys):
     assert "v1/models: HTTP 200" in out
 
 
+def test_import_models_command_dispatches_to_import_workflow(monkeypatch, capsys):
+    captured: dict[str, object] = {}
+
+    def fake_import(store_root=None, scan_roots=None):
+        captured["store_root"] = store_root
+        captured["scan_roots"] = scan_roots
+        return SimpleNamespace(
+            error=None,
+            store_root="/tmp/whooshd-models",
+            scan_roots=["/tmp/cache"],
+            sources=[],
+            records=[],
+            advertisable_models=[],
+        )
+
+    monkeypatch.setattr(cli, "import_local_mlx_models", fake_import)
+    monkeypatch.setattr(
+        cli,
+        "format_local_mlx_import_report",
+        lambda report: f"store={report.store_root}",
+    )
+
+    assert cli.main(["import-models", "--store-root", "/tmp/whooshd-models"]) == 0
+    out = capsys.readouterr().out
+    assert "store=/tmp/whooshd-models" in out
+    assert captured["store_root"] == "/tmp/whooshd-models"
+    assert captured["scan_roots"] is None
+
+
 def test_stop_timeout_without_force_leaves_pid_file(isolated_home, monkeypatch, capsys):
     pid_file = isolated_home / ".whooshd" / "whooshd.pid"
     pid_file.parent.mkdir()
@@ -292,3 +323,111 @@ def test_logs_print_tail(isolated_home, capsys):
 
     assert cli.main(["logs", "--tail", "3"]) == 0
     assert capsys.readouterr().out.splitlines() == ["line 17", "line 18", "line 19"]
+
+
+def test_doctor_flags_configured_model_not_advertised(isolated_home, monkeypatch, capsys):
+    pid_file = isolated_home / ".whooshd" / "whooshd.pid"
+    pid_file.parent.mkdir()
+    pid_file.write_text("4242\n")
+
+    monkeypatch.setattr(cli, "is_process_alive", lambda pid: True)
+    monkeypatch.setattr(cli, "is_process_group_alive", lambda pid: True)
+    monkeypatch.setenv("WHOOSHD_ADAPTER", "stub")
+    monkeypatch.setenv("WHOOSHD_MLX_ENABLED", "true")
+    monkeypatch.setenv("WHOOSHD_MLX_MODEL", "mlx-community/Llama-3.2-3B-Instruct-4bit")
+
+    responses = {
+        "/health": (
+            200,
+            (
+                '{"ok": true, "runner": "whooshd", "version": "test", '
+                '"status": "ready", "model_lifecycle": "ready", '
+                '"active_model": "stub-model", "queue_depth": 0, '
+                '"active_jobs": 0, "memory": {"pressure": "normal", '
+                '"total_gb": 32, "used_gb": 8, "available_gb": 24}}'
+            ),
+        ),
+        "/ready": (
+            200,
+            (
+                '{"ready": true, "status": "ready", "model_lifecycle": "ready", '
+                '"adapter": "multi-runtime", "configured_model": "stub-model", '
+                '"loaded_model": null, "reason": null}'
+            ),
+        ),
+        "/v1/models": (
+            200,
+            '{"object": "list", "data": [{"id": "stub-model", "object": "model"}]}',
+        ),
+    }
+    monkeypatch.setattr(cli, "fetch_json", lambda host, port, path, timeout=2.0: responses[path])
+
+    assert cli.main(["doctor"]) == 1
+    out = capsys.readouterr().out
+    assert "local_model_resolution_error" in out
+    assert "configured_model_not_advertised_by_whooshd" in out
+    assert "WHOOSHD_ADAPTER=stub" in out
+    assert "whoosh up --adapter mlx" in out
+
+
+def test_doctor_detects_model_store_not_bootstrapped(isolated_home, monkeypatch, capsys):
+    pid_file = isolated_home / ".whooshd" / "whooshd.pid"
+    pid_file.parent.mkdir()
+    pid_file.write_text("4242\n")
+
+    store_root = isolated_home / "whooshd-models"
+    store_root.mkdir()
+
+    monkeypatch.setattr(cli, "is_process_alive", lambda pid: True)
+    monkeypatch.setattr(cli, "is_process_group_alive", lambda pid: True)
+    monkeypatch.setenv("WHOOSHD_ADAPTER", "mlx")
+    monkeypatch.setenv("WHOOSHD_MLX_ENABLED", "true")
+    monkeypatch.setenv("WHOOSHD_MLX_MODEL", "mlx-community/Llama-3.2-3B-Instruct-4bit")
+    monkeypatch.setenv("WHOOSHD_MODEL_STORE_ROOT", str(store_root))
+
+    responses = {
+        "/health": (
+            200,
+            (
+                '{"ok": true, "runner": "whooshd", "version": "test", '
+                '"status": "ready", "model_lifecycle": "ready", '
+                '"active_model": "mlx-community/Llama-3.2-3B-Instruct-4bit", '
+                '"queue_depth": 0, "active_jobs": 0, '
+                '"memory": {"pressure": "normal", "total_gb": 32, "used_gb": 8, '
+                '"available_gb": 24}}'
+            ),
+        ),
+        "/ready": (
+            200,
+            (
+                '{"ready": true, "status": "ready", "model_lifecycle": "ready", '
+                '"adapter": "multi-runtime", '
+                '"configured_model": "mlx-community/Llama-3.2-3B-Instruct-4bit", '
+                '"loaded_model": null, "reason": null}'
+            ),
+        ),
+        "/v1/models": (200, '{"object": "list", "data": []}'),
+    }
+    monkeypatch.setattr(cli, "fetch_json", lambda host, port, path, timeout=2.0: responses[path])
+
+    assert cli.main(["doctor"]) == 1
+    out = capsys.readouterr().out
+    assert "local_model_resolution_error" in out
+    assert "model_store_not_bootstrapped" in out
+    assert "registry/models.json is missing" in out
+    assert "bootstrap_model_store()" in out
+
+
+def test_doctor_reports_stale_pid(isolated_home, monkeypatch, capsys):
+    pid_file = isolated_home / ".whooshd" / "whooshd.pid"
+    pid_file.parent.mkdir()
+    pid_file.write_text("9999\n")
+
+    monkeypatch.setattr(cli, "is_process_alive", lambda pid: False)
+    monkeypatch.setattr(cli, "is_process_group_alive", lambda pid: False)
+    monkeypatch.setattr(cli, "fetch_json", lambda host, port, path, timeout=2.0: (None, "offline"))
+
+    assert cli.main(["doctor"]) == 1
+    out = capsys.readouterr().out
+    assert "stale_pid" in out
+    assert "Tracking state: stale" in out
