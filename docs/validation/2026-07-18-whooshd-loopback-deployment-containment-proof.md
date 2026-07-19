@@ -1,6 +1,18 @@
 # Whoosh'd Loopback Deployment Containment Proof
 
-## Outcome
+## Current outcome
+
+`PASS`
+
+CWC-H01B-R3 completed the convergent installation and every mandatory
+containment, availability, Docker bridge, real-generation, and restart-stability
+probe from exact local source HEAD
+`6b7b65513e1c4e8ee95e3303f8dbf18614fdea4c`. The live service pair is now
+registered, healthy, and bound only to loopback. See the fifth execution section
+for the current proof. All earlier BLOCKED and FAIL attempts remain below as the
+historical repair record.
+
+## First attempt outcome
 
 `BLOCKED`
 
@@ -641,3 +653,202 @@ bootstrap, ensure both jobs either reach their intended registered state or fail
 with an explicit recoverable receipt, and add controlled tests for repeated
 installation. After that repair, rerun CWC-H01B from a fresh exact HEAD and
 complete all containment, Docker, generation, and restart-stability probes.
+
+---
+
+## Fifth attempt — CWC-H01B-R3 — 2026-07-19
+
+### Final outcome
+
+Final outcome: `PASS`
+
+Outcome: `PASS`
+
+The convergent installer completed from an initially absent two-service state,
+and then completed again from an initially registered-running state for the
+restart-stability proof. Whoosh'd and MLX-VLM remained loopback-only, healthy,
+Docker-reachable through `host.docker.internal`, unreachable through an active
+non-loopback host address, and capable of real Gemma alias generation before
+and after restart.
+
+### Execution window and repository identity
+
+- Date: 2026-07-19
+- Window: 10:59:37-13:58:07 EDT
+- Branch: `codex/authoritative-runtime-registry`
+- Exact local HEAD tested: `6b7b65513e1c4e8ee95e3303f8dbf18614fdea4c`
+- CWC-H01B.2 implementation commit:
+  `6b7b65513e1c4e8ee95e3303f8dbf18614fdea4c`
+- Initial and final source worktree status: only the unrelated untracked
+  `.venv311/` directory.
+- The tested source commit was local during the execution window. Remote
+  publication was intentionally deferred until after proof capture.
+
+### Pre-install state
+
+- `system/com.resonant.whooshd`: absent; exact-target query exit `113`.
+- `system/com.resonant.mlx-vlm-gemma12b`: absent; exact-target query exit `113`.
+- Listener on port `8000`: none.
+- Listener on port `8082`: none.
+- Installer lock: absent.
+- Both installed plist files were `root:wheel`, mode `0644`, and passed
+  `plutil -lint`.
+- The installed Whoosh'd plist already contained the explicit `.venv311`
+  interpreter and loopback arguments, but neither definition was registered.
+
+### Render and pre-install validation
+
+The current templates were freshly rendered into ignored `.local/launchd/`
+output from the exact tested HEAD with:
+
+- `WHOOSHD_PYTHON=/Volumes/Dev_SSD/ResonantConstructs/Whoosh'd/.venv311/bin/python`
+- `WHOOSHD_HOST=127.0.0.1`
+- `WHOOSHD_PORT=8000`
+- Whoosh'd arguments `--host 127.0.0.1 --port 8000`
+- MLX-VLM arguments `--host 127.0.0.1 --port 8082`
+- `configs/models.friends-family-guest.yaml`, preserving the existing deployed
+  registry and alias behavior
+- no `--codexify`, `0.0.0.0`, or IPv6 wildcard argument
+
+Both plists passed `plutil -lint`. The explicit interpreter preflight passed.
+The convergent installer dry-run passed with its launchctl and sudo command
+surfaces disabled, proving that no mutation or launchd query occurred during
+that validation.
+
+### Initial convergent installation
+
+The human operator ran once from a foreground Terminal:
+
+```bash
+sudo -v && bash ops/launchd/install_local_launchd.sh install
+```
+
+The installer reported:
+
+- initial Whoosh'd state: `absent`
+- initial MLX-VLM state: `absent`
+- no removal required for either label
+- Whoosh'd bootstrap: `registered-not-running`
+- MLX-VLM bootstrap: `registered-not-running`
+- Whoosh'd kickstart: `registered-running`
+- MLX-VLM kickstart: `registered-running`
+- final bundle result: `Install converged`
+
+The installer completed its plist, interpreter, target-path, ownership/mode,
+registration, kickstart, and final registration gates. Its machine-local lock
+was absent after completion.
+
+### Initial service identities and listeners
+
+- Whoosh'd LaunchDaemon: `system/com.resonant.whooshd`
+- Whoosh'd PID: `163`, parent PID `1`, owner `chriscastillo`
+- Whoosh'd effective command: Python 3.11 running
+  `uvicorn whooshd.app:app --host 127.0.0.1 --port 8000`
+- Whoosh'd listener: `127.0.0.1:8000` only
+- MLX-VLM LaunchDaemon: `system/com.resonant.mlx-vlm-gemma12b`
+- MLX-VLM PID: `196`, parent PID `1`, owner `chriscastillo`
+- MLX-VLM effective command: Python 3.11 running `mlx_vlm server` with
+  `--host 127.0.0.1 --port 8082`
+- MLX-VLM listener: `127.0.0.1:8082` only
+
+`lsof` reported only the two explicit IPv4 loopback listeners. It reported no
+wildcard, LAN-address, or Tailscale-address listener on either service port.
+
+### Initial containment and availability probes
+
+- Whoosh'd `GET /health`: HTTP `200`, `ok=true`, `status=ready`,
+  `model_lifecycle=ready`.
+- MLX-VLM `GET /v1/models`: HTTP `200`, two upstream identifiers returned.
+- Whoosh'd `GET /v1/models`: HTTP `200`; inventory contained
+  `gemma-4-12b-it-qat-4bit`.
+- Real `POST /v1/chat/completions` requested the
+  `gemma-4-12b-it-qat-4bit` alias and returned HTTP `200`, finish reason `stop`,
+  and exact assistant text `operational`.
+- `bash scripts/smoke/whooshd_12b_smoke.sh`: `PASS`; upstream inventory,
+  Whoosh'd alias inventory, and an additional real exact-text generation all
+  succeeded.
+- Docker bridge from the running `codexify_tester-backend-1` container:
+  Whoosh'd health HTTP `200`, `ok=true`; inventory HTTP `200` and expected alias
+  present through `http://host.docker.internal:8000`.
+- Direct probe through the active default-route non-loopback address: denied
+  with curl exit `7` and HTTP `000`. The address itself was not recorded.
+
+### Convergent restart
+
+The human operator invoked the same supported installer once for restart
+stability. It reported both initial service states as `registered-running`, then:
+
+- Whoosh'd removal confirmed absent on polling attempt `2`.
+- MLX-VLM removal confirmed absent on polling attempt `4`.
+- Both bootstraps confirmed `registered-not-running`.
+- Both kickstarts retained `registered-running`.
+- Final bundle result: `Install converged`.
+
+No blind retry, raw manual bootstrap, competing foreground process, hand-edited
+plist, or source repair occurred during the proof window.
+
+### Post-restart service identities and listeners
+
+- Whoosh'd PID: `9574`, parent PID `1`, owner `chriscastillo`.
+- Whoosh'd process start: 11:21:58 EDT.
+- Whoosh'd listener: `127.0.0.1:8000` only.
+- MLX-VLM PID: `9616`, parent PID `1`, owner `chriscastillo`.
+- MLX-VLM process start: 11:22:03 EDT.
+- MLX-VLM listener: `127.0.0.1:8082` only.
+- Both exact-target launchctl queries returned exit `0` in the final snapshot.
+- Installer lock: absent.
+
+The changed PIDs and later start times prove that the post-restart probes ran
+against new service processes rather than reusing the initial baseline.
+
+### Post-restart containment and availability probes
+
+- Whoosh'd `GET /health`: HTTP `200`, `ok=true`, `status=ready`,
+  `model_lifecycle=ready`.
+- MLX-VLM inventory: HTTP `200`, two upstream identifiers returned.
+- Whoosh'd inventory: HTTP `200`; expected Gemma alias present.
+- Fresh real alias generation: HTTP `200`, finish reason `stop`, exact assistant
+  text `operational`.
+- Docker bridge from the running `codexify-dashboard-proof-backend` container:
+  health HTTP `200`, `ok=true`; inventory HTTP `200`, expected alias present.
+- Direct active non-loopback probe: denied with curl exit `7`, HTTP `000`.
+- Final stability snapshot at 13:58:07 EDT: both exact jobs registered, both
+  loopback listeners present, Whoosh'd health successful, and installer lock
+  absent.
+
+The first selected post-restart Docker container stopped before it could return
+application evidence. That command produced no bridge claim. The probe was
+repeated only against a different container that was currently running and
+healthy; its explicit HTTP and alias results are the Docker evidence above.
+
+### Mandatory proof matrix
+
+- Installation converged: `PASS`
+- Both LaunchDaemons registered: `PASS`
+- Whoosh'd loopback-only listener: `PASS`
+- MLX-VLM loopback-only listener: `PASS`
+- No wildcard/LAN/Tailscale listener: `PASS`
+- Loopback health: `PASS`
+- MLX-VLM inventory: `PASS`
+- Whoosh'd expected alias inventory: `PASS`
+- Real alias generation: `PASS`
+- Runbook smoke: `PASS`
+- Docker bridge reachability: `PASS`
+- Direct non-loopback denial: `PASS`
+- Restart-stable registration: `PASS`
+- Restart-stable listeners and health: `PASS`
+- Restart-stable Docker bridge and denial: `PASS`
+- Restart-stable inventory and real generation: `PASS`
+
+### Scope and remaining unproven modes
+
+This artifact proves the runbook-managed single-node localhost deployment and
+Docker host bridge only. It does not prove or claim authenticated LAN service,
+Tailscale-exposed service, remote-node operation, sidecar authentication,
+service-to-service authentication, mTLS, reboot survival, or whole-Codexify chat
+completion. Those remain separate modes or proof tasks.
+
+No source, plist template, model registry, alias, adapter, queue, ThreadWake,
+Codexify configuration, virtual environment, or user-data file was modified by
+the live proof. Only ignored generated plist output and this proof receipt were
+written.
