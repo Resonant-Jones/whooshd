@@ -33,12 +33,13 @@ fi
 
 if [[ ! -f "$WHOOSHD_PLIST" || ! -f "$MLX_VLM_PLIST" ]]; then
   echo "Rendered plists not found in $OUTPUT_DIR"
-  echo "Run: python3 ops/launchd/render_launchd_plists.py --output-dir \"$OUTPUT_DIR\" --dry-run"
+  echo "Render again with --whooshd-python /absolute/path/to/python; see docs/ops/whooshd-launchd-local-runtime.md"
   exit 1
 fi
 
 plutil -lint "$WHOOSHD_PLIST"
 plutil -lint "$MLX_VLM_PLIST"
+python3 "$SCRIPT_DIR/validate_whooshd_python.py" --plist "$WHOOSHD_PLIST"
 
 echo "Validated:"
 echo "  $WHOOSHD_PLIST"

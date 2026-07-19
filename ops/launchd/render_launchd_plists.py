@@ -8,6 +8,8 @@ import html
 from pathlib import Path
 import sys
 
+from validate_whooshd_python import PythonPreflightError, validate_whooshd_python
+
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 TEMPLATE_DIR = Path(__file__).resolve().parent
@@ -83,6 +85,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--whooshd-root", default="/Volumes/Dev_SSD/ResonantConstructs/Whoosh'd")
     parser.add_argument("--user", default="chriscastillo")
     parser.add_argument("--whooshd-launcher", default="/Users/chriscastillo/.local/bin/whooshd")
+    parser.add_argument(
+        "--whooshd-python",
+        required=True,
+        help="Absolute path to the validated Python interpreter for the Whoosh'd service.",
+    )
     parser.add_argument("--whooshd-label", default="com.resonant.whooshd")
     parser.add_argument("--mlx-vlm-label", default="com.resonant.mlx-vlm-gemma12b")
     parser.add_argument("--model-registry-path", default="configs/models.yaml")
@@ -119,6 +126,10 @@ def main() -> int:
     _require_dir(whooshd_root, "Whoosh'd root")
     _require_file(registry_path, "Model registry")
     _require_file(whooshd_launcher, "Whoosh'd launcher")
+    try:
+        whooshd_python = validate_whooshd_python(args.whooshd_python, whooshd_root)
+    except PythonPreflightError as exc:
+        raise SystemExit(str(exc)) from exc
     _require_file(mlx_vlm_python, "MLX-VLM Python")
     if not mlx_vlm_model_path.exists():
         raise SystemExit(f"MLX-VLM model path not found: {mlx_vlm_model_path}")
@@ -134,6 +145,7 @@ def main() -> int:
         **common,
         "WHOOSHD_LABEL": args.whooshd_label,
         "WHOOSHD_LAUNCHER": str(whooshd_launcher),
+        "WHOOSHD_PYTHON": str(whooshd_python),
         "WHOOSHD_ROOT": str(whooshd_root),
         "WHOOSHD_MODEL_REGISTRY_PATH": str(registry_path),
         "WHOOSHD_MLX_ENABLED": "true",

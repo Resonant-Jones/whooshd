@@ -55,20 +55,36 @@ The bundle intentionally avoids `whooshd --codexify` because the current local
 launcher implementation forces `0.0.0.0:8000` when that flag is present. For
 the launchd path we want the bind host to remain renderer-controlled.
 
+The Whoosh'd Python interpreter is also renderer-controlled. It has no implicit
+default: the operator must provide one absolute machine-local path, and that
+exact path is written to the generated plist as `WHOOSHD_PYTHON`. The renderer
+does not select `.venv`, `.venv311`, system Python, or a `PATH` candidate.
+
 ## Render
 
 From the Whoosh'd repo root:
 
 ```bash
+WHOOSHD_PYTHON="$PWD/.venv311/bin/python"
+
 python3 ops/launchd/render_launchd_plists.py \
   --output-dir .local/launchd \
   --whooshd-root "/Volumes/Dev_SSD/ResonantConstructs/Whoosh'd" \
+  --whooshd-python "$WHOOSHD_PYTHON" \
   --user chriscastillo \
   --dry-run
 ```
 
 This writes concrete plists into `.local/launchd/` and prints the exact
 install commands without calling `sudo`.
+
+The selected interpreter must be an absolute path to an existing executable.
+Before rendering, it is launched from the Whoosh'd repository root and must
+successfully import `fastapi`, `uvicorn`, `pydantic_core._pydantic_core`, and
+`whooshd.app`. Any missing path, non-executable file, failed import, native
+extension failure, timeout, or missing success marker stops rendering. VaultNode
+currently proves `.venv311/bin/python`; that is machine-local evidence, not a
+portable repository-wide interpreter requirement.
 
 ## Validate
 
@@ -96,12 +112,43 @@ bash ops/launchd/install_local_launchd.sh install
 The installer:
 
 - validates both generated plists with `plutil -lint`
+- reads `WHOOSHD_PYTHON` and `WHOOSHD_ROOT` back from the rendered Whoosh'd plist
+- repeats the complete interpreter/import preflight before the first `sudo`
 - backs up the existing `com.resonant.whooshd.plist` before replacement
 - copies both plists into `/Library/LaunchDaemons/`
 - sets `root:wheel` ownership and `0644` permissions
 - `bootout`s old jobs before `bootstrap` + `kickstart`
 
 It never stores credentials and relies on operator-provided `sudo`.
+
+Interpreter validation occurs before any installed plist is copied and before
+either service is unloaded. A stale, missing, non-executable, or incompatible
+machine-local Python therefore fails closed without converting a running service
+into an outage.
+
+## Diagnose Python preflight failures
+
+Use the same absolute value supplied to `--whooshd-python`:
+
+```bash
+WHOOSHD_PYTHON="$PWD/.venv311/bin/python"
+
+"$WHOOSHD_PYTHON" -c '
+import fastapi
+import uvicorn
+import pydantic_core._pydantic_core
+import whooshd.app
+print("Whoosh launchd Python imports: OK")
+'
+
+python3 ops/launchd/validate_whooshd_python.py \
+  --python "$WHOOSHD_PYTHON" \
+  --whooshd-root "$PWD"
+```
+
+If the preflight fails, repair or deliberately replace that machine-local
+environment, then render again with its explicit absolute path. Do not rename or
+remove another environment to trigger launcher fallback behavior.
 
 ## Proof Commands
 
