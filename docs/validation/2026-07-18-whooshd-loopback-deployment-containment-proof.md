@@ -485,3 +485,159 @@ rg -n "WHOOSHD_PYTHON|PYTHON_BIN" /Users/chriscastillo/.local/bin/whooshd ops/la
 ### Required next atomic task
 
 Repair the launchd renderer/template and runbook so the Whoosh'd interpreter is explicit and validated before installation. The smallest compatible change is to add a renderer option and plist environment entry for `WHOOSHD_PYTHON`, render the known-good `.venv311/bin/python` path for this deployment, validate that path during render/install, and cover the selection with focused tests. After that task lands, rerun CWC-H01B from a fresh exact HEAD and complete all mandatory live probes.
+
+---
+
+## Fourth attempt — CWC-H01B-R2 — 2026-07-19
+
+### Final outcome
+
+Final outcome: `FAIL`
+
+Outcome: `FAIL`
+
+CWC-H01B.1 successfully made the launchd Python selection explicit and its
+preflight passed against `.venv311`. The newly rendered and installed Whoosh'd
+plist therefore contained the correct interpreter and loopback bind. The
+checked-in installer nevertheless failed at its first `launchctl bootstrap`
+command on two consecutive foreground-Terminal executions, each time returning
+`Bootstrap failed: 5: Input/output error` and stopping before it could bootstrap
+the MLX-VLM sidecar. After the repeat, neither LaunchDaemon was registered and
+neither required listener existed.
+
+This is not containment PASS. The wildcard listener remains removed, but the
+required loopback-only service pair is unavailable.
+
+### Execution window and repository identity
+
+- Date: 2026-07-19
+- Window: 09:42:43-09:49:44 EDT
+- Branch: `codex/authoritative-runtime-registry`
+- Exact HEAD tested: `a7b056c0b3af1ec5f6f83fb5e9d2a17c1c51b0f9`
+- CWC-H01B.1 repair commit: `a7b056c0b3af1ec5f6f83fb5e9d2a17c1c51b0f9`
+- Prior BLOCKED and FAIL receipts remained in the tested ancestry.
+- Initial and final source worktree status contained only the unrelated,
+  untracked `.venv311/` directory.
+
+### Initial live state
+
+- `system/com.resonant.whooshd`: `spawn scheduled`, active count `0`, last exit
+  code `1`, 437 runs, no stable PID, and no port `8000` listener.
+- Installed Whoosh'd arguments were already loopback-only, but its plist did not
+  yet contain `WHOOSHD_PYTHON`.
+- `system/com.resonant.mlx-vlm-gemma12b`: running as PID `54842`.
+- MLX-VLM listener: `127.0.0.1:8082` only.
+- MLX-VLM inventory returned two upstream identifiers.
+- Whoosh'd loopback health failed to connect because no port `8000` listener
+  existed.
+
+### Render and pre-install validation
+
+The current templates were rendered into ignored `.local/launchd/` output with:
+
+- `WHOOSHD_PYTHON=/Volumes/Dev_SSD/ResonantConstructs/Whoosh'd/.venv311/bin/python`
+- `WHOOSHD_HOST=127.0.0.1`
+- `WHOOSHD_PORT=8000`
+- explicit arguments `--host 127.0.0.1 --port 8000`
+- no `--codexify`, `0.0.0.0`, or wildcard host value
+- `configs/models.friends-family-guest.yaml`, preserving the installed registry
+  and alias behavior from the preceding containment attempts
+
+Both rendered plists passed `plutil -lint`. The standalone interpreter
+preflight and the installer's repeated plist/interpreter preflight passed.
+The installer dry-run completed without mutation.
+
+### Installer executions
+
+The human operator ran the checked-in installer twice from a foreground
+Terminal:
+
+```bash
+sudo -v && bash ops/launchd/install_local_launchd.sh install
+```
+
+Both executions:
+
+1. validated both rendered plists;
+2. validated the explicit `.venv311` interpreter;
+3. copied the rendered plists to `/Library/LaunchDaemons/`;
+4. applied `root:wheel` ownership and `0644` mode;
+5. unloaded the existing jobs; and
+6. stopped at the first Whoosh'd bootstrap with launchctl error `5`.
+
+After the first error, inspection found the new Whoosh'd job registered and
+running as PID `67801` on `127.0.0.1:8000`, while the sidecar remained absent
+because the installer had exited before its bootstrap command. Repeating the
+same documented installer was therefore the smallest bounded way to retry the
+incomplete bundle installation.
+
+The repeat returned the same bootstrap error. At 09:48:20 EDT, and again in a
+delayed stability check at 09:49:44 EDT, launchd reported that neither service
+existed in the system domain. No manual bootstrap, hand-edited plist, competing
+foreground process, or source repair was attempted.
+
+### Installed artifacts after failure
+
+- `/Library/LaunchDaemons/com.resonant.whooshd.plist`: `root:wheel`, `0644`,
+  `plutil` valid.
+- `/Library/LaunchDaemons/com.resonant.mlx-vlm-gemma12b.plist`: `root:wheel`,
+  `0644`, `plutil` valid.
+- Installed `WHOOSHD_PYTHON`:
+  `/Volumes/Dev_SSD/ResonantConstructs/Whoosh'd/.venv311/bin/python`.
+- Installed Whoosh'd bind: `127.0.0.1:8000` with no `--codexify` argument.
+- Registered launchd jobs after the repeated failure: none.
+- Process identities after the repeated failure: none for either service.
+- Listeners after the repeated failure: none on ports `8000` or `8082`.
+
+### Required proof results
+
+- Listener containment: `FAIL`. No wildcard listener exists, but the required
+  loopback listeners are also absent.
+- Loopback health: `FAIL`; connection to `127.0.0.1:8000` was refused.
+- Docker bridge: `FAIL` by mandatory-proof policy; no host port `8000` listener
+  existed to probe through `host.docker.internal`.
+- Non-loopback denial: not credited as containment proof because the intended
+  local service was also unavailable.
+- Upstream inventory after install: `FAIL`; connection to
+  `127.0.0.1:8082/v1/models` was refused.
+- Whoosh'd model inventory: `FAIL`; connection to
+  `127.0.0.1:8000/v1/models` was refused.
+- Real Gemma alias generation: not reached because neither service was running.
+- `scripts/smoke/whooshd_12b_smoke.sh`: not run because its required local
+  endpoints were absent.
+- Restart stability: `FAIL`; the documented installation/restart procedure did
+  not establish a running baseline and the delayed recheck remained unloaded.
+
+### Newly exposed installer defect
+
+The source defect is in the checked-in installer's launchd transition path, not
+the repaired Python selection. The installer treats the first bootstrap error as
+fatal and exits before attempting the sidecar bootstrap. Across the two observed
+executions, the same command sequence produced inconsistent partial state: the
+first left Whoosh'd registered despite reporting error `5`; the second left both
+jobs absent. The exact internal launchd reason for error `5` is not proven, but
+the repository procedure is demonstrably not idempotent or completion-safe for
+this system-domain replacement sequence.
+
+Per the task boundary, this proof records the defect and stops. It does not
+repair installer sequencing or bypass the installer with manual service starts.
+
+### Remaining unproven modes
+
+- Healthy loopback Whoosh'd deployment
+- Docker bridge reachability through `host.docker.internal`
+- Direct non-loopback denial while the loopback service is healthy
+- Gemma alias inventory and real generation through Whoosh'd
+- Restart-stable containment and availability
+- Authenticated LAN, Tailscale, sidecar-trust, remote-node,
+  service-authentication, and mTLS deployment modes
+
+### Required next atomic task
+
+Repair and test the launchd installer transition so replacing already managed
+system jobs is idempotent and completion-safe. The task should resolve the first
+bootstrap error deterministically, wait for or verify bootout completion before
+bootstrap, ensure both jobs either reach their intended registered state or fail
+with an explicit recoverable receipt, and add controlled tests for repeated
+installation. After that repair, rerun CWC-H01B from a fresh exact HEAD and
+complete all containment, Docker, generation, and restart-stability probes.
