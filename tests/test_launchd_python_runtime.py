@@ -81,6 +81,9 @@ def test_valid_interpreter_is_rendered_without_changing_sidecar_shape(tmp_path: 
         check=False,
     )
     assert result.returncode == 0, result.stderr
+    assert "Suggested convergent install command:" in result.stdout
+    assert "install_local_launchd.sh" in result.stdout
+    assert "sudo launchctl" not in result.stdout
 
     output_dir = tmp_path / "rendered"
     with (output_dir / "com.resonant.whooshd.plist").open("rb") as handle:
@@ -147,9 +150,11 @@ def test_required_import_failure_fails_closed(tmp_path: Path) -> None:
 def test_installer_preflight_precedes_any_service_mutation() -> None:
     source = INSTALLER.read_text()
     preflight = source.index('validate_whooshd_python.py" --plist')
-    first_mutation = source.index('\nsudo cp "$WHOOSHD_TARGET"')
-    first_bootout = source.index('\nsudo launchctl bootout')
+    lock = source.rindex("\nacquire_lock\n")
+    first_mutation = source.index('\n  "$SUDO_BIN" cp "$WHOOSHD_TARGET"')
+    first_bootout = source.index('\nif ! remove_if_registered "$WHOOSHD_LABEL"')
 
+    assert preflight < lock
     assert preflight < first_mutation
     assert preflight < first_bootout
 

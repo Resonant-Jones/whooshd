@@ -53,30 +53,18 @@ def _resolve_registry_path(whooshd_root: Path, raw_value: str) -> Path:
     return rooted
 
 
-def _print_install_commands(output_dir: Path, whooshd_label: str, mlx_vlm_label: str) -> None:
+def _print_install_guidance(output_dir: Path, whooshd_label: str, mlx_vlm_label: str) -> None:
     whooshd_plist = output_dir / f"{whooshd_label}.plist"
     mlx_vlm_plist = output_dir / f"{mlx_vlm_label}.plist"
-    whooshd_sys = Path("/Library/LaunchDaemons") / whooshd_plist.name
-    mlx_vlm_sys = Path("/Library/LaunchDaemons") / mlx_vlm_plist.name
-    backup = Path("/Library/LaunchDaemons") / f"{whooshd_plist.name}.bak"
+    installer = REPO_ROOT / "ops" / "launchd" / "install_local_launchd.sh"
 
     print()
     print("Validation:")
     print(f"  plutil -lint {whooshd_plist}")
     print(f"  plutil -lint {mlx_vlm_plist}")
     print()
-    print("Suggested install commands:")
-    print(f"  sudo cp {whooshd_sys} {backup} 2>/dev/null || true")
-    print(f"  sudo cp {whooshd_plist} {whooshd_sys}")
-    print(f"  sudo cp {mlx_vlm_plist} {mlx_vlm_sys}")
-    print(f"  sudo chown root:wheel {whooshd_sys} {mlx_vlm_sys}")
-    print(f"  sudo chmod 644 {whooshd_sys} {mlx_vlm_sys}")
-    print(f"  sudo launchctl bootout system/{whooshd_label} 2>/dev/null || true")
-    print(f"  sudo launchctl bootout system/{mlx_vlm_label} 2>/dev/null || true")
-    print(f"  sudo launchctl bootstrap system {whooshd_sys}")
-    print(f"  sudo launchctl bootstrap system {mlx_vlm_sys}")
-    print(f"  sudo launchctl kickstart -k system/{whooshd_label}")
-    print(f"  sudo launchctl kickstart -k system/{mlx_vlm_label}")
+    print("Suggested convergent install command:")
+    print(f'  sudo -v && OUTPUT_DIR="{output_dir}" bash "{installer}" install')
 
 
 def parse_args() -> argparse.Namespace:
@@ -180,7 +168,7 @@ def main() -> int:
     print(f"Rendered {mlx_vlm_plist}")
     if args.dry_run:
         print("Dry run only: no system files were modified.")
-    _print_install_commands(output_dir, args.whooshd_label, args.mlx_vlm_label)
+    _print_install_guidance(output_dir, args.whooshd_label, args.mlx_vlm_label)
     return 0
 
 
