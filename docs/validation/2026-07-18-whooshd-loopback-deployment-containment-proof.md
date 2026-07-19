@@ -296,3 +296,192 @@ cd '<temporary-repository-symlink>' && /bin/bash ops/launchd/install_local_launc
 ### Second-attempt resume condition
 
 Completion still requires valid macOS administrator authorization for the checked-in installer, followed by every mandatory listener, loopback health, Docker bridge, non-loopback denial, and restart-stability probe. Until all of those succeed in one execution window, the final outcome remains `BLOCKED`.
+
+---
+
+## Third attempt — CWC-H01B — 2026-07-19
+
+### Final outcome
+
+Final outcome: `FAIL`
+
+Outcome: `FAIL`
+
+CWC-H01A established that direct `sudo` worked twice in a foreground human-controlled Terminal. The documented installer then completed, and the installed Whoosh'd plist became loopback-only. However, the repaired Whoosh'd service could not start because the current launchd template omitted the previously installed `WHOOSHD_PYTHON` setting. The launcher selected a broken Python 3.14 virtual environment and entered a launchd crash loop. Local health therefore failed, so Docker bridge and restart-stability proof could not proceed.
+
+The original wildcard listener is no longer running. Port `8000` has no listener, which removes the immediate remote exposure but also leaves Whoosh'd unavailable.
+
+### Execution window and repository identity
+
+- Date: 2026-07-19
+- Window: 07:08:33-08:28:41 EDT
+- Branch: `codex/authoritative-runtime-registry`
+- Exact HEAD tested: `2020e65ce9a2a2ff665f9bcc3092a889ca878ab4`
+- First blocked proof commit: `552544a9df6b51de9445f279aa50987452f2e395`
+- Second blocked proof commit: `2020e65ce9a2a2ff665f9bcc3092a889ca878ab4`
+- Both prior proof commits were confirmed in the tested ancestry.
+- Initial worktree status: branch was two commits ahead of its same-named origin branch with only the unrelated untracked `.venv311/` directory.
+- The replacement plist was rendered from the tested source HEAD.
+
+### Operator prerequisite
+
+CWC-H01A: `PASS`.
+
+- Required repository mechanism: direct `sudo`
+- Foreground interactive Terminal: available
+- Direct `sudo`: passed
+- Repeat test: passed
+- macOS error `-60007`: did not recur
+- Service or system mutation during authorization preflight: none
+
+### Service identity before repair
+
+- LaunchDaemon: `system/com.resonant.whooshd`
+- Installed launcher: `/Users/chriscastillo/.local/bin/whooshd`
+- Installed arguments: `/Users/chriscastillo/.local/bin/whooshd --codexify`
+- Installed host: `WHOOSHD_HOST=0.0.0.0`
+- Working directory: `/Volumes/Dev_SSD/ResonantConstructs/Whoosh'd`
+- State: `running`
+- PID: `978`
+- Listener: `TCP *:8000 (LISTEN)`
+- Loopback health: failed with curl exit `7`
+
+The launchd job, executable command, PID 1 parent, working directory, and port owner confirmed the intended Whoosh'd service before mutation.
+
+### Documented repair procedure
+
+1. Re-inspected repository HEAD, proof ancestry, installed plist, launchd job, PID, listener, and health.
+2. Rendered the repository templates into ignored `.local/launchd/` output with explicit `--host 127.0.0.1 --port 8000` arguments.
+3. Supplied the renderer's supported `--model-registry-path configs/models.friends-family-guest.yaml` option to preserve the installed registry target.
+4. Validated both plists with `plutil -lint`, syntax-checked the installer, and ran its dry-run successfully.
+5. The human operator ran `sudo -v && bash ops/launchd/install_local_launchd.sh install` in a foreground Terminal.
+6. The first install attempt copied the plists, unloaded both old jobs, and failed at the first bootstrap with `Bootstrap failed: 5: Input/output error`.
+7. Inspection showed valid `root:wheel` `0644` installed plists, both old jobs unloaded, and no listeners on ports `8000` or `8082`. Bounded launchd logs showed both services had just been removed.
+8. The same documented installer was repeated once after the removal completed. It returned successfully and loaded both jobs.
+9. The MLX-VLM sidecar started on loopback. Whoosh'd entered a launchd crash loop and never established a port `8000` listener.
+
+No plist was hand-edited. No source, model registry, adapter, queue, ThreadWake, Codexify, or user-data file was modified.
+
+### Installed service after repair
+
+- Installed plist: `/Library/LaunchDaemons/com.resonant.whooshd.plist`
+- Ownership and mode: `root:wheel`, `0644`
+- Plist validation: `OK`
+- Arguments: `/Users/chriscastillo/.local/bin/whooshd --host 127.0.0.1 --port 8000`
+- Installed host: `WHOOSHD_HOST=127.0.0.1`
+- `WHOOSHD_PYTHON`: absent from installed plist
+- Launchd state: `spawn scheduled`
+- Runs observed during capture: at least `10`
+- Last exit code: `1`
+- Stable PID: none
+- Listener on port `8000`: none
+
+Listener containment: the wildcard listener is gone and no non-loopback listener exists. Availability containment proof cannot pass because the intended loopback listener is also absent.
+
+### Startup failure and runbook contradiction
+
+The installed launcher resolves Python as follows:
+
+1. use `WHOOSHD_PYTHON` when explicitly set;
+2. otherwise select `$WHOOSHD_ROOT/.venv/bin/python`;
+3. fall back to `.venv311/bin/python` only when `.venv/bin/python` is not executable.
+
+The repaired template does not render `WHOOSHD_PYTHON`. Both environments are executable, so the launcher selected `.venv/bin/python` from Python 3.14. That environment fails to import its Pydantic native extension:
+
+`ModuleNotFoundError: No module named 'pydantic_core._pydantic_core'`
+
+Focused inspection proved:
+
+- launcher `--doctor`: selected `.venv/bin/python`
+- `.venv/bin/python -c 'import pydantic_core._pydantic_core'`: failed
+- `.venv311/bin/python -c 'import pydantic_core._pydantic_core'`: passed
+- the prior installed plist had explicitly used `.venv311/bin/python`
+- the current renderer/template exposes no supported Whoosh'd Python-path option
+
+This is a persistent installer/runbook defect for this machine's documented runtime: the checked-in procedure restores network containment but loses the interpreter selection required for service liveness. Fixing it requires a separate atomic installer/runbook task; this proof task does not authorize that change.
+
+### Loopback health
+
+`curl --noproxy '*' -fsS --connect-timeout 2 --max-time 5 http://127.0.0.1:8000/health`
+
+Result: `FAIL`, curl exit `7`, HTTP `000`. No response body was produced.
+
+This is liveness failure only. Model generation and model-specific readiness were not tested.
+
+### Docker bridge
+
+The Docker bridge probe was not run because the required local health gate failed and no host listener existed on port `8000`.
+
+Result: `FAIL` by the task's mandatory-proof policy; Docker bridge reachability is not proven.
+
+### Non-loopback denial
+
+There was no listener on port `8000` after installation. The required address-specific denial probe was not treated as proof because the intended local service was also unavailable.
+
+Result: direct non-loopback reachability is absent at the listener layer, but the mandatory deployment proof remains `FAIL` because loopback liveness failed.
+
+No private LAN or Tailscale address is recorded.
+
+### Restart stability
+
+No additional restart was performed. The freshly installed service was already crash-looping and had no healthy baseline to restart.
+
+Result: `FAIL`; restart-stable containment and availability are not proven.
+
+### Sidecar observation
+
+The documented MLX-VLM sidecar loaded successfully:
+
+- LaunchDaemon: `system/com.resonant.mlx-vlm-gemma12b`
+- State: `running`
+- PID observed: `54842`
+- Listener: `127.0.0.1:8082`
+
+This does not prove Whoosh'd health, model readiness, or generation.
+
+### Sanitized commands used
+
+```bash
+git status --short --branch
+git rev-parse HEAD
+git log -3 --oneline
+git merge-base --is-ancestor 552544a9df6b51de9445f279aa50987452f2e395 HEAD
+git merge-base --is-ancestor 2020e65ce9a2a2ff665f9bcc3092a889ca878ab4 HEAD
+plutil -extract ProgramArguments json -o - /Library/LaunchDaemons/com.resonant.whooshd.plist
+plutil -extract EnvironmentVariables.WHOOSHD_HOST raw -o - /Library/LaunchDaemons/com.resonant.whooshd.plist
+launchctl print system/com.resonant.whooshd
+lsof -nP -iTCP:8000 -sTCP:LISTEN
+ps -o pid=,ppid=,user=,lstart=,command= -p 978
+curl --noproxy '*' -fsS --connect-timeout 2 --max-time 5 http://127.0.0.1:8000/health
+
+python3 ops/launchd/render_launchd_plists.py \
+  --output-dir .local/launchd \
+  --whooshd-root "/Volumes/Dev_SSD/ResonantConstructs/Whoosh'd" \
+  --user chriscastillo \
+  --model-registry-path configs/models.friends-family-guest.yaml \
+  --dry-run
+
+plutil -lint .local/launchd/com.resonant.whooshd.plist
+plutil -lint .local/launchd/com.resonant.mlx-vlm-gemma12b.plist
+bash -n ops/launchd/install_local_launchd.sh
+bash ops/launchd/install_local_launchd.sh dry-run
+sudo -v && bash ops/launchd/install_local_launchd.sh install
+
+tail -n 100 /tmp/whooshd.err
+/Users/chriscastillo/.local/bin/whooshd --doctor
+.venv/bin/python -c 'import pydantic_core._pydantic_core'
+.venv311/bin/python -c 'import pydantic_core._pydantic_core'
+rg -n "WHOOSHD_PYTHON|PYTHON_BIN" /Users/chriscastillo/.local/bin/whooshd ops/launchd docs/ops/whooshd-launchd-local-runtime.md
+```
+
+### Not proven by CWC-H01B
+
+- Healthy loopback Whoosh'd deployment
+- Docker bridge reachability through `host.docker.internal`
+- Restart-stable availability and containment
+- Model generation or model-specific readiness
+- Authenticated LAN, Tailscale, sidecar trust, remote-node, service-authentication, or mTLS modes
+
+### Required next atomic task
+
+Repair the launchd renderer/template and runbook so the Whoosh'd interpreter is explicit and validated before installation. The smallest compatible change is to add a renderer option and plist environment entry for `WHOOSHD_PYTHON`, render the known-good `.venv311/bin/python` path for this deployment, validate that path during render/install, and cover the selection with focused tests. After that task lands, rerun CWC-H01B from a fresh exact HEAD and complete all mandatory live probes.
