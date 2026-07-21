@@ -22,6 +22,7 @@ _SAFE_VALUE_RE = re.compile(r"^[A-Za-z0-9_.:/ ()'=-]{1,160}$")
 _SAFE_DIAGNOSTIC_RE = re.compile(
     r"^exception_type=[A-Za-z0-9_.-]{1,80} failure_class=[a-z_]{1,40}$"
 )
+_SAFE_VERSION_RE = re.compile(r"^whooshd\.control\.v[0-9]+$")
 
 
 class ErrorCode(str, Enum):
@@ -146,6 +147,7 @@ _SAFE_DETAIL_KEYS = {
     "queue_depth",
     "rejected_field_count",
     "request_id",
+    "received_version",
     "runtime_kind",
     "status",
     "timeout_seconds",
@@ -166,6 +168,7 @@ _SAFE_STRING_KEYS = {
     "parser_failure_class",
     "policy_version",
     "request_id",
+    "received_version",
     "runtime_kind",
     "status",
     "transport_class",
@@ -197,6 +200,15 @@ def bounded_details(details: Mapping[str, Any] | None) -> dict[str, Any] | None:
         elif key in {"body_present", "output_started"}:
             bounded[key] = bool(value)
     return bounded or None
+
+
+def safe_contract_version(value: Any) -> str:
+    """Return only a bounded, recognizable incoming version identifier."""
+
+    candidate = str(value or "").strip()
+    if len(candidate) > 80 or not _SAFE_VERSION_RE.fullmatch(candidate):
+        return "invalid"
+    return candidate
 
 
 def error_spec(code: ErrorCode | str) -> ErrorSpec:

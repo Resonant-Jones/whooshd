@@ -115,6 +115,56 @@ async def test_owned_success_and_error_paths_advertise_contract_header():
         assert response.json()["contract_version"] == CONTROL_PLANE_CONTRACT_VERSION
 
 
+@pytest.mark.asyncio
+async def test_missing_and_exact_v1_request_versions_preserve_success():
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        missing = await client.get("/health")
+        exact = await client.get(
+            "/health",
+            headers={CONTROL_PLANE_VERSION_HEADER: CONTROL_PLANE_CONTRACT_VERSION},
+        )
+
+    assert missing.status_code == 200
+    assert exact.status_code == 200
+    assert missing.headers[CONTROL_PLANE_VERSION_HEADER] == CONTROL_PLANE_CONTRACT_VERSION
+    assert exact.headers[CONTROL_PLANE_VERSION_HEADER] == CONTROL_PLANE_CONTRACT_VERSION
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "received_version",
+    [
+        "whooshd.control.v2",
+        "malformed-api-key-secret",
+        "x" * 200,
+    ],
+)
+async def test_explicit_non_v1_request_version_is_rejected_safely(received_version):
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get(
+            "/health",
+            headers={CONTROL_PLANE_VERSION_HEADER: received_version},
+        )
+
+    assert response.status_code == 400
+    assert response.headers[CONTROL_PLANE_VERSION_HEADER] == CONTROL_PLANE_CONTRACT_VERSION
+    body = response.json()
+    assert body["contract_version"] == CONTROL_PLANE_CONTRACT_VERSION
+    assert body["code"] == "contract_version_unsupported"
+    assert body["http_status"] == 400
+    assert body["retryable"] is False
+    assert body["details"]["received_version"] in {
+        "whooshd.control.v2",
+        "invalid",
+    }
+    if received_version == "whooshd.control.v2":
+        assert received_version in response.text
+    else:
+        assert received_version not in response.text
+
+
 class _FailingStreamAdapter:
     kind = "stub"
 

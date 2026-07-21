@@ -25,7 +25,7 @@ header when `retry_after_seconds` is present.
 | `invalid_request` | 400 | no | — | request error | Existing unversioned response path |
 | `unsupported_field` | 400 | no | — | request error | Existing unversioned response path |
 | `unsupported_capability` | 422 | no | — | request error | Existing unversioned response path |
-| `contract_version_unsupported` | 400 | no | — | request error | Missing/mismatched header is not assumed to be v1 |
+| `contract_version_unsupported` | 400 | no | — | request error | Explicit unsupported version is rejected; missing header remains legacy |
 | `model_not_found` | 404 | no | — | local model unavailable | Existing model/HTTP fallback path |
 | `model_unavailable` | 503 | yes | — | transport error | Existing unversioned response path |
 | `model_warming` | 425 | yes | 2 seconds bounded | provider HTTP error | Existing warming/HTTP fallback path |
@@ -46,9 +46,15 @@ header when `retry_after_seconds` is present.
 
 Codexify maps only the declared machine-readable `code` for a v1 response; it
 does not classify from `message` or `details`. It sends the v1 header on local
-inference requests. An absent or unsupported response header remains the
-documented legacy path and is not guessed to be v1. Unknown optional v1 body
-fields are ignored.
+inference requests. A missing response header remains the documented legacy
+path. An explicit non-v1 response header is a bounded contract failure and is
+not routed through legacy fallback. Unknown optional v1 body fields are
+ignored.
+
+For incoming requests, missing `X-Whooshd-Contract-Version` preserves legacy
+compatibility, exact v1 proceeds normally, and an explicit non-v1 value returns
+`contract_version_unsupported` with HTTP 400 and the normal v1 response
+header. Only a bounded version identifier is retained in `details`.
 
 ## Streaming and request identity
 
