@@ -270,9 +270,8 @@ class BackendKVAdapterRegistry:
         """
         self._adapters[backend] = adapter
         logger.debug(
-            "BackendKVAdapterRegistry: registered %s -> %s",
-            backend,
-            type(adapter).__name__,
+            "BackendKVAdapterRegistry: registered backend=%s adapter_type=%s",
+            backend, type(adapter).__name__,
         )
 
     def get(self, backend: str) -> KVCapableBackend:

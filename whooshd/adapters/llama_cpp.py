@@ -42,6 +42,7 @@ from whooshd.contracts import (
     RuntimeModel,
     TokenUsage,
 )
+from whooshd.log_safety import exception_metadata
 
 # Optional httpx import — only needed when server_url is configured.
 try:
@@ -149,9 +150,10 @@ def build_llama_server_argv(config: LlamaCppAdapterConfig) -> list[str]:
         argv.extend(config.extra_args)
 
     logger.info(
-        "llama_cpp.process.argv_built binary=%s model=%s host=%s port=%s",
-        config.binary_path,
-        config.model_path,
+        "llama_cpp.process.argv_built binary_path_present=%s "
+        "model_path_present=%s host=%s port=%s",
+        bool(config.binary_path),
+        bool(config.model_path),
         config.host,
         config.port,
     )
@@ -180,9 +182,7 @@ def _validate_managed_config(config: LlamaCppAdapterConfig) -> None:
         )
 
     if not config.model_path.endswith(".gguf"):
-        raise LlamaCppConfigError(
-            f"Model path must end in .gguf: {config.model_path}"
-        )
+        raise LlamaCppConfigError("Model path must end in .gguf")
 
     if config.port < 1 or config.port > 65535:
         raise LlamaCppConfigError(
@@ -209,14 +209,10 @@ def _validate_files_exist(config: LlamaCppAdapterConfig) -> None:
     Raises ``LlamaCppConfigError`` if either file is missing.
     """
     if not os.path.isfile(config.binary_path):  # type: ignore[arg-type]
-        raise LlamaCppConfigError(
-            f"llama-server binary not found: {config.binary_path}"
-        )
+        raise LlamaCppConfigError("llama-server binary not found")
 
     if not os.path.isfile(config.model_path):  # type: ignore[arg-type]
-        raise LlamaCppConfigError(
-            f"Model file not found: {config.model_path}"
-        )
+        raise LlamaCppConfigError("Model file not found")
 
 
 # ── Managed process wrapper ─────────────────────────────────────────────────
@@ -279,9 +275,10 @@ class ManagedLlamaServer:
         argv = build_llama_server_argv(self._config)
 
         logger.info(
-            "llama_cpp.process.starting binary=%s model=%s port=%s",
-            self._config.binary_path,
-            self._config.model_path,
+            "llama_cpp.process.starting binary_path_present=%s "
+            "model_path_present=%s port=%s",
+            bool(self._config.binary_path),
+            bool(self._config.model_path),
             self._config.port,
         )
 
@@ -294,9 +291,7 @@ class ManagedLlamaServer:
                 shell=False,
             )
         except OSError as exc:
-            raise LlamaCppProcessError(
-                f"Failed to launch llama-server: {exc}"
-            ) from exc
+            raise LlamaCppProcessError("Failed to launch llama-server") from exc
 
         self._started_at = time.monotonic()
 
@@ -510,8 +505,7 @@ class LlamaCppAdapter:
             parsed = urlparse(url)
             if not parsed.scheme or not parsed.netloc:
                 raise ValueError(
-                    f"Invalid llama.cpp server_url: '{url}' — "
-                    "must include scheme and host (e.g. http://127.0.0.1:8080)"
+                    "Invalid llama.cpp server_url; must include scheme and host"
                 )
 
     # ── Health probing ──────────────────────────────────────────────────
@@ -790,9 +784,7 @@ class LlamaCppAdapter:
                 raise RuntimeWarming(
                     "llama.cpp server is reachable but model is still warming."
                 )
-            raise RuntimeUnavailable(
-                f"llama.cpp server is not ready: {health.detail}"
-            )
+            raise RuntimeUnavailable("llama.cpp server is not ready")
 
         import time, uuid
 
@@ -877,9 +869,7 @@ class LlamaCppAdapter:
                     raise RuntimeWarming(
                         "llama.cpp server is reachable but model is still warming."
                     )
-                raise RuntimeUnavailable(
-                    f"llama.cpp server is not ready: {health.detail}"
-                )
+                raise RuntimeUnavailable("llama.cpp server is not ready")
 
             return await forward_non_streaming(
                 url, request, timeout=300.0,
@@ -928,9 +918,7 @@ class LlamaCppAdapter:
                     raise RuntimeWarming(
                         "llama.cpp server is reachable but model is still warming."
                     )
-                raise RuntimeUnavailable(
-                    f"llama.cpp server is not ready: {health.detail}"
-                )
+                raise RuntimeUnavailable("llama.cpp server is not ready")
 
             cancellation_token = context.cancellation_token if context else None
             async for chunk in forward_streaming(
@@ -1029,7 +1017,7 @@ def _classify_health_exception(exc: Exception, timeout: float) -> _LlamaCppHealt
         reachable=False,
         runner_status="degraded",
         model_lifecycle="failed",
-        detail=f"Unexpected health probe error: {exc}",
+        detail=f"Unexpected health probe failure ({exception_metadata(exc)})",
     )
 
 

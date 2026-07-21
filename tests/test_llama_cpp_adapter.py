@@ -308,7 +308,8 @@ class TestHealthMockedServer:
             assert status.reachable is False
             assert status.runner_status == "degraded"
             assert status.model_lifecycle == "failed"
-            assert "boom" in status.detail
+            assert "RuntimeError" in status.detail
+            assert "boom" not in status.detail
 
 
 # ── Lifecycle ────────────────────────────────────────────────────────────────

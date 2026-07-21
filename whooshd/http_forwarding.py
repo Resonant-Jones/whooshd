@@ -23,6 +23,7 @@ from whooshd.contracts import (
     ChatCompletionDelta,
     ChatCompletionResponse,
 )
+from whooshd.log_safety import failure_class, safe_model_alias, safe_url
 
 logger = logging.getLogger(__name__)
 
@@ -182,8 +183,12 @@ async def forward_non_streaming(
     safe_req_headers = _filter_safe_headers(headers)
     safe_req_headers["Content-Type"] = "application/json"
 
-    logger.info("forward.non_streaming url=%s model=%s", url, body.get("model"))
-    logger.debug("forward.non_streaming.body keys=%s", list(body.keys()))
+    logger.info(
+        "forward.non_streaming endpoint_kind=%s model=%s request_id=%s",
+        _endpoint_kind(endpoint),
+        body.get("model"),
+        getattr(request, "request_id", None),
+    )
 
     resp = None
     try:
@@ -199,8 +204,9 @@ async def forward_non_streaming(
             return ChatCompletionResponse.model_validate(data)
         except Exception as exc:
             raise UpstreamHTTPError(
-                f"Upstream returned 200 but response could not be parsed: {exc}",
+                "Upstream returned an unparsable successful response",
                 status_code=502,
+                detail={"failure_class": failure_class(exc), "http_status": 200},
             ) from exc
 
     if resp.status_code == 400:
@@ -211,9 +217,7 @@ async def forward_non_streaming(
         )
 
     if resp.status_code == 404:
-        raise RuntimeModelNotFound(
-            f"Model not found on upstream server: {body.get('model')}"
-        )
+        raise RuntimeModelNotFound("Model not found on upstream server")
 
     if resp.status_code in (408, 504):
         raise UpstreamTimeoutError(
@@ -283,9 +287,15 @@ async def forward_streaming(
     safe_req_headers["Content-Type"] = "application/json"
     safe_req_headers["Accept"] = "text/event-stream"
 
-    logger.info("forward.streaming url=%s model=%s", url, body.get("model"))
+    logger.info(
+        "forward.streaming endpoint_kind=%s model=%s request_id=%s",
+        _endpoint_kind(endpoint),
+        body.get("model"),
+        getattr(request, "request_id", None),
+    )
 
     response = None
+    output_started = False
     try:
         async with httpx.AsyncClient(timeout=timeout) as client:
             async with client.stream(
@@ -295,13 +305,15 @@ async def forward_streaming(
                     # Read error body safely.
                     try:
                         err_body = await response.aread()
-                        err_text = err_body.decode("utf-8", errors="replace")[:512]
                     except Exception:
-                        err_text = "(could not read error body)"
+                        err_body = b""
                     raise UpstreamHTTPError(
                         f"Upstream returned {response.status_code} for streaming request",
                         status_code=502,
-                        detail={"upstream_status": response.status_code, "body": err_text},
+                        detail=_safe_upstream_body(
+                            response,
+                            body_bytes=_byte_count(err_body),
+                        ),
                     )
 
                 async for line in response.aiter_lines():
@@ -323,12 +335,16 @@ async def forward_streaming(
                     try:
                         chunk_data = json.loads(data_str)
                         chunk = ChatCompletionChunk.model_validate(chunk_data)
+                        output_started = True
                         yield chunk
                     except (json.JSONDecodeError, Exception) as exc:
                         logger.warning(
-                            "forward.streaming.parse_error line=%s error=%s",
-                            data_str[:120],
-                            exc,
+                            "forward.streaming.parse_error "
+                            "parser_failure_class=%s frame_bytes=%s "
+                            "output_started=%s",
+                            type(exc).__name__,
+                            len(line.encode("utf-8", errors="replace")),
+                            output_started,
                         )
                         # Skip unparseable chunks rather than failing the stream.
                         continue
@@ -337,6 +353,8 @@ async def forward_streaming(
         # Client disconnected — let the upstream stream close naturally
         # by exiting the generator.
         logger.info("forward.streaming.client_disconnect")
+        raise
+    except UpstreamRuntimeError:
         raise
     except Exception as exc:
         raise _classify_request_exception(exc, server_url, timeout) from exc
@@ -361,13 +379,44 @@ def _check_httpx():
         )
 
 
-def _safe_upstream_body(resp) -> dict | None:
-    """Safely read the upstream response body for error detail."""
+def _endpoint_kind(endpoint: str) -> str:
+    """Map an endpoint path to a bounded operational label."""
+    path = str(endpoint).rstrip("/").lower()
+    if path.endswith("/chat/completions"):
+        return "chat_completions"
+    if path.endswith("/generate"):
+        return "generate"
+    return "other"
+
+
+def _byte_count(value) -> int:
+    """Return a body size without retaining or decoding the body."""
+    if isinstance(value, (bytes, bytearray, memoryview, str)):
+        return len(value if not isinstance(value, str) else value.encode())
+    return 0
+
+
+def _safe_upstream_body(resp, *, body_bytes: int | None = None) -> dict:
+    """Return bounded upstream response metadata without retaining its body."""
     try:
-        text = resp.text[:512] if resp.text else ""
-        return {"upstream_body": text, "upstream_status": resp.status_code}
+        if body_bytes is None:
+            content = getattr(resp, "content", None)
+            body_bytes = _byte_count(content)
+            if body_bytes == 0:
+                body_bytes = _byte_count(getattr(resp, "text", ""))
+        headers = getattr(resp, "headers", {}) or {}
+        content_type = headers.get("content-type")
+        return {
+            "upstream_status": resp.status_code,
+            "http_status": resp.status_code,
+            "body_bytes": body_bytes,
+            "body_present": bool(body_bytes),
+            "content_type": str(content_type).split(";", 1)[0][:80]
+            if content_type
+            else None,
+        }
     except Exception:
-        return {"upstream_status": resp.status_code}
+        return {"upstream_status": getattr(resp, "status_code", None)}
 
 
 def _classify_request_exception(exc: Exception, server_url: str, timeout: float) -> UpstreamRuntimeError:
@@ -378,21 +427,23 @@ def _classify_request_exception(exc: Exception, server_url: str, timeout: float)
     """
     exc_name = type(exc).__name__
     exc_msg = str(exc).lower()
+    metadata = {
+        "failure_class": failure_class(exc),
+        "endpoint": safe_url(server_url),
+        "timeout_seconds": timeout,
+    }
 
     if "connect" in exc_name.lower() or "connection" in exc_msg:
-        return UpstreamConnectionError(
-            f"Upstream server at {server_url} is not reachable."
-        )
+        return UpstreamConnectionError("Upstream server is not reachable.")
 
     if "readtimeout" in exc_name.lower() or "timeout" in exc_name.lower() or "timeout" in exc_msg:
-        return UpstreamTimeoutError(
-            f"Upstream server at {server_url} timed out after {timeout}s."
-        )
+        return UpstreamTimeoutError("Upstream server timed out.")
 
     # Generic fallback — unexpected transport error.
     return UpstreamHTTPError(
-        f"Unexpected transport error communicating with {server_url}: {exc}",
+        "Unexpected upstream transport failure",
         status_code=502,
+        detail=metadata,
     )
 
 
@@ -502,4 +553,6 @@ class ModelNotFound(Exception):
 
     def __init__(self, model_id: str, detail: str = ""):
         self.model_id = model_id
-        super().__init__(f"Model '{model_id}' not found. {detail}".strip())
+        super().__init__(
+            f"Model '{safe_model_alias(model_id)}' not found. {detail}".strip()
+        )

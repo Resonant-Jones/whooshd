@@ -29,6 +29,7 @@ from whooshd.contracts import (
     RuntimeKind,
     RuntimeModel,
 )
+from whooshd.log_safety import exception_metadata, safe_model_alias
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +40,10 @@ class ModelResolutionError(Exception):
     def __init__(self, model_id: str, detail: str = ""):
         self.model_id = model_id
         self.detail = detail
-        super().__init__(f"Cannot resolve model '{model_id}' to a runtime. {detail}".strip())
+        super().__init__(
+            f"Cannot resolve model '{safe_model_alias(model_id)}' to a runtime. "
+            f"{detail}".strip()
+        )
 
 
 class RuntimeRouter:
@@ -127,7 +131,10 @@ class RuntimeRouter:
             rt = get_runtime()
             reg = rt._load_registry()
         except Exception as exc:
-            logger.warning("router.registry_lookup_failed error=%s", type(exc).__name__)
+            logger.warning(
+                "router.registry_lookup_failed exception_type=%s",
+                type(exc).__name__,
+            )
 
         if authoritative_registry and (reg is None or reg is False):
             raise ModelResolutionError(
@@ -359,15 +366,15 @@ class RuntimeRouter:
                         aggregate_status = "degraded"
             except Exception as exc:
                 logger.warning(
-                    "router.health.error kind=%s error=%s",
+                    "router.health.error kind=%s diagnostic=%s",
                     adapter.kind,
-                    exc,
+                    exception_metadata(exc),
                 )
                 runtimes[adapter.kind] = RuntimeHealth(
                     kind=adapter.kind,
                     enabled=True,
                     state="error",
-                    detail=str(exc),
+                    detail=exception_metadata(exc),
                 )
                 aggregate_status = "degraded"
 
@@ -395,11 +402,13 @@ class RuntimeRouter:
                 results[adapter.kind] = "ready"
             except Exception as exc:
                 logger.warning(
-                    "router.warmup.error kind=%s error=%s",
+                    "router.warmup.error kind=%s diagnostic=%s",
                     adapter.kind,
-                    exc,
+                    exception_metadata(exc),
                 )
-                results[adapter.kind] = f"failed: {exc}"
+                results[adapter.kind] = (
+                    f"failed: {type(exc).__name__}"
+                )
         return results
 
     async def unload_all(self) -> dict[str, str]:
@@ -411,11 +420,13 @@ class RuntimeRouter:
                 results[adapter.kind] = "unloaded"
             except Exception as exc:
                 logger.warning(
-                    "router.unload.error kind=%s error=%s",
+                    "router.unload.error kind=%s diagnostic=%s",
                     adapter.kind,
-                    exc,
+                    exception_metadata(exc),
                 )
-                results[adapter.kind] = f"failed: {exc}"
+                results[adapter.kind] = (
+                    f"failed: {type(exc).__name__}"
+                )
         return results
 
 

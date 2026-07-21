@@ -57,6 +57,12 @@ from whooshd.routing import ModelResolutionError, get_router, reset_router
 from whooshd.runtime import get_runtime
 from whooshd.queue import QueueEntry, get_queue
 from whooshd.http_forwarding import UpstreamRuntimeError
+from whooshd.log_safety import (
+    exception_metadata,
+    failure_class,
+    safe_exception_message,
+    safe_model_alias,
+)
 from whooshd.runtime.threadwake import ThreadWakeManager
 from whooshd.runtime.threadwake.tokenization import BackendTokenizerAdapterRegistry
 from whooshd.runtime.threadwake.analysis_loop import ThreadWakeAnalysisLoop
@@ -66,6 +72,27 @@ logger = logging.getLogger(__name__)
 _tokenizer_registry = BackendTokenizerAdapterRegistry()
 _threadwake_manager = ThreadWakeManager(tokenizer_registry=_tokenizer_registry)
 _threadwake_analysis_loop: ThreadWakeAnalysisLoop | None = None
+
+
+def _safe_upstream_error_detail(exc: UpstreamRuntimeError) -> dict:
+    """Keep only bounded upstream failure metadata in outward diagnostics."""
+    detail = {
+        "kind": type(exc).__name__,
+        "failure_class": failure_class(exc),
+    }
+    allowed = {
+        "upstream_status",
+        "http_status",
+        "body_bytes",
+        "body_present",
+        "content_type",
+        "endpoint",
+        "timeout_seconds",
+    }
+    raw_detail = getattr(exc, "detail", None)
+    if isinstance(raw_detail, dict):
+        detail.update({key: raw_detail[key] for key in allowed if key in raw_detail})
+    return detail
 
 
 def _get_analysis_loop() -> ThreadWakeAnalysisLoop:
@@ -316,7 +343,7 @@ async def _validation_exception_handler(request, exc):
         content=ErrorResponse(
             code=ErrorCode.INTERNAL,
             message="Validation error",
-            detail={"errors": exc.errors()},
+            detail={"failure_class": "validation", "error_count": len(exc.errors())},
         ).model_dump(),
     )
 
@@ -329,8 +356,8 @@ async def _model_resolution_error_handler(request, exc: ModelResolutionError):
         status_code=400,
         content=ErrorResponse(
             code=ErrorCode.MODEL_NOT_FOUND,
-            message=str(exc),
-            detail={"model_id": exc.model_id},
+            message="Requested model is not available",
+            detail={"model_alias": safe_model_alias(exc.model_id)},
         ).model_dump(),
     )
 
@@ -363,8 +390,8 @@ async def _upstream_runtime_error_handler(request, exc: UpstreamRuntimeError):
         status_code=exc.http_status,
         content=ErrorResponse(
             code=error_code,
-            message=str(exc),
-            detail={"kind": type(exc).__name__},
+            message=safe_exception_message(exc),
+            detail=_safe_upstream_error_detail(exc),
         ).model_dump(),
     )
 
@@ -412,7 +439,7 @@ async def generate(req: GenerateRequest) -> GenerateResponse:
             detail=ErrorResponse(
                 code=ErrorCode.INTERNAL,
                 message="Inference failed",
-                detail={"error": str(exc)},
+                detail={"diagnostic": exception_metadata(exc)},
             ).model_dump(),
         ) from exc
 
@@ -425,7 +452,7 @@ async def _streaming_not_supported_handler(request, exc: StreamingNotSupportedEr
         status_code=501,
         content=ErrorResponse(
             code=ErrorCode.INTERNAL,
-            message=str(exc),
+            message=safe_exception_message(exc),
             detail={"hint": "Set stream=false or use an adapter that supports streaming."},
         ).model_dump(),
     )
@@ -472,8 +499,8 @@ async def _execute_streaming(adapter, req, ctx, rt, request_id):
             status_code=exc.http_status,
             content=ErrorResponse(
                 code=_error_code_for_status(exc.http_status),
-                message=str(exc),
-                detail={"kind": type(exc).__name__},
+                message=safe_exception_message(exc),
+                detail=_safe_upstream_error_detail(exc),
             ).model_dump(),
         )
     except Exception:
@@ -491,7 +518,7 @@ async def _execute_streaming(adapter, req, ctx, rt, request_id):
         except UpstreamRuntimeError as exc:
             error_json = json.dumps({
                 "error": {
-                    "message": str(exc),
+                    "message": safe_exception_message(exc),
                     "type": type(exc).__name__,
                 }
             })
@@ -601,7 +628,10 @@ async def _try_execute_live_batch(
     for e in group:
         token = rt.get_cancellation_token(e.request_id)
         if token is not None and token.is_cancelled():
-            logger.debug("batch: excluding cancelled entry %s", e.request_id)
+            logger.debug(
+                "batch: excluding cancelled entry request_id=%s",
+                e.request_id,
+            )
             continue
         active_group.append(e)
 
@@ -738,8 +768,8 @@ async def chat_completions(req: ChatCompletionRequest):
             status_code=400,
             content=ErrorResponse(
                 code=ErrorCode.MODEL_NOT_FOUND,
-                message=str(exc),
-                detail={"model_id": exc.model_id},
+                message="Requested model is not available",
+                detail={"model_alias": safe_model_alias(exc.model_id)},
             ).model_dump(),
         )
 
@@ -1011,13 +1041,14 @@ async def runtime_model_warmup():
     except Exception as exc:
         rt.fail_warmup(
             error_code="MODEL_LOAD_FAILED",
-            error_message=str(exc)[:256],
+            error_message=exception_metadata(exc),
         )
         raise HTTPException(
             status_code=500,
             detail=ErrorResponse(
                 code=ErrorCode.MODEL_LOAD_FAILED,
-                message=f"Model warmup failed: {exc}",
+                message="Model warmup failed",
+                detail={"diagnostic": exception_metadata(exc)},
             ).model_dump(),
         ) from exc
 

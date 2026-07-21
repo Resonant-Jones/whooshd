@@ -19,6 +19,8 @@ from typing import Any, Callable
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
+from whooshd.log_safety import exception_metadata
+
 
 DEFAULT_BASE_URL = "http://127.0.0.1:8000"
 ANALYSIS_PATH = "/runtime/threadwake/analysis"
@@ -86,14 +88,18 @@ def main(argv: list[str] | None = None) -> int:
         print(
             json.dumps(
                 {
-                    "error": f"could not reach Whoosh'd daemon: {exc.reason}",
+                    "error": "could not reach Whoosh'd daemon (connection failure)",
                     "analysis": {},
                 },
             ),
         )
         return 1
     except Exception as exc:
-        print(json.dumps({"error": str(exc), "analysis": {}}))
+        print(
+            json.dumps(
+                {"error": exception_metadata(exc), "analysis": {}},
+            ),
+        )
         return 1
 
 

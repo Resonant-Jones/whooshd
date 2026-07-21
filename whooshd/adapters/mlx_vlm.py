@@ -47,6 +47,7 @@ from whooshd.contracts import (
     RuntimeModel,
     TokenUsage,
 )
+from whooshd.log_safety import exception_metadata
 
 # Optional httpx import.
 try:
@@ -102,8 +103,10 @@ def build_mlx_vlm_server_argv(config: MlxVlmConfig) -> list[str]:
     if config.extra_args:
         argv.extend(config.extra_args)
 
-    logger.info("mlx_vlm.process.argv_built model=%s host=%s port=%s",
-                config.model, config.host, config.port)
+    logger.info(
+        "mlx_vlm.process.argv_built model_path_present=%s host=%s port=%s",
+        bool(config.model), config.host, config.port,
+    )
     return argv
 
 
@@ -134,15 +137,17 @@ class ManagedMlxVlmServer:
         if self.is_running:
             raise MlxVlmProcessError(f"mlx-vlm already running (pid={self.pid})")
         argv = build_mlx_vlm_server_argv(self._config)
-        logger.info("mlx_vlm.process.starting model=%s port=%s",
-                     self._config.model, self._config.port)
+        logger.info(
+            "mlx_vlm.process.starting model_path_present=%s port=%s",
+            bool(self._config.model), self._config.port,
+        )
         try:
             self._process = subprocess.Popen(
                 argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                 text=True, shell=False,
             )
         except OSError as exc:
-            raise MlxVlmProcessError(f"Failed to launch mlx-vlm: {exc}") from exc
+            raise MlxVlmProcessError("Failed to launch mlx-vlm") from exc
         self._started_at = time.monotonic()
         logger.info("mlx_vlm.process.started pid=%s", getattr(self._process, "pid", None))
         return self._process
@@ -222,7 +227,7 @@ def _classify_health_exception(exc: Exception, timeout: float) -> _MlxVlmHealthS
                                     detail=f"Health probe timed out after {timeout}s.")
     return _MlxVlmHealthStatus(reachable=False, runner_status="degraded",
                                 model_lifecycle="failed",
-                                detail=f"Unexpected health probe error: {exc}")
+                                detail=f"Unexpected health probe failure ({exception_metadata(exc)})")
 
 
 # ── Adapter class ───────────────────────────────────────────────────────────
@@ -328,7 +333,7 @@ class MlxVlmAdapter:
         if self._managed_process is None:
             status = await self.check_health()
             if not status.reachable:
-                raise MlxVlmProcessError(f"mlx-vlm is not reachable: {status.detail}")
+                raise MlxVlmProcessError("mlx-vlm is not reachable")
             return
         proc = self._managed_process
         proc.check_exited()
@@ -396,7 +401,7 @@ class MlxVlmAdapter:
             if not health.reachable:
                 if health.model_lifecycle == "warming":
                     raise RuntimeWarming("mlx-vlm is warming.")
-                raise RuntimeUnavailable(f"mlx-vlm not ready: {health.detail}")
+                raise RuntimeUnavailable("mlx-vlm not ready")
             return await forward_non_streaming(self._server_url, request, timeout=300.0,
                                                 model_override=self._config.model)
         finally:
@@ -420,7 +425,7 @@ class MlxVlmAdapter:
             if not health.reachable:
                 if health.model_lifecycle == "warming":
                     raise RuntimeWarming("mlx-vlm is warming.")
-                raise RuntimeUnavailable(f"mlx-vlm not ready: {health.detail}")
+                raise RuntimeUnavailable("mlx-vlm not ready")
             cancellation_token = context.cancellation_token if context else None
             async for chunk in forward_streaming(self._server_url, request, timeout=300.0,
                                                   model_override=self._config.model,
@@ -445,7 +450,7 @@ class MlxVlmAdapter:
         try:
             health = await self.check_health()
             if not health.reachable:
-                raise RuntimeUnavailable(f"mlx-vlm not ready: {health.detail}")
+                raise RuntimeUnavailable("mlx-vlm not ready")
             chat_req = ChatCompletionRequest(
                 model=self._config.model,
                 messages=[ChatMessage(role="user", content=request.prompt)],
