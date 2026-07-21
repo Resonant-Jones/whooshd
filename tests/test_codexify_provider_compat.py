@@ -292,7 +292,7 @@ async def test_validation_errors_are_structured(client):
     body = resp.json()
     assert "code" in body
     assert "message" in body
-    assert body["code"] == "INTERNAL"
+    assert body["code"] == "invalid_request"
 
 
 # ── Streaming parser — unit tests for reconstruct_assistant_text ────────────

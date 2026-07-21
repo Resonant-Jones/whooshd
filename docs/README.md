@@ -19,6 +19,8 @@ Start here for current state, safe claims, experimental areas, and evidence:
 - **Operators**: [Operator Guide](operator-guide.md)
 - **Developers**: [Developer Guide](developer-guide.md)
 - **Architecture**: [Architecture Overview](architecture.md)
+- **Request contract**: [Ingress and backend request boundary](request-contract.md)
+- **Operations and security**: [Whoosh'd Logging Safety](security/whooshd-logging-safety.md)
 
 ## Reference
 
@@ -35,6 +37,10 @@ packet and benchmark packet say so.
 
 Guarded adapter batching is experimental, explicitly gated, disabled
 by default, and validated within scoped test conditions.
+
+Whoosh'd-owned log records are bounded by the [logging safety contract](security/whooshd-logging-safety.md);
+historical files, platform logs, and external collectors are not claimed to
+be retroactively scrubbed.
 
 Token-step shared decode scheduling remains research-only for MLX
 under the current integration.

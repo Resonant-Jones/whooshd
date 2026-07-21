@@ -746,10 +746,10 @@ class TestQueueEndpointReachability:
             },
         )
 
-        # Queue timeout returns 429 with code=TIMEOUT.
-        assert resp.status_code == 429
+        # Queue timeout returns 504 with the canonical timeout code.
+        assert resp.status_code == 504
         body = resp.json()
-        assert body["code"] == "TIMEOUT"
+        assert body["code"] == "timeout"
 
         # Counters: queued incremented, timeout incremented.
         admission = rt.build_admission_config()
@@ -783,7 +783,7 @@ class TestQueueEndpointReachability:
 
         assert resp.status_code == 429
         body = resp.json()
-        assert body["code"] == "RUNNER_OVERLOADED"
+        assert body["code"] == "runner_overloaded"
 
         # No queued counter increment.
         admission = rt.build_admission_config()
@@ -820,7 +820,7 @@ class TestQueueEndpointReachability:
 
         assert resp.status_code == 429
         body = resp.json()
-        assert body["code"] == "RUNNER_OVERLOADED"
+        assert body["code"] == "queue_full"
 
         admission = rt.build_admission_config()
         assert admission["counters"]["queue_rejected"] >= 1

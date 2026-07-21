@@ -16,6 +16,7 @@ import os
 import sqlite3
 import threading
 from typing import Any, Optional, Protocol
+from whooshd.log_safety import exception_metadata
 
 logger = logging.getLogger(__name__)
 
@@ -295,7 +296,7 @@ class SQLiteThreadWakeStorage:
             self._conn.executescript(_SCHEMA_SQL)
             self._conn.commit()
         except Exception as exc:
-            logger.warning("ThreadWake SQLite init failed: %s", exc)
+            logger.warning("ThreadWake SQLite init failed diagnostic=%s", exception_metadata(exc))
             self._persistence_errors += 1
             if self._conn:
                 self._conn.close()
@@ -317,7 +318,7 @@ class SQLiteThreadWakeStorage:
                 )
                 self._conn.commit()
         except Exception as exc:
-            logger.warning("ThreadWake SQLite validation record failed: %s", exc)
+            logger.warning("ThreadWake SQLite validation record failed diagnostic=%s", exception_metadata(exc))
             self._persistence_errors += 1
 
     # ── Snapshot materials ─────────────────────────────────────────────
@@ -355,7 +356,7 @@ class SQLiteThreadWakeStorage:
                 )
                 self._conn.commit()
         except Exception as exc:
-            logger.warning("ThreadWake SQLite material upsert failed: %s", exc)
+            logger.warning("ThreadWake SQLite material upsert failed diagnostic=%s", exception_metadata(exc))
             self._persistence_errors += 1
 
     def list_snapshot_materials(self, limit=50, status=None, backend=None):
@@ -376,7 +377,7 @@ class SQLiteThreadWakeStorage:
                      "format_name":r[15],"format_version":r[16],"validation_errors":r[17],
                      "created_at":r[18],"updated_at":r[19]} for r in rows]
         except Exception as exc:
-            logger.warning("ThreadWake SQLite material list failed: %s", exc)
+            logger.warning("ThreadWake SQLite material list failed diagnostic=%s", exception_metadata(exc))
             self._persistence_errors += 1
             return []
 
@@ -390,7 +391,7 @@ class SQLiteThreadWakeStorage:
             if row is None: return NoOpThreadWakeStorage().snapshot_material_stats()
             return {"total_materials":row[0],"declared":row[1],"materialized":row[2],"validated":row[3],"invalid":row[4],"unsupported":row[5],"expired":row[6]}
         except Exception as exc:
-            logger.warning("ThreadWake SQLite material stats failed: %s", exc)
+            logger.warning("ThreadWake SQLite material stats failed diagnostic=%s", exception_metadata(exc))
             self._persistence_errors += 1
             return NoOpThreadWakeStorage().snapshot_material_stats()
 
@@ -423,7 +424,7 @@ class SQLiteThreadWakeStorage:
                 )
                 self._conn.commit()
         except Exception as exc:
-            logger.warning("ThreadWake SQLite artifact upsert failed: %s", exc)
+            logger.warning("ThreadWake SQLite artifact upsert failed diagnostic=%s", exception_metadata(exc))
             self._persistence_errors += 1
 
     def list_snapshot_artifacts(self, limit=50, status=None, backend=None):
@@ -443,7 +444,7 @@ class SQLiteThreadWakeStorage:
                      "build_attempts":r[10],"notes":r[11],"created_at":r[12],
                      "updated_at":r[13],"last_seen_at":r[14]} for r in rows]
         except Exception as exc:
-            logger.warning("ThreadWake SQLite artifact list failed: %s", exc)
+            logger.warning("ThreadWake SQLite artifact list failed diagnostic=%s", exception_metadata(exc))
             self._persistence_errors += 1
             return []
 
@@ -457,7 +458,7 @@ class SQLiteThreadWakeStorage:
             if row is None: return NoOpThreadWakeStorage().snapshot_artifact_stats()
             return {"total_artifacts":row[0],"planned":row[1],"build_pending":row[2],"build_failed":row[3],"ready":row[4],"superseded":row[5],"expired":row[6]}
         except Exception as exc:
-            logger.warning("ThreadWake SQLite artifact stats failed: %s", exc)
+            logger.warning("ThreadWake SQLite artifact stats failed diagnostic=%s", exception_metadata(exc))
             self._persistence_errors += 1
             return NoOpThreadWakeStorage().snapshot_artifact_stats()
 
@@ -509,7 +510,7 @@ class SQLiteThreadWakeStorage:
                 )
                 self._conn.commit()
         except Exception as exc:
-            logger.warning("ThreadWake SQLite manifest upsert failed: %s", exc)
+            logger.warning("ThreadWake SQLite manifest upsert failed diagnostic=%s", exception_metadata(exc))
             self._persistence_errors += 1
 
     def list_snapshot_manifests(
@@ -544,7 +545,7 @@ class SQLiteThreadWakeStorage:
                 for r in rows
             ]
         except Exception as exc:
-            logger.warning("ThreadWake SQLite manifest list failed: %s", exc)
+            logger.warning("ThreadWake SQLite manifest list failed diagnostic=%s", exception_metadata(exc))
             self._persistence_errors += 1
             return []
 
@@ -568,7 +569,7 @@ class SQLiteThreadWakeStorage:
                 "superseded": row[2], "expired": row[3], "rejected": row[4],
             }
         except Exception as exc:
-            logger.warning("ThreadWake SQLite manifest stats failed: %s", exc)
+            logger.warning("ThreadWake SQLite manifest stats failed diagnostic=%s", exception_metadata(exc))
             self._persistence_errors += 1
             return NoOpThreadWakeStorage().snapshot_manifest_stats()
 
@@ -634,7 +635,7 @@ class SQLiteThreadWakeStorage:
                 self._conn.commit()
                 self._upserts_total += 1
         except Exception as exc:
-            logger.warning("ThreadWake SQLite upsert failed: %s", exc)
+            logger.warning("ThreadWake SQLite upsert failed diagnostic=%s", exception_metadata(exc))
             self._persistence_errors += 1
 
     def list_candidates(
@@ -671,7 +672,7 @@ class SQLiteThreadWakeStorage:
                 for r in rows
             ]
         except Exception as exc:
-            logger.warning("ThreadWake SQLite list failed: %s", exc)
+            logger.warning("ThreadWake SQLite list failed diagnostic=%s", exception_metadata(exc))
             self._persistence_errors += 1
             return []
 
@@ -699,6 +700,6 @@ class SQLiteThreadWakeStorage:
                 "average_candidate_score": round(row[6], 4),
             }
         except Exception as exc:
-            logger.warning("ThreadWake SQLite stats failed: %s", exc)
+            logger.warning("ThreadWake SQLite stats failed diagnostic=%s", exception_metadata(exc))
             self._persistence_errors += 1
             return NoOpThreadWakeStorage().candidate_stats()

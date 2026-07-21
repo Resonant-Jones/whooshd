@@ -18,6 +18,7 @@ import httpx
 
 from whooshd.bench.contracts import BenchmarkSummary, RequestBenchmarkResult
 from whooshd.compat.codexify_probe import reconstruct_assistant_text
+from whooshd.log_safety import exception_metadata
 
 
 def _percentile(values: list[float], pct: float) -> Optional[float]:
@@ -75,7 +76,7 @@ async def _run_single_non_streaming(
             started_at=t0,
             ended_at=t1,
             total_ms=(t1 - t0) * 1000,
-            error_message=str(exc)[:256],
+            error_message=exception_metadata(exc),
         )
 
 
@@ -148,7 +149,7 @@ async def _run_single_streaming(
             started_at=t0,
             ended_at=t1,
             total_ms=(t1 - t0) * 1000,
-            error_message=str(exc)[:256],
+            error_message=exception_metadata(exc),
         )
 
 

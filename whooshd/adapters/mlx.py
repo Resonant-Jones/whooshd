@@ -16,6 +16,10 @@ from whooshd.config import (
     get_mlx_max_tokens_default,
     get_mlx_model_path,
 )
+from whooshd.backend_request_policy import (
+    ensure_backend_chat_request,
+    ensure_backend_generate_request,
+)
 from whooshd.adapters.mlx_prompt import extract_chat_messages, render_mlx_chat_prompt
 from whooshd.contracts import (
     ChatCompletionChoice,
@@ -106,6 +110,7 @@ class MLXInferenceAdapter:
 
         tokenized = []
         rendered = []
+        requests = [ensure_backend_chat_request(req, adapter_kind=self.kind) for req in requests]
         for req in requests:
             messages = extract_chat_messages(req)
             prompt = render_mlx_chat_prompt(self._tokenizer, messages)
@@ -203,6 +208,7 @@ class MLXInferenceAdapter:
 
     async def chat_completion(self, request: ChatCompletionRequest, context=None) -> ChatCompletionResponse:
         """Run a non-streaming chat completion through mlx-lm."""
+        request = ensure_backend_chat_request(request, adapter_kind=self.kind)
 
         model_path = get_mlx_model_path()
         await self._ensure_loaded(model_path)
@@ -271,6 +277,7 @@ class MLXInferenceAdapter:
         Attempts to close the stream generator on early termination.
         """
 
+        request = ensure_backend_chat_request(request, adapter_kind=self.kind)
         model_path = get_mlx_model_path()
         await self._ensure_loaded(model_path)
 
@@ -369,6 +376,7 @@ class MLXInferenceAdapter:
 
     async def generate(self, request: GenerateRequest) -> GenerateResponse:
         """Run a Codexify-style generation through mlx-lm."""
+        request = ensure_backend_generate_request(request, adapter_kind=self.kind)
 
         model_path = get_mlx_model_path()
         await self._ensure_loaded(model_path)

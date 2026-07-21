@@ -359,13 +359,17 @@ class BackendTokenizerAdapterRegistry:
     def register(self, backend: str, adapter: BackendTokenizerAdapter) -> None:
         self._adapters[backend] = adapter
         logger.debug(
-            "BackendTokenizerAdapterRegistry: registered %s -> %s",
+            "BackendTokenizerAdapterRegistry: registered backend=%s "
+            "adapter_type=%s",
             backend, type(adapter).__name__,
         )
 
     def unregister(self, backend: str) -> None:
         self._adapters.pop(backend, None)
-        logger.debug("BackendTokenizerAdapterRegistry: unregistered %s", backend)
+        logger.debug(
+            "BackendTokenizerAdapterRegistry: unregistered backend=%s",
+            backend,
+        )
 
     def get(self, backend: str) -> BackendTokenizerAdapter:
         return self._adapters.get(backend, self._noop)

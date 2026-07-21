@@ -38,6 +38,8 @@
       <string>{{PATH_VALUE}}</string>
       <key>WHOOSHD_ROOT</key>
       <string>{{WHOOSHD_ROOT}}</string>
+      <key>WHOOSHD_PYTHON</key>
+      <string>{{WHOOSHD_PYTHON}}</string>
       <key>WHOOSHD_MODEL_REGISTRY_PATH</key>
       <string>{{WHOOSHD_MODEL_REGISTRY_PATH}}</string>
       <key>WHOOSHD_MLX_ENABLED</key>
