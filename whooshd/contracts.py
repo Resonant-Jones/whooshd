@@ -18,6 +18,9 @@ from whooshd.control_plane import (
 )
 
 
+WHOOSHD_RUNTIME_PROVENANCE_HEADER = "X-Whooshd-Runtime-Provenance"
+
+
 # ── Shared enums ────────────────────────────────────────────────────────────
 
 
@@ -140,6 +143,10 @@ class ModelInfo(BaseModel):
     context_window: int = Field(32768, ge=0, description="Max context window in tokens")
     quantization: Optional[str] = Field(None, description="Quantization level, e.g. 4bit, 8bit")
     memory_class: str = Field("small", description="small | medium | large — sizing hint")
+    runtime_provenance: Optional["RuntimeProvenance"] = Field(
+        None,
+        description="Bounded runtime ownership and resolution metadata.",
+    )
 
 
 class ModelsResponse(BaseModel):
@@ -214,6 +221,10 @@ class ResponseRuntimeInfo(BaseModel):
     adapter: str = Field(..., description="Name of the inference adapter used")
     queued: bool = Field(False, description="Whether the request spent time in queue")
     elapsed_ms: float = Field(..., ge=0, description="Wall-clock time from request to response")
+    provenance: Optional["RuntimeProvenance"] = Field(
+        None,
+        description="Bounded runtime provenance for the completed request.",
+    )
 
 
 class GenerateResponse(BaseModel):
@@ -327,6 +338,10 @@ class ChatCompletionResponse(BaseModel):
     model: str = Field(..., description="Model that served the request")
     choices: list[ChatCompletionChoice] = Field(..., min_length=1)
     usage: ChatCompletionUsage = Field(default_factory=ChatCompletionUsage)
+    runtime_provenance: Optional["RuntimeProvenance"] = Field(
+        None,
+        description="Bounded runtime provenance for the completed request.",
+    )
 
 
 # ── OpenAI-compatible Streaming Chat Chunks ────────────────────────────────
@@ -358,10 +373,14 @@ class ChatCompletionChunk(BaseModel):
     created: int = Field(..., description="Unix timestamp of creation")
     model: str = Field(..., description="Model that served the request")
     choices: list[ChatCompletionChunkChoice] = Field(..., min_length=1)
+    runtime_provenance: Optional["RuntimeProvenance"] = Field(
+        None,
+        description="Bounded runtime provenance; emitted on the first visible chunk.",
+    )
 
     def to_sse(self) -> str:
         """Render this chunk as an SSE data line with trailing blank line."""
-        return f"data: {self.model_dump_json()}\n\n"
+        return f"data: {self.model_dump_json(exclude_none=True)}\n\n"
 
 
 # ── OpenAI-compatible Model List ───────────────────────────────────────────
@@ -378,6 +397,46 @@ class OpenAIModelEntry(BaseModel):
         None,
         description="Internal engine/format metadata — not part of OpenAI spec but useful for clients",
     )
+
+
+class RuntimeProvenance(BaseModel):
+    """Versioned, bounded evidence of which Whoosh'd runtime served work.
+
+    This is deliberately additive metadata.  It contains no prompts, output,
+    endpoint, filesystem, process, or credential material.  Unknown optional
+    fields are ignored so consumers can move forward without trusting them.
+    """
+
+    model_config = {"extra": "ignore"}
+
+    schema_version: Literal["whooshd.runtime.v1"] = "whooshd.runtime.v1"
+    request_id: Optional[str] = Field(None, max_length=128)
+    requested_model_id: Optional[str] = Field(None, max_length=256)
+    advertised_model_id: Optional[str] = Field(None, max_length=256)
+    resolved_model_id: Optional[str] = Field(None, max_length=256)
+    backend_reported_model_id: Optional[str] = Field(None, max_length=256)
+    runtime_kind: str = Field(..., max_length=64)
+    adapter_name: str = Field(..., max_length=64)
+    resolution_source: Literal[
+        "authoritative_registry",
+        "external_route",
+        "format_heuristic",
+        "loaded_model_match",
+        "configured_stub",
+        "single_runtime_compatibility",
+        "stub_only_compatibility",
+    ]
+    execution_mode: Literal[
+        "in_process",
+        "managed_sidecar",
+        "external_sidecar",
+        "stub",
+    ]
+    streaming: bool = False
+    queued: bool = False
+    batched: bool = False
+    model_lifecycle: Optional[ModelLifecycleState] = None
+    whooshd_version: Optional[str] = Field(None, max_length=64)
 
 
 class OpenAIModelListResponse(BaseModel):
