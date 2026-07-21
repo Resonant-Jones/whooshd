@@ -24,6 +24,7 @@ from whooshd.contracts import (
     ChatCompletionResponse,
 )
 from whooshd.backend_request_policy import ensure_backend_chat_request
+from whooshd.control_plane import ErrorCode
 from whooshd.log_safety import failure_class, safe_model_alias, safe_url
 
 logger = logging.getLogger(__name__)
@@ -217,7 +218,14 @@ async def forward_non_streaming(
             raise UpstreamHTTPError(
                 "Upstream returned an unparsable successful response",
                 status_code=502,
-                detail={"failure_class": failure_class(exc), "http_status": 200},
+                detail={
+                    "failure_class": failure_class(exc),
+                    "http_status": 200,
+                    "body_bytes": _byte_count(resp.content),
+                    "body_present": bool(resp.content),
+                    "content_type": str(resp.headers.get("content-type", ""))[:80],
+                },
+                error_code=ErrorCode.MALFORMED_UPSTREAM_RESPONSE,
             ) from exc
 
     if resp.status_code == 400:
@@ -232,12 +240,14 @@ async def forward_non_streaming(
 
     if resp.status_code in (408, 504):
         raise UpstreamTimeoutError(
-            f"Upstream server reported timeout: {resp.status_code}"
+            f"Upstream server reported timeout: {resp.status_code}",
+            detail=_safe_upstream_body(resp),
         )
 
     if resp.status_code == 429:
         raise RuntimeWarming(
-            f"Upstream not ready (429): model may be loading."
+            "Upstream is not ready; model may be loading.",
+            detail=_safe_upstream_body(resp),
         )
 
     # Generic upstream error.
@@ -323,13 +333,33 @@ async def forward_streaming(
                         err_body = await response.aread()
                     except Exception:
                         err_body = b""
+                    safe_body = _safe_upstream_body(
+                        response,
+                        body_bytes=_byte_count(err_body),
+                    )
+                    if response.status_code == 400:
+                        raise UpstreamBadRequest(
+                            "Upstream rejected the streaming request",
+                            detail=safe_body,
+                        )
+                    if response.status_code == 404:
+                        raise RuntimeModelNotFound(
+                            "Model was not found on the upstream server"
+                        )
+                    if response.status_code in (408, 504):
+                        raise UpstreamTimeoutError(
+                            "Upstream streaming request timed out",
+                            detail=safe_body,
+                        )
+                    if response.status_code == 429:
+                        raise RuntimeWarming(
+                            "Upstream model is warming",
+                            detail=safe_body,
+                        )
                     raise UpstreamHTTPError(
-                        f"Upstream returned {response.status_code} for streaming request",
+                        "Upstream returned an error for the streaming request",
                         status_code=502,
-                        detail=_safe_upstream_body(
-                            response,
-                            body_bytes=_byte_count(err_body),
-                        ),
+                        detail=safe_body,
                     )
 
                 async for line in response.aiter_lines():
@@ -450,10 +480,12 @@ def _classify_request_exception(exc: Exception, server_url: str, timeout: float)
     }
 
     if "connect" in exc_name.lower() or "connection" in exc_msg:
-        return UpstreamConnectionError("Upstream server is not reachable.")
+        return UpstreamConnectionError(
+            "Upstream server is not reachable.", detail=metadata
+        )
 
     if "readtimeout" in exc_name.lower() or "timeout" in exc_name.lower() or "timeout" in exc_msg:
-        return UpstreamTimeoutError("Upstream server timed out.")
+        return UpstreamTimeoutError("Upstream server timed out.", detail=metadata)
 
     # Generic fallback — unexpected transport error.
     return UpstreamHTTPError(
@@ -473,95 +505,123 @@ class UpstreamRuntimeError(Exception):
     can use when constructing the error response.
     """
 
-    def __init__(self, message: str, http_status: int = 502):
+    error_code = ErrorCode.UPSTREAM_PROTOCOL_ERROR
+
+    def __init__(self, message: str, http_status: int = 502, detail: dict | None = None):
         super().__init__(message)
         self.http_status = http_status
+        self.detail = detail
 
 
 class UpstreamConnectionError(UpstreamRuntimeError):
     """Upstream server is unreachable (connection refused, DNS failure, etc.)."""
 
-    def __init__(self, message: str):
-        super().__init__(message, http_status=503)
+    error_code = ErrorCode.UPSTREAM_UNAVAILABLE
+
+    def __init__(self, message: str, detail: dict | None = None):
+        super().__init__(message, http_status=503, detail=detail)
 
 
 class UpstreamTimeoutError(UpstreamRuntimeError):
     """Upstream server timed out."""
 
-    def __init__(self, message: str):
-        super().__init__(message, http_status=504)
+    error_code = ErrorCode.UPSTREAM_TIMEOUT
+
+    def __init__(self, message: str, detail: dict | None = None):
+        super().__init__(message, http_status=504, detail=detail)
 
 
 class UpstreamBadRequest(UpstreamRuntimeError):
     """Upstream server rejected the request as malformed (400)."""
 
+    error_code = ErrorCode.UNSUPPORTED_FIELD
+
     def __init__(self, message: str, detail: dict | None = None):
-        super().__init__(message, http_status=400)
-        self.detail = detail
+        super().__init__(message, http_status=400, detail=detail)
 
 
 class RuntimeModelNotFound(UpstreamRuntimeError):
     """Requested model was not found on the upstream server (404)."""
 
-    def __init__(self, message: str):
-        super().__init__(message, http_status=404)
+    error_code = ErrorCode.MODEL_NOT_FOUND
+
+    def __init__(self, message: str, detail: dict | None = None):
+        super().__init__(message, http_status=404, detail=detail)
 
 
 class RuntimeWarming(UpstreamRuntimeError):
     """Runtime is warming / model is not ready (409/425/429)."""
 
-    def __init__(self, message: str):
-        super().__init__(message, http_status=425)
+    error_code = ErrorCode.MODEL_WARMING
+
+    def __init__(self, message: str, detail: dict | None = None):
+        super().__init__(message, http_status=425, detail=detail)
 
 
 class RuntimeUnavailable(UpstreamRuntimeError):
     """Runtime is entirely unavailable (process down, not configured, etc.)."""
 
-    def __init__(self, message: str):
-        super().__init__(message, http_status=503)
+    error_code = ErrorCode.RUNTIME_UNAVAILABLE
+
+    def __init__(self, message: str, detail: dict | None = None):
+        super().__init__(message, http_status=503, detail=detail)
 
 
 class RuntimeTimeout(UpstreamRuntimeError):
     """Request to the runtime timed out."""
 
-    def __init__(self, message: str):
-        super().__init__(message, http_status=504)
+    error_code = ErrorCode.TIMEOUT
+
+    def __init__(self, message: str, detail: dict | None = None):
+        super().__init__(message, http_status=504, detail=detail)
 
 
 class RuntimeBadRequest(UpstreamRuntimeError):
     """Request was rejected by the runtime (malformed, unsupported fields)."""
 
-    def __init__(self, message: str):
-        super().__init__(message, http_status=400)
+    error_code = ErrorCode.UNSUPPORTED_FIELD
+
+    def __init__(self, message: str, detail: dict | None = None):
+        super().__init__(message, http_status=400, detail=detail)
 
 
 class RuntimeUpstreamError(UpstreamRuntimeError):
     """Generic upstream runtime error."""
 
-    def __init__(self, message: str, http_status: int = 502):
-        super().__init__(message, http_status=http_status)
+    def __init__(self, message: str, http_status: int = 502, detail: dict | None = None):
+        super().__init__(message, http_status=http_status, detail=detail)
 
 
 class StreamInterrupted(UpstreamRuntimeError):
     """Upstream stream was interrupted mid-response."""
 
-    def __init__(self, message: str):
-        super().__init__(message, http_status=502)
+    error_code = ErrorCode.STREAM_INTERRUPTED
+
+    def __init__(self, message: str, detail: dict | None = None):
+        super().__init__(message, http_status=502, detail=detail)
 
 
 class UpstreamHTTPError(UpstreamRuntimeError):
     """Upstream returned an unexpected HTTP status."""
 
-    def __init__(self, message: str, status_code: int = 502, detail: dict | None = None):
-        super().__init__(message, http_status=status_code)
-        self.detail = detail
+    def __init__(
+        self,
+        message: str,
+        status_code: int = 502,
+        detail: dict | None = None,
+        error_code: ErrorCode = ErrorCode.UPSTREAM_PROTOCOL_ERROR,
+    ):
+        self.error_code = error_code
+        super().__init__(message, http_status=status_code, detail=detail)
 
 
 class RuntimeOverloaded(UpstreamRuntimeError):
     """Runtime concurrency limit reached — request rejected (429)."""
 
-    def __init__(self, message: str):
-        super().__init__(message, http_status=429)
+    error_code = ErrorCode.RUNNER_OVERLOADED
+
+    def __init__(self, message: str, detail: dict | None = None):
+        super().__init__(message, http_status=429, detail=detail)
 
 
 class ModelNotFound(Exception):

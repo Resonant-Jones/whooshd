@@ -77,7 +77,7 @@ def evaluate_chat_request(
         return AdmissionResult(
             accepted=False,
             reason=AdmissionDecision.REJECTED_TOO_MANY_MESSAGES,
-            error_code=ErrorCode.INTERNAL,
+            error_code=ErrorCode.INVALID_REQUEST,
             message=f"Too many messages: {len(request.messages)} (max {max_msgs}).",
             details={"message_count": len(request.messages), "max_messages": max_msgs},
             http_status=400,
@@ -90,7 +90,7 @@ def evaluate_chat_request(
         return AdmissionResult(
             accepted=False,
             reason=AdmissionDecision.REJECTED_PROMPT_TOO_LARGE,
-            error_code=ErrorCode.INTERNAL,
+            error_code=ErrorCode.CONTEXT_OVERFLOW,
             message=f"Prompt too large: ~{prompt_chars} chars estimated (max {max_chars}).",
             details={"estimated_chars": prompt_chars, "max_prompt_chars": max_chars},
             http_status=400,
@@ -102,7 +102,7 @@ def evaluate_chat_request(
         return AdmissionResult(
             accepted=False,
             reason=AdmissionDecision.REJECTED_MAX_TOKENS_TOO_HIGH,
-            error_code=ErrorCode.INTERNAL,
+            error_code=ErrorCode.INVALID_REQUEST,
             message=f"max_tokens {request.max_tokens} exceeds server cap {max_tok}.",
             details={"request_max_tokens": request.max_tokens, "server_cap": max_tok},
             http_status=400,
@@ -135,7 +135,7 @@ def evaluate_chat_request(
                 return AdmissionResult(
                     accepted=False,
                     reason=AdmissionDecision.REJECTED_QUEUE_FULL,
-                    error_code=ErrorCode.RUNNER_OVERLOADED,
+                    error_code=ErrorCode.QUEUE_FULL,
                     message=f"Whoosh'd is at capacity and the queue is full (depth {runtime.queue_depth}/{max_queue}).",
                     details={
                         "active_jobs": runtime.active_jobs,

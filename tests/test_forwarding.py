@@ -809,7 +809,7 @@ class TestAppErrorClassification:
                 })
                 assert resp.status_code == 503
                 body = resp.json()
-                assert body["code"] == ErrorCode.INTERNAL.value
+                assert body["code"] == ErrorCode.RUNTIME_UNAVAILABLE.value
 
         # Cleanup
         routing_reset()

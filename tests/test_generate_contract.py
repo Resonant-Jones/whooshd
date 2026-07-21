@@ -99,8 +99,8 @@ async def test_empty_prompt_returns_422(client):
     resp = await client.post("/v1/generate", json={"prompt": ""})
     assert resp.status_code == 422
     body = resp.json()
-    assert body["code"] == "INTERNAL"
-    assert "Validation error" in body["message"]
+    assert body["code"] == "invalid_request"
+    assert "validation" in body["message"].lower()
 
 
 @pytest.mark.asyncio
@@ -108,7 +108,7 @@ async def test_missing_prompt_returns_422(client):
     resp = await client.post("/v1/generate", json={})
     assert resp.status_code == 422
     body = resp.json()
-    assert body["code"] == "INTERNAL"
+    assert body["code"] == "invalid_request"
 
 
 @pytest.mark.asyncio

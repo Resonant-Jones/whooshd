@@ -9,7 +9,13 @@ from __future__ import annotations
 from enum import Enum
 from typing import Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
+
+from whooshd.control_plane import (
+    CONTROL_PLANE_CONTRACT_VERSION,
+    ErrorCategory,
+    ErrorCode,
+)
 
 
 # ── Shared enums ────────────────────────────────────────────────────────────
@@ -145,24 +151,38 @@ class ModelsResponse(BaseModel):
 # ── Error ───────────────────────────────────────────────────────────────────
 
 
-class ErrorCode(str, Enum):
-    MEMORY_PRESSURE = "MEMORY_PRESSURE"
-    MODEL_LOAD_FAILED = "MODEL_LOAD_FAILED"
-    MODEL_NOT_FOUND = "MODEL_NOT_FOUND"
-    CONTEXT_OVERFLOW = "CONTEXT_OVERFLOW"
-    TIMEOUT = "TIMEOUT"
-    RUNNER_OVERLOADED = "RUNNER_OVERLOADED"
-    CANCELLED = "CANCELLED"
-    INTERNAL = "INTERNAL"
-
-
 class ErrorResponse(BaseModel):
-    """Standard error body returned for non-2xx responses."""
+    """Canonical versioned error body returned for non-2xx responses.
+
+    ``detail`` was the pre-v1 input name.  It remains accepted as an input
+    compatibility alias, while serialized responses use the canonical
+    ``details`` field.
+    """
+
+    model_config = {"populate_by_name": True}
 
     code: ErrorCode
-    message: str
+    message: str = "Request failed"
+    contract_version: str = CONTROL_PLANE_CONTRACT_VERSION
+    http_status: int = Field(500, ge=400, le=599)
+    retryable: bool = False
     retry_after_seconds: Optional[float] = Field(None, description="Suggested backoff in seconds")
-    detail: Optional[dict] = Field(None, description="Optional machine-readable detail")
+    request_id: Optional[str] = None
+    category: ErrorCategory = ErrorCategory.INTERNAL
+    details: Optional[dict] = Field(None, description="Bounded operational details")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _accept_legacy_detail_name(cls, value):
+        if isinstance(value, dict) and "detail" in value and "details" not in value:
+            value = dict(value)
+            value["details"] = value.pop("detail")
+        return value
+
+    @property
+    def detail(self) -> Optional[dict]:
+        """Compatibility accessor for pre-v1 callers."""
+        return self.details
 
 
 # ── Generation ─────────────────────────────────────────────────────────────

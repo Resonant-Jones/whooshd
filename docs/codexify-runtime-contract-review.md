@@ -17,8 +17,8 @@ Based on current Whoosh'd surface and known Codexify requirements.
 | `GET /ready` (readiness) | ✅ | 200 ready, 503 warming/unloaded/failed |
 | `POST /runtime/model/warmup` | ✅ | Explicit model warmup |
 | `GET /runtime/model` | ✅ | Model lifecycle snapshots |
-| Structured error responses | ✅ | `code`, `message`, `details` fields |
-| `429 RUNNER_OVERLOADED` | ✅ | Clean rejection at active limit |
+| Versioned structured errors | ✅ | `whooshd.control.v1`, bounded `code`, `message`, `details` |
+| `429 runner_overloaded` | ✅ | Clean rejection at active limit with bounded retry metadata |
 | Cancellation endpoint | ✅ | `POST /runtime/requests/{id}/cancel` |
 | Request lifecycle tracking | ✅ | `/runtime/requests` |
 | Model lifecycle states | ✅ | `unloaded / warming / ready / generating / degraded / failed` |
@@ -78,6 +78,10 @@ Conditions to revisit:
 ---
 
 ## Summary
+
+The complete cross-repository code/status/retry matrix is maintained in
+[Control-Plane v1](control-plane-v1.md). This implementation does not widen
+the live-runtime or external-collector proof claims.
 
 ```text
 Codexify can point at Whoosh'd today with:

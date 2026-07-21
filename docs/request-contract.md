@@ -53,10 +53,10 @@ unknown JSON properties. Provider compatibility still requires live proof.
 ## Unsupported behavior
 
 Unknown fields that look inference-affecting, such as an undeclared sampling,
-token-limit, tool, response-format, or reasoning control, return the existing
-generic `INTERNAL` error shape with HTTP 400 and bounded policy metadata. The
-field name and value are not included in the outward response. Unknown fields
-that are not inference-shaped are stripped. The policy logs only field names,
+token-limit, tool, response-format, or reasoning control, return the v1
+`unsupported_field` error with HTTP 400 and bounded policy metadata. The field
+name and value are not included in the outward response. Unknown fields that
+are not inference-shaped are stripped. The policy records only field names,
 counts, adapter kind, policy version, and request correlation metadata.
 
 ## ThreadWake ownership
@@ -69,3 +69,6 @@ sanitized backend request and does not reconstruct a body from ingress data.
 
 This boundary does not enable durable KV reuse, change routing, change queue
 policy, or claim complete provider compatibility.
+
+For the shared HTTP error, retry, request-ID, and streaming-terminal contract,
+see [Control-Plane v1](control-plane-v1.md).
