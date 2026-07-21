@@ -18,6 +18,10 @@ import logging
 from typing import AsyncIterator, Optional
 
 from whooshd.adapters.base import InferenceAdapter, StreamingNotSupportedError
+from whooshd.backend_request_policy import (
+    ensure_backend_chat_request,
+    ensure_backend_generate_request,
+)
 from whooshd.contracts import (
     ChatCompletionChunk,
     ChatCompletionRequest,
@@ -301,7 +305,9 @@ class RuntimeRouter:
         """Route a generate request to the correct adapter."""
         model_id = request.model_id or "stub-model"
         adapter = await self._resolve_model_runtime(model_id)
-        return await adapter.generate(request)
+        return await adapter.generate(
+            ensure_backend_generate_request(request, adapter_kind=adapter.kind)
+        )
 
     async def chat_completion(
         self,
@@ -310,7 +316,10 @@ class RuntimeRouter:
     ) -> ChatCompletionResponse:
         """Route a chat completion request to the correct adapter."""
         adapter = await self._resolve_model_runtime(request.model)
-        return await adapter.chat_completion(request, context=context)
+        return await adapter.chat_completion(
+            ensure_backend_chat_request(request, adapter_kind=adapter.kind),
+            context=context,
+        )
 
     async def chat_completion_stream(
         self,
@@ -323,7 +332,11 @@ class RuntimeRouter:
             raise StreamingNotSupportedError(
                 f"Runtime '{adapter.kind}' does not support streaming."
             )
-        async for chunk in adapter.chat_completion_stream(request, context=context):
+        backend_request = ensure_backend_chat_request(
+            request,
+            adapter_kind=adapter.kind,
+        )
+        async for chunk in adapter.chat_completion_stream(backend_request, context=context):
             yield chunk
 
     # ── Aggregated model inventory ──────────────────────────────────────

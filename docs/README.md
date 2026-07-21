@@ -19,6 +19,7 @@ Start here for current state, safe claims, experimental areas, and evidence:
 - **Operators**: [Operator Guide](operator-guide.md)
 - **Developers**: [Developer Guide](developer-guide.md)
 - **Architecture**: [Architecture Overview](architecture.md)
+- **Request contract**: [Ingress and backend request boundary](request-contract.md)
 - **Operations and security**: [Whoosh'd Logging Safety](security/whooshd-logging-safety.md)
 
 ## Reference

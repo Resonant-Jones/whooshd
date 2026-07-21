@@ -42,6 +42,11 @@ Exception diagnostics use exception type and failure class. Outward failure
 messages are type-only where exception text is untrusted. Terminal and
 ThreadWake failure metadata follows the same content-free rule.
 
+Backend request-policy diagnostics are also bounded: they contain only the
+policy version, adapter kind, request correlation, field names, and field
+counts. They never include field values, metadata bodies, prompts, tools, or
+generated output.
+
 ## Discovery classification
 
 | Surface | Classification after CWC-005 |

@@ -31,6 +31,10 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from whooshd import __version__
 from whooshd.admission import AdmissionDecision, evaluate_chat_request
 from whooshd.adapters.base import StreamingNotSupportedError
+from whooshd.backend_request_policy import (
+    BackendRequestPolicyError,
+    ensure_backend_chat_request,
+)
 from whooshd.contracts import (
     ChatCompletionRequest,
     ChatCompletionResponse,
@@ -362,6 +366,23 @@ async def _model_resolution_error_handler(request, exc: ModelResolutionError):
     )
 
 
+@app.exception_handler(BackendRequestPolicyError)
+async def _backend_request_policy_error_handler(request, exc: BackendRequestPolicyError):
+    """Reject inference-shaped unknown fields without echoing their values."""
+    return JSONResponse(
+        status_code=400,
+        content=ErrorResponse(
+            code=ErrorCode.INTERNAL,
+            message="Unsupported request field",
+            detail={
+                "failure_class": "validation",
+                "policy_version": "cwc-006-v1",
+                "rejected_field_count": len(exc.rejected_fields),
+            },
+        ).model_dump(),
+    )
+
+
 # ── Upstream runtime error handler ─────────────────────────────────────────
 
 @app.exception_handler(UpstreamRuntimeError)
@@ -463,6 +484,11 @@ async def _streaming_not_supported_handler(request, exc: StreamingNotSupportedEr
 
 async def _execute_non_streaming(adapter, req, ctx, rt, request_id):
     """Execute a non-streaming request and return the JSON response."""
+    req = ensure_backend_chat_request(
+        req,
+        adapter_kind=getattr(adapter, "kind", None),
+        request_id=request_id,
+    )
     try:
         result = await adapter.chat_completion(req, context=ctx)
         rt.complete_request(request_id)
@@ -481,6 +507,11 @@ async def _execute_streaming(adapter, req, ctx, rt, request_id):
     No SSE chunks are emitted until the first chunk is successfully retrieved,
     so upstream errors surface as structured JSON before the stream starts.
     """
+    req = ensure_backend_chat_request(
+        req,
+        adapter_kind=getattr(adapter, "kind", None),
+        request_id=request_id,
+    )
     stream_gen = adapter.chat_completion_stream(req, context=ctx)
     try:
         first_chunk = await stream_gen.__anext__()
@@ -548,6 +579,7 @@ async def _execute_non_streaming_with_threadwake(
     adapter, req, ctx, rt, request_id,
     *,
     backend: str | None,
+    threadwake_request=None,
 ):
     """Execute non-streaming chat with optional ThreadWake ephemeral KV reuse.
 
@@ -559,7 +591,7 @@ async def _execute_non_streaming_with_threadwake(
     Streaming requests are never routed through this bridge.
     """
     result = await _threadwake_manager.execute_ephemeral_chat_completion(
-        req,
+        threadwake_request or req,
         backend=backend or "unknown",
         full_generation_fn=lambda: adapter.chat_completion(req, context=ctx),
     )
@@ -677,7 +709,14 @@ async def _try_execute_live_batch(
         return None
 
     try:
-        requests = [e.request for e in active_group]
+        requests = [
+            ensure_backend_chat_request(
+                e.request,
+                adapter_kind=backend,
+                request_id=e.request_id,
+            )
+            for e in active_group
+        ]
         batch_responses = await adapter.chat_completion_batch(requests)
 
         if len(batch_responses) != len(active_group):
@@ -811,6 +850,30 @@ async def chat_completions(req: ChatCompletionRequest):
             threadwake_observation.cache_scope,
         )
 
+    # ThreadWake and lifecycle code retain the ingress request.  Every
+    # execution mode receives a separate backend representation so controls
+    # and undeclared extras cannot be restored by queueing, batching, or
+    # fallback code.
+    try:
+        backend_request = ensure_backend_chat_request(
+            req,
+            adapter_kind=getattr(adapter, "kind", None),
+        )
+    except BackendRequestPolicyError as exc:
+        rt.record_rejected("rejected_unsupported_fields")
+        return JSONResponse(
+            status_code=400,
+            content=ErrorResponse(
+                code=ErrorCode.INTERNAL,
+                message="Unsupported request field",
+                detail={
+                    "failure_class": "validation",
+                    "policy_version": "cwc-006-v1",
+                    "rejected_field_count": len(exc.rejected_fields),
+                },
+            ).model_dump(),
+        )
+
     # ── Queue wait (when admission returned QUEUED) ───────────────────
     is_queued = admission.reason == AdmissionDecision.QUEUED
     if is_queued:
@@ -818,7 +881,7 @@ async def chat_completions(req: ChatCompletionRequest):
         request_id = rt.begin_request(model=req.model, stream=req.stream)
         rt.mark_queued(request_id)
         token = rt.get_cancellation_token(request_id)
-        entry = QueueEntry(request_id=request_id, request=req)
+        entry = QueueEntry(request_id=request_id, request=backend_request)
         queue.enqueue(entry)
 
         from whooshd.config import get_max_active_requests
@@ -875,8 +938,9 @@ async def chat_completions(req: ChatCompletionRequest):
                 request_id=request_id, cancellation_token=token, stream=False
             ) if token else None
             return await _execute_non_streaming_with_threadwake(
-                adapter, req, ctx, rt, request_id,
+                adapter, backend_request, ctx, rt, request_id,
                 backend=getattr(adapter, "kind", None),
+                threadwake_request=req,
             )
 
         # ── Streaming: dequeue then stream ────────────────────────────
@@ -890,7 +954,7 @@ async def chat_completions(req: ChatCompletionRequest):
         ctx = RequestExecutionContext(
             request_id=request_id, cancellation_token=token, stream=True
         ) if token else None
-        return await _execute_streaming(adapter, req, ctx, rt, request_id)
+        return await _execute_streaming(adapter, backend_request, ctx, rt, request_id)
 
     # ── Non-streaming path (immediate execution) ──────────────────────
     if not req.stream:
@@ -901,8 +965,9 @@ async def chat_completions(req: ChatCompletionRequest):
             request_id=request_id, cancellation_token=token, stream=False
         ) if token else None
         return await _execute_non_streaming_with_threadwake(
-            adapter, req, ctx, rt, request_id,
+            adapter, backend_request, ctx, rt, request_id,
             backend=getattr(adapter, "kind", None),
+            threadwake_request=req,
         )
 
     # ── Streaming path (immediate execution) ──────────────────────────
@@ -915,7 +980,7 @@ async def chat_completions(req: ChatCompletionRequest):
     ctx = RequestExecutionContext(
         request_id=request_id, cancellation_token=token, stream=True
     ) if token else None
-    return await _execute_streaming(adapter, req, ctx, rt, request_id)
+    return await _execute_streaming(adapter, backend_request, ctx, rt, request_id)
 
 
 # ── OpenAI-compatible Model Inventory ──────────────────────────────────────

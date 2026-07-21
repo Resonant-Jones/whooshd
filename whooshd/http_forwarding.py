@@ -23,6 +23,7 @@ from whooshd.contracts import (
     ChatCompletionDelta,
     ChatCompletionResponse,
 )
+from whooshd.backend_request_policy import ensure_backend_chat_request
 from whooshd.log_safety import failure_class, safe_model_alias, safe_url
 
 logger = logging.getLogger(__name__)
@@ -70,16 +71,23 @@ def _filter_safe_headers(headers: dict[str, str] | None) -> dict[str, str]:
 # ── Request body builder ────────────────────────────────────────────────────
 
 
-def build_forward_body(request, *, model_override: str | None = None) -> dict:
+def build_forward_body(
+    request,
+    *,
+    model_override: str | None = None,
+    adapter_kind: str | None = None,
+) -> dict:
     """Build a JSON-serialisable dict from a ChatCompletionRequest.
 
-    Preserves all recognised OpenAI-compatible fields plus any
-    extra fields captured from the request body.  Fields with
+    Preserves allowlisted canonical fields and declared adapter extensions.
+    Internal metadata and unknown fields never reach the body. Fields with
     ``None`` values are omitted from the forward body.
 
     *model_override* allows the adapter to set a different model ID
     for the upstream server.
     """
+    request = ensure_backend_chat_request(request, adapter_kind=adapter_kind)
+    allowed_fields = set(request.forwarded_fields)
     body: dict = {
         "model": model_override if model_override else request.model,
         "messages": [
@@ -89,36 +97,34 @@ def build_forward_body(request, *, model_override: str | None = None) -> dict:
     }
 
     # ── Fields to forward when non-None ───────────────────────────
-    _maybe_set(body, "temperature", request.temperature)
-    _maybe_set(body, "top_p", request.top_p)
-    _maybe_set(body, "max_tokens", request.max_tokens)
-    _maybe_set(body, "max_completion_tokens", request.max_completion_tokens)
-    _maybe_set(body, "stop", request.stop)
-    _maybe_set(body, "user", request.user)
+    _maybe_set(body, "temperature", request.temperature, allowed_fields)
+    _maybe_set(body, "top_p", request.top_p, allowed_fields)
+    _maybe_set(body, "max_tokens", request.max_tokens, allowed_fields)
+    _maybe_set(body, "max_completion_tokens", request.max_completion_tokens, allowed_fields)
+    _maybe_set(body, "stop", request.stop, allowed_fields)
+    _maybe_set(body, "user", request.user, allowed_fields)
 
     # Tool / function calling.
-    _maybe_set(body, "tools", request.tools)
-    _maybe_set(body, "tool_choice", request.tool_choice)
-    _maybe_set(body, "parallel_tool_calls", request.parallel_tool_calls)
+    _maybe_set(body, "tools", request.tools, allowed_fields)
+    _maybe_set(body, "tool_choice", request.tool_choice, allowed_fields)
+    _maybe_set(body, "parallel_tool_calls", request.parallel_tool_calls, allowed_fields)
 
     # Structured output.
-    _maybe_set(body, "response_format", request.response_format)
+    _maybe_set(body, "response_format", request.response_format, allowed_fields)
 
     # Sampling parameters.
-    _maybe_set(body, "seed", request.seed)
-    _maybe_set(body, "presence_penalty", request.presence_penalty)
-    _maybe_set(body, "frequency_penalty", request.frequency_penalty)
-    _maybe_set(body, "logit_bias", request.logit_bias)
-    _maybe_set(body, "logprobs", request.logprobs)
-    _maybe_set(body, "top_logprobs", request.top_logprobs)
+    _maybe_set(body, "seed", request.seed, allowed_fields)
+    _maybe_set(body, "presence_penalty", request.presence_penalty, allowed_fields)
+    _maybe_set(body, "frequency_penalty", request.frequency_penalty, allowed_fields)
+    _maybe_set(body, "logit_bias", request.logit_bias, allowed_fields)
+    _maybe_set(body, "logprobs", request.logprobs, allowed_fields)
+    _maybe_set(body, "top_logprobs", request.top_logprobs, allowed_fields)
 
     # Reasoning.
-    _maybe_set(body, "reasoning_effort", request.reasoning_effort)
+    _maybe_set(body, "reasoning_effort", request.reasoning_effort, allowed_fields)
 
-    # Metadata.
-    _maybe_set(body, "metadata", request.metadata)
-
-    # Extra fields captured from the request (model_config extra='allow').
+    # Only extensions explicitly declared for the selected adapter survive
+    # the backend request policy.
     extra = getattr(request, "extra_fields", None) or {}
     for key, value in extra.items():
         if value is not None:
@@ -127,9 +133,9 @@ def build_forward_body(request, *, model_override: str | None = None) -> dict:
     return body
 
 
-def _maybe_set(d: dict, key: str, value) -> None:
+def _maybe_set(d: dict, key: str, value, allowed_fields: set[str] | None = None) -> None:
     """Set *key* in *d* to *value* if value is not None."""
-    if value is not None:
+    if value is not None and (allowed_fields is None or key in allowed_fields):
         d[key] = value
 
 
@@ -158,6 +164,7 @@ async def forward_non_streaming(
     timeout: float = 120.0,
     headers: dict[str, str] | None = None,
     model_override: str | None = None,
+    adapter_kind: str | None = None,
 ) -> ChatCompletionResponse:
     """Forward a non-streaming chat completion request to an upstream server.
 
@@ -179,7 +186,11 @@ async def forward_non_streaming(
     """
     _check_httpx()
     url = f"{server_url.rstrip('/')}{endpoint}"
-    body = build_forward_body(request, model_override=model_override)
+    body = build_forward_body(
+        request,
+        model_override=model_override,
+        adapter_kind=adapter_kind,
+    )
     safe_req_headers = _filter_safe_headers(headers)
     safe_req_headers["Content-Type"] = "application/json"
 
@@ -249,6 +260,7 @@ async def forward_streaming(
     timeout: float = 300.0,
     headers: dict[str, str] | None = None,
     model_override: str | None = None,
+    adapter_kind: str | None = None,
     cancellation_token=None,
 ) -> AsyncIterator[ChatCompletionChunk]:
     """Forward a streaming chat completion request to an upstream server.
@@ -281,7 +293,11 @@ async def forward_streaming(
     """
     _check_httpx()
     url = f"{server_url.rstrip('/')}{endpoint}"
-    body = build_forward_body(request, model_override=model_override)
+    body = build_forward_body(
+        request,
+        model_override=model_override,
+        adapter_kind=adapter_kind,
+    )
     body["stream"] = True
     safe_req_headers = _filter_safe_headers(headers)
     safe_req_headers["Content-Type"] = "application/json"

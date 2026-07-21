@@ -662,6 +662,7 @@ class MlxLmServerAdapter:
         chat_resp = await forward_non_streaming(
             self._server_url, chat_req, timeout=300.0,
             model_override=self._config.model,
+            adapter_kind=self.kind,
         )
 
         # Map ChatCompletionResponse → GenerateResponse.
@@ -736,6 +737,7 @@ class MlxLmServerAdapter:
             return await forward_non_streaming(
                 self._server_url, request, timeout=300.0,
                 model_override=self._config.model,
+                adapter_kind=self.kind,
             )
         finally:
             self._concurrency_semaphore.release()
@@ -786,6 +788,7 @@ class MlxLmServerAdapter:
             async for chunk in forward_streaming(
                 self._server_url, request, timeout=300.0,
                 model_override=self._config.model,
+                adapter_kind=self.kind,
                 cancellation_token=cancellation_token,
             ):
                 yield chunk

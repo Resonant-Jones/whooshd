@@ -403,7 +403,8 @@ class MlxVlmAdapter:
                     raise RuntimeWarming("mlx-vlm is warming.")
                 raise RuntimeUnavailable("mlx-vlm not ready")
             return await forward_non_streaming(self._server_url, request, timeout=300.0,
-                                                model_override=self._config.model)
+                                               model_override=self._config.model,
+                                               adapter_kind=self.kind)
         finally:
             self._concurrency_semaphore.release()
 
@@ -428,8 +429,9 @@ class MlxVlmAdapter:
                 raise RuntimeUnavailable("mlx-vlm not ready")
             cancellation_token = context.cancellation_token if context else None
             async for chunk in forward_streaming(self._server_url, request, timeout=300.0,
-                                                  model_override=self._config.model,
-                                                  cancellation_token=cancellation_token):
+                                                 model_override=self._config.model,
+                                                 adapter_kind=self.kind,
+                                                 cancellation_token=cancellation_token):
                 yield chunk
         finally:
             self._concurrency_semaphore.release()
@@ -456,7 +458,8 @@ class MlxVlmAdapter:
                 messages=[ChatMessage(role="user", content=request.prompt)],
                 temperature=request.temperature, max_tokens=request.max_tokens, stream=False)
             chat_resp = await forward_non_streaming(self._server_url, chat_req, timeout=300.0,
-                                                     model_override=self._config.model)
+                                                    model_override=self._config.model,
+                                                    adapter_kind=self.kind)
             content = chat_resp.choices[0].message.content if chat_resp.choices else ""
             return GenerateResponse(ok=True, request_id=request.request_id or str(_uuid.uuid4()),
                                     model_id=chat_resp.model, text=content,

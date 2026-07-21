@@ -228,9 +228,10 @@ class ChatMessage(BaseModel):
 class ChatCompletionRequest(BaseModel):
     """OpenAI-compatible POST /v1/chat/completions request body.
 
-    Fields not explicitly listed here are captured in ``extra_fields``
-    and forwarded to the upstream runtime without validation.
-    This ensures Whoosh'd never silently discards an OpenAI-compatible field.
+    Fields not explicitly listed here are captured in ``extra_fields`` for
+    compatibility and internal diagnostics.  They are filtered by the
+    authoritative backend request policy before any adapter executes.  The
+    ingress model is therefore not itself a backend payload contract.
     """
 
     model_config = {"extra": "allow"}
@@ -268,8 +269,9 @@ class ChatCompletionRequest(BaseModel):
     metadata: Optional[dict] = Field(None, description="User-supplied metadata for the request")
     threadwake: Optional[dict] = Field(None, description="Optional ThreadWake observe-mode request config")
 
-    # Extra fields captured by model_config extra=allow, forwarded to upstream.
-    extra_fields: dict = Field(default_factory=dict, description="Additional fields captured from the request body, forwarded to upstream")
+    # Extra fields captured by model_config extra=allow.  The backend request
+    # policy decides whether an explicit adapter extension survives.
+    extra_fields: dict = Field(default_factory=dict, description="Additional ingress fields retained for policy filtering")
 
     def model_post_init(self, __context) -> None:
         """Capture any extra fields not explicitly declared in the model."""

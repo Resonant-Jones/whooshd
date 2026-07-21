@@ -800,6 +800,7 @@ class LlamaCppAdapter:
         chat_resp = await forward_non_streaming(
             url, chat_req, timeout=300.0,
             model_override=self._config.model_path,
+            adapter_kind=self.kind,
         )
 
         # Map ChatCompletionResponse → GenerateResponse.
@@ -874,6 +875,7 @@ class LlamaCppAdapter:
             return await forward_non_streaming(
                 url, request, timeout=300.0,
                 model_override=self._config.model_path,
+                adapter_kind=self.kind,
             )
         finally:
             self._concurrency_semaphore.release()
@@ -924,6 +926,7 @@ class LlamaCppAdapter:
             async for chunk in forward_streaming(
                 url, request, timeout=300.0,
                 model_override=self._config.model_path,
+                adapter_kind=self.kind,
                 cancellation_token=cancellation_token,
             ):
                 yield chunk

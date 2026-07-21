@@ -42,6 +42,7 @@ _SAFE_FIELDS = {
     "event",
     "failure_class",
     "failure_kind",
+    "forwarded_field_names",
     "frame_bytes",
     "frame_count",
     "host",
@@ -64,12 +65,15 @@ _SAFE_FIELDS = {
     "queue_depth",
     "request_id",
     "request_count",
+    "policy_version",
+    "rejected_field_names",
     "runtime",
     "runtime_kind",
     "reason",
     "scope",
     "status",
     "status_code",
+    "stripped_field_names",
     "timeout_class",
     "timeout_seconds",
     "token_count",
@@ -99,6 +103,7 @@ _PLACEHOLDER_RE = re.compile(
     r"%(?:\(([^)]+)\))?[#0\- +]?\d*(?:\.\d+)?[diouxXeEfFgGcrsa%]"
 )
 _FIELD_RE = re.compile(r"([A-Za-z][A-Za-z0-9_.-]*)\s*(?:=|:)\s*$")
+_FIELD_NAMES_VALUE_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_.-]*(?:,[A-Za-z][A-Za-z0-9_.-]*)*$")
 _AUTH_RE = re.compile(
     r"(?i)(\b(?:authorization\s*:\s*(?:bearer|basic)|bearer)\s+)[^\s,;]+"
 )
@@ -246,6 +251,16 @@ def _sanitize_value(value: Any, field: str | None = None) -> Any:
         if isinstance(value, str):
             if normalized == "diagnostic" and not _SAFE_DIAGNOSTIC_RE.fullmatch(value):
                 return _summary(value)
+            if normalized in {
+                "forwarded_field_names",
+                "rejected_field_names",
+                "stripped_field_names",
+            }:
+                if not value:
+                    return ""
+                if not _FIELD_NAMES_VALUE_RE.fullmatch(value):
+                    return _summary(value)
+                return ",".join(value.split(",")[:32])[:256]
             if normalized in {"model", "model_id", "model_alias"}:
                 return safe_model_alias(value)
             if _looks_like_private_path(value):

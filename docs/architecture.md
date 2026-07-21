@@ -17,8 +17,10 @@ Client/Codexify → Queue/Admission → Scheduler → Runtime Adapter → MLX/ll
 2. Admission checks (capacity, prompt size, model readiness)
 3. Queue or immediate execution
 4. Scheduler selects next request (FIFO or cache-aware)
-5. Runtime adapter executes (stub, MLX, llama.cpp)
-6. Response returned
+5. Backend request policy strips internal controls and selects declared
+   adapter fields
+6. Runtime adapter executes (stub, MLX, llama.cpp)
+7. Response returned
 
 ## Batching Architecture
 
@@ -39,6 +41,10 @@ All runtime snapshots, reports, and validation outputs are
 metadata-only. No raw prompts, generated text, token IDs, KV
 handles, or cache internals are exposed outside direct request
 responses.
+
+The ingress request is not the backend payload. The
+[request contract](request-contract.md) defines the allowlisted execution
+boundary, internal control ownership, and explicit provider extensions.
 
 ## Known Non-Goals
 
