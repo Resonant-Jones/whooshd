@@ -70,5 +70,32 @@ sanitized backend request and does not reconstruct a body from ingress data.
 This boundary does not enable durable KV reuse, change routing, change queue
 policy, or claim complete provider compatibility.
 
+## Runtime provenance
+
+Whoosh'd may attach bounded runtime evidence to model inventory and successful
+completion results using schema `whooshd.runtime.v1`. The evidence identifies
+the requested, advertised, resolved, and backend-reported model aliases when
+available, plus `runtime_kind`, `adapter_name`, `resolution_source`,
+`execution_mode`, streaming/queue/batch flags, model lifecycle, and the
+Whoosh'd version. The allowed resolution sources are
+`authoritative_registry`, `external_route`, `format_heuristic`,
+`loaded_model_match`, `configured_stub`, `single_runtime_compatibility`, and
+`stub_only_compatibility`. Execution modes are `in_process`,
+`managed_sidecar`, `external_sidecar`, and `stub`.
+
+`GET /v1/models` exposes this evidence under each model's bounded metadata and
+the native model inventory exposes it as `runtime_provenance`. Non-streaming
+chat and generate responses carry the same additive field. Streaming chat
+keeps the established OpenAI SSE body shape and sends serialized provenance in
+`X-Whooshd-Runtime-Provenance` before the stream begins. Direct in-process
+router consumers may receive the additive first-chunk field.
+
+The field contains no prompts, completions, tool data, media, URLs, filesystem
+paths, process identifiers, environment values, or credentials. Unknown
+optional fields are ignored by consumers; malformed known provenance is not
+treated as verified. Absence remains compatible with legacy runtimes. This
+metadata records code-path evidence only and does not prove that a live
+runtime, model, or external collector is currently available.
+
 For the shared HTTP error, retry, request-ID, and streaming-terminal contract,
 see [Control-Plane v1](control-plane-v1.md).

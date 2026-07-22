@@ -51,6 +51,7 @@ from whooshd.contracts import (
     RequestLifecycleState,
     RunnerStatus,
     RuntimeKind,
+    WHOOSHD_RUNTIME_PROVENANCE_HEADER,
 )
 from whooshd.control_plane import (
     CONTROL_PLANE_CONTRACT_VERSION,
@@ -66,7 +67,12 @@ from whooshd.config import (
     get_mlx_lm_server_enabled,
     get_mlx_vlm_enabled,
 )
-from whooshd.routing import ModelResolutionError, get_router, reset_router
+from whooshd.routing import (
+    ModelResolutionError,
+    RuntimeResolution,
+    get_router,
+    reset_router,
+)
 from whooshd.runtime import get_runtime
 from whooshd.queue import QueueEntry, get_queue
 from whooshd.http_forwarding import UpstreamRuntimeError
@@ -531,7 +537,7 @@ async def generate(request: Request, req: GenerateRequest) -> GenerateResponse:
     rt.mark_running(request_id)
 
     try:
-        result = await router.generate(req)
+        result = await router.generate(req, request_id=request_id)
         rt.complete_request(request_id)
         return result
     except UpstreamRuntimeError:
@@ -569,7 +575,17 @@ async def _streaming_not_supported_handler(request, exc: StreamingNotSupportedEr
 # ── Shared execution helpers (used by both queued and immediate paths) ────
 
 
-async def _execute_non_streaming(adapter, req, ctx, rt, request_id):
+async def _execute_non_streaming(
+    adapter,
+    req,
+    ctx,
+    rt,
+    request_id,
+    *,
+    resolution: RuntimeResolution | None = None,
+    queued: bool = False,
+    batched: bool = False,
+):
     """Execute a non-streaming request and return the JSON response."""
     req = ensure_backend_chat_request(
         req,
@@ -579,6 +595,19 @@ async def _execute_non_streaming(adapter, req, ctx, rt, request_id):
     try:
         result = await adapter.chat_completion(req, context=ctx)
         rt.complete_request(request_id)
+        if resolution is not None:
+            result = result.model_copy(
+                update={
+                    "runtime_provenance": resolution.provenance(
+                        request_id=request_id,
+                        backend_reported_model_id=result.model,
+                        streaming=False,
+                        queued=queued,
+                        batched=batched,
+                        model_lifecycle=ModelLifecycleState.READY,
+                    )
+                }
+            )
         return result
     except UpstreamRuntimeError:
         rt.fail_request(request_id)
@@ -588,7 +617,16 @@ async def _execute_non_streaming(adapter, req, ctx, rt, request_id):
         raise
 
 
-async def _execute_streaming(adapter, req, ctx, rt, request_id):
+async def _execute_streaming(
+    adapter,
+    req,
+    ctx,
+    rt,
+    request_id,
+    *,
+    resolution: RuntimeResolution | None = None,
+    queued: bool = False,
+):
     """Eagerly fetch the first SSE chunk, then return a StreamingResponse.
 
     No SSE chunks are emitted until the first chunk is successfully retrieved,
@@ -606,10 +644,24 @@ async def _execute_streaming(adapter, req, ctx, rt, request_id):
         async def _empty_sse():
             yield "data: [DONE]\n\n"
         rt.complete_request(request_id)
+        empty_headers = {
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        }
+        if resolution is not None:
+            empty_headers[WHOOSHD_RUNTIME_PROVENANCE_HEADER] = (
+                resolution.provenance(
+                    request_id=request_id,
+                    streaming=True,
+                    queued=queued,
+                    model_lifecycle=ModelLifecycleState.READY,
+                ).model_dump_json(exclude_none=True)
+            )
         return StreamingResponse(
             _empty_sse(),
             media_type="text/event-stream",
-            headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"},
+            headers=empty_headers,
         )
     except UpstreamRuntimeError as exc:
         rt.fail_request(request_id)
@@ -626,6 +678,21 @@ async def _execute_streaming(adapter, req, ctx, rt, request_id):
     except Exception:
         rt.fail_request(request_id)
         raise
+
+    stream_provenance = None
+    if resolution is not None:
+        stream_provenance = resolution.provenance(
+            request_id=request_id,
+            backend_reported_model_id=first_chunk.model,
+            streaming=True,
+            queued=queued,
+            model_lifecycle=ModelLifecycleState.READY,
+        )
+        # Keep the established OpenAI chunk shape stable.  Provenance is
+        # available before visible output through a bounded response header.
+        first_chunk = first_chunk.model_copy(
+            update={"runtime_provenance": None}
+        )
 
     async def _sse_stream():
         finished_normally = False
@@ -657,14 +724,20 @@ async def _execute_streaming(adapter, req, ctx, rt, request_id):
                 rt.record_stream_disconnect(request_id)
                 rt.cancel_request(request_id)
 
+    stream_headers = {
+        "Cache-Control": "no-cache",
+        "Connection": "keep-alive",
+        "X-Accel-Buffering": "no",
+    }
+    if stream_provenance is not None:
+        stream_headers[WHOOSHD_RUNTIME_PROVENANCE_HEADER] = (
+            stream_provenance.model_dump_json(exclude_none=True)
+        )
+
     return StreamingResponse(
         _sse_stream(),
         media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",
-        },
+        headers=stream_headers,
     )
 
 
@@ -676,6 +749,8 @@ async def _execute_non_streaming_with_threadwake(
     *,
     backend: str | None,
     threadwake_request=None,
+    resolution: RuntimeResolution | None = None,
+    queued: bool = False,
 ):
     """Execute non-streaming chat with optional ThreadWake ephemeral KV reuse.
 
@@ -693,10 +768,30 @@ async def _execute_non_streaming_with_threadwake(
     )
     if result is not None:
         rt.complete_request(request_id)
+        if resolution is not None:
+            result = result.model_copy(
+                update={
+                    "runtime_provenance": resolution.provenance(
+                        request_id=request_id,
+                        backend_reported_model_id=result.model,
+                        streaming=False,
+                        queued=queued,
+                        model_lifecycle=ModelLifecycleState.READY,
+                    )
+                }
+            )
         return result
 
     # Fall through to normal adapter execution.
-    return await _execute_non_streaming(adapter, req, ctx, rt, request_id)
+    return await _execute_non_streaming(
+        adapter,
+        req,
+        ctx,
+        rt,
+        request_id,
+        resolution=resolution,
+        queued=queued,
+    )
 
 
 # ── OpenAI-compatible Chat Completions ─────────────────────────────────────
@@ -711,6 +806,7 @@ async def _try_execute_live_batch(
     adapter,
     queue: Any,
     rt: Any,
+    resolution: RuntimeResolution | None = None,
 ) -> Any | None:
     """Attempt live-path batch execution for the selected request.
 
@@ -824,18 +920,35 @@ async def _try_execute_live_batch(
 
         # Resolve futures for peer entries.
         results = []
+        response_by_request_id = {}
         for entry, response in zip(active_group, batch_responses):
             rt.mark_running(entry.request_id)
             rt.complete_request(entry.request_id)
+            if resolution is not None:
+                response = response.model_copy(
+                    update={
+                        "runtime_provenance": resolution.for_model(
+                            entry.request.model
+                        ).provenance(
+                            request_id=entry.request_id,
+                            backend_reported_model_id=response.model,
+                            streaming=False,
+                            queued=True,
+                            batched=True,
+                            model_lifecycle=ModelLifecycleState.READY,
+                        )
+                    }
+                )
             results.append((entry.request_id, response))
+            response_by_request_id[entry.request_id] = response
 
         queue.resolve_batch_results(active_group, results)
 
         # Return the selected entry's response.
-        for entry, response in zip(active_group, batch_responses):
-            if entry.request_id == selected_request_id:
-                queue.notify_capacity()
-                return response
+        response = response_by_request_id.get(selected_request_id)
+        if response is not None:
+            queue.notify_capacity()
+            return response
 
         return None
     except Exception:
@@ -898,7 +1011,8 @@ async def chat_completions(request: Request, req: ChatCompletionRequest):
 
     # ── Resolve the adapter via router ───────────────────────────────
     try:
-        adapter = await router._resolve_model_runtime(req.model)
+        resolution = await router.resolve_model_runtime(req.model)
+        adapter = resolution.adapter
     except ModelResolutionError as exc:
         rt.record_rejected("rejected_model_not_ready")
         return JSONResponse(
@@ -1032,6 +1146,7 @@ async def chat_completions(request: Request, req: ChatCompletionRequest):
                 adapter=adapter,
                 queue=queue,
                 rt=rt,
+                resolution=resolution,
             )
             if batch_response is not None:
                 return batch_response
@@ -1046,6 +1161,8 @@ async def chat_completions(request: Request, req: ChatCompletionRequest):
                 adapter, backend_request, ctx, rt, request_id,
                 backend=getattr(adapter, "kind", None),
                 threadwake_request=req,
+                resolution=resolution,
+                queued=True,
             )
 
         # ── Streaming: dequeue then stream ────────────────────────────
@@ -1059,7 +1176,15 @@ async def chat_completions(request: Request, req: ChatCompletionRequest):
         ctx = RequestExecutionContext(
             request_id=request_id, cancellation_token=token, stream=True
         ) if token else None
-        return await _execute_streaming(adapter, backend_request, ctx, rt, request_id)
+        return await _execute_streaming(
+            adapter,
+            backend_request,
+            ctx,
+            rt,
+            request_id,
+            resolution=resolution,
+            queued=True,
+        )
 
     # ── Non-streaming path (immediate execution) ──────────────────────
     if not req.stream:
@@ -1074,6 +1199,8 @@ async def chat_completions(request: Request, req: ChatCompletionRequest):
             adapter, backend_request, ctx, rt, request_id,
             backend=getattr(adapter, "kind", None),
             threadwake_request=req,
+            resolution=resolution,
+            queued=False,
         )
 
     # ── Streaming path (immediate execution) ──────────────────────────
@@ -1087,7 +1214,15 @@ async def chat_completions(request: Request, req: ChatCompletionRequest):
     ctx = RequestExecutionContext(
         request_id=request_id, cancellation_token=token, stream=True
     ) if token else None
-    return await _execute_streaming(adapter, backend_request, ctx, rt, request_id)
+    return await _execute_streaming(
+        adapter,
+        backend_request,
+        ctx,
+        rt,
+        request_id,
+        resolution=resolution,
+        queued=False,
+    )
 
 
 # ── OpenAI-compatible Model Inventory ──────────────────────────────────────
