@@ -10,8 +10,9 @@ The contract identifier is `whooshd.control.v1`. Whoosh'd-owned HTTP responses
 advertise it with `X-Whooshd-Contract-Version: whooshd.control.v1`, including
 non-2xx responses. Canonical error bodies contain `contract_version`, `code`, a
 bounded `message`, `http_status`, `retryable`, optional bounded
-`retry_after_seconds`, `request_id` when available, `category`, and bounded
-`details`.
+`retry_after_seconds`, `request_id` when available, optional bounded
+`correlation_id`, `codexify_task_id`, `codexify_attempt_id`, and
+`whooshd_request_id`, `category`, and bounded `details`.
 
 `details` contains operational metadata only. It does not contain prompts,
 generated text, tools, media, upstream response bodies, headers, credentials,
@@ -56,6 +57,17 @@ compatibility, exact v1 proceeds normally, and an explicit non-v1 value returns
 `contract_version_unsupported` with HTTP 400 and the normal v1 response
 header. Only a bounded version identifier is retained in `details`.
 
+## Request correlation
+
+Whoosh'd accepts a bounded Codexify root from `X-Request-ID`, plus optional
+`X-Codexify-Task-ID` and `X-Codexify-Attempt-ID`. It creates a separate local
+`whooshd_request_id` for lifecycle, queue, cancellation, batch, and adapter
+state. IDs are limited to 128 characters from `A-Za-z0-9._:-`; invalid values
+are replaced or omitted and are never treated as content. Success, admission,
+validation, timeout, cancellation, and error responses echo only the bounded
+known values in headers when available. Missing correlation headers remain
+legacy-compatible.
+
 ## Streaming and request identity
 
 If an upstream failure occurs after visible output has begun, Whoosh'd emits a
@@ -65,8 +77,10 @@ back after visible output. Before output begins, the same canonical body is
 returned as an ordinary HTTP error.
 
 Request IDs generated or supplied by Whoosh'd are retained in canonical error
-bodies wherever the route has one. Lifecycle and cancellation state continue
-to use the original request identity.
+bodies wherever the route has one. Lifecycle and cancellation state use the
+local request identity while retaining the Codexify root/task/attempt fields
+separately. The same per-request fields are passed into queued and batch
+contexts; one batch response cannot borrow another request's correlation.
 
 This v1 slice does not change routing, provider selection, queue policy,
 authentication, terminal-integrity behavior, or successful provider payloads.

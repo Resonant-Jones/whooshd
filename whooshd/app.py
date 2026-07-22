@@ -67,6 +67,7 @@ from whooshd.config import (
     get_mlx_lm_server_enabled,
     get_mlx_vlm_enabled,
 )
+from whooshd.correlation import normalize_optional_identifier, normalize_request_id
 from whooshd.routing import (
     ModelResolutionError,
     RuntimeResolution,
@@ -91,6 +92,29 @@ logger = logging.getLogger(__name__)
 _tokenizer_registry = BackendTokenizerAdapterRegistry()
 _threadwake_manager = ThreadWakeManager(tokenizer_registry=_tokenizer_registry)
 _threadwake_analysis_loop: ThreadWakeAnalysisLoop | None = None
+
+
+def _correlation_state(request: Request) -> dict[str, str | None]:
+    state = getattr(request, "state", None)
+    return {
+        "correlation_id": getattr(state, "correlation_id", None),
+        "whooshd_request_id": getattr(state, "request_id", None),
+        "codexify_task_id": getattr(state, "codexify_task_id", None),
+        "codexify_attempt_id": getattr(state, "codexify_attempt_id", None),
+    }
+
+
+def _attach_correlation_headers(response, request: Request):
+    values = _correlation_state(request)
+    if values["correlation_id"]:
+        response.headers["X-Request-ID"] = values["correlation_id"]
+    if values["whooshd_request_id"]:
+        response.headers["X-Whooshd-Request-ID"] = values["whooshd_request_id"]
+    if values["codexify_task_id"]:
+        response.headers["X-Codexify-Task-ID"] = values["codexify_task_id"]
+    if values["codexify_attempt_id"]:
+        response.headers["X-Codexify-Attempt-ID"] = values["codexify_attempt_id"]
+    return response
 
 
 def _safe_upstream_error_detail(exc: UpstreamRuntimeError) -> dict:
@@ -132,9 +156,19 @@ app = FastAPI(
 @app.middleware("http")
 async def add_control_plane_version_header(request, call_next):
     """Advertise the response contract on every Whoosh'd-owned API response."""
-    incoming_request_id = request.headers.get("X-Request-ID")
-    if incoming_request_id:
-        request.state.request_id = incoming_request_id.strip()[:128]
+    correlation_id, valid_request_id = normalize_request_id(
+        request.headers.get("X-Request-ID")
+    )
+    request.state.correlation_id = correlation_id
+    request.state.correlation_id_invalid = bool(
+        request.headers.get("X-Request-ID") and not valid_request_id
+    )
+    request.state.codexify_task_id = normalize_optional_identifier(
+        request.headers.get("X-Codexify-Task-ID")
+    )
+    request.state.codexify_attempt_id = normalize_optional_identifier(
+        request.headers.get("X-Codexify-Attempt-ID")
+    )
     incoming_contract_version = request.headers.get(CONTROL_PLANE_VERSION_HEADER)
     if incoming_contract_version is not None:
         received_version = safe_contract_version(incoming_contract_version)
@@ -145,13 +179,18 @@ async def add_control_plane_version_header(request, call_next):
                     ControlErrorCode.CONTRACT_VERSION_UNSUPPORTED,
                     "Unsupported control-plane contract version",
                     http_status=400,
+                    request_id=correlation_id,
+                    correlation_id=correlation_id,
+                    codexify_task_id=request.state.codexify_task_id,
+                    codexify_attempt_id=request.state.codexify_attempt_id,
                     details={"received_version": received_version},
                 ),
             )
             response.headers[CONTROL_PLANE_VERSION_HEADER] = CONTROL_PLANE_CONTRACT_VERSION
-            return response
+            return _attach_correlation_headers(response, request)
     response = await call_next(request)
     response.headers[CONTROL_PLANE_VERSION_HEADER] = CONTROL_PLANE_CONTRACT_VERSION
+    _attach_correlation_headers(response, request)
 
     # Retry-After is deliberately derived from the already-bounded response
     # envelope.  Streaming bodies are not inspected.
@@ -358,6 +397,10 @@ def _error_body(
     http_status: int | None = None,
     retry_after_seconds: float | None = None,
     request_id: str | None = None,
+    correlation_id: str | None = None,
+    codexify_task_id: str | None = None,
+    codexify_attempt_id: str | None = None,
+    whooshd_request_id: str | None = None,
     details: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build one canonical, JSON-ready error envelope."""
@@ -368,9 +411,61 @@ def _error_body(
             http_status=http_status,
             retry_after_seconds=retry_after_seconds,
             request_id=request_id,
+            correlation_id=correlation_id,
+            codexify_task_id=codexify_task_id,
+            codexify_attempt_id=codexify_attempt_id,
+            whooshd_request_id=whooshd_request_id,
             details=details,
         )
     ).model_dump(mode="json", exclude_none=True)
+
+
+def _request_error_kwargs(
+    request: Request,
+    *,
+    request_id: str | None = None,
+) -> dict[str, str | None]:
+    values = _correlation_state(request)
+    return {
+        "request_id": request_id
+        or values["whooshd_request_id"]
+        or values["correlation_id"],
+        "correlation_id": values["correlation_id"],
+        "codexify_task_id": values["codexify_task_id"],
+        "codexify_attempt_id": values["codexify_attempt_id"],
+        "whooshd_request_id": values["whooshd_request_id"],
+    }
+
+
+def _begin_http_request(rt, request: Request, *, model: str, stream: bool) -> str:
+    values = _correlation_state(request)
+    request_id = rt.begin_request(
+        model=model,
+        stream=stream,
+        correlation_id=values["correlation_id"],
+        codexify_task_id=values["codexify_task_id"],
+        codexify_attempt_id=values["codexify_attempt_id"],
+    )
+    request.state.request_id = request_id
+    return request_id
+
+
+def _execution_context(
+    request: Request,
+    *,
+    request_id: str,
+    cancellation_token,
+    stream: bool,
+) -> RequestExecutionContext:
+    values = _correlation_state(request)
+    return RequestExecutionContext(
+        request_id=request_id,
+        cancellation_token=cancellation_token,
+        stream=stream,
+        correlation_id=values["correlation_id"],
+        codexify_task_id=values["codexify_task_id"],
+        codexify_attempt_id=values["codexify_attempt_id"],
+    )
 
 
 # ── Vision capability helpers ─────────────────────────────────────────────
@@ -417,6 +512,7 @@ async def _validation_exception_handler(request, exc):
             ErrorCode.INVALID_REQUEST,
             "Request validation failed",
             http_status=422,
+            **_request_error_kwargs(request),
             details={"failure_class": "validation", "error_count": len(exc.errors())},
         ),
     )
@@ -429,6 +525,9 @@ async def _http_exception_handler(request, exc: HTTPException):
     if isinstance(detail, dict) and detail.get("contract_version") == CONTROL_PLANE_CONTRACT_VERSION:
         body = dict(detail)
         body["http_status"] = exc.status_code
+        for key, value in _request_error_kwargs(request).items():
+            if value and key not in body:
+                body[key] = value
         return JSONResponse(status_code=exc.status_code, content=body)
     status = int(exc.status_code)
     code = _error_code_for_status(status)
@@ -438,6 +537,7 @@ async def _http_exception_handler(request, exc: HTTPException):
             code,
             "Request failed" if status < 500 else "Internal error",
             http_status=status,
+            **_request_error_kwargs(request),
             details={"http_status": status},
         ),
     )
@@ -453,6 +553,7 @@ async def _model_resolution_error_handler(request, exc: ModelResolutionError):
             ErrorCode.MODEL_NOT_FOUND,
             "Requested model is not available",
             http_status=404,
+            **_request_error_kwargs(request),
             details={"model_alias": safe_model_alias(exc.model_id)},
         ),
     )
@@ -467,6 +568,7 @@ async def _backend_request_policy_error_handler(request, exc: BackendRequestPoli
             ErrorCode.UNSUPPORTED_FIELD,
             "Unsupported request field",
             http_status=400,
+            **_request_error_kwargs(request),
             details={
                 "failure_class": "validation",
                 "policy_version": "cwc-006-v1",
@@ -493,7 +595,7 @@ async def _upstream_runtime_error_handler(request, exc: UpstreamRuntimeError):
             error_code,
             safe_exception_message(exc),
             http_status=exc.http_status,
-            request_id=getattr(request.state, "request_id", None),
+            **_request_error_kwargs(request),
             details=_safe_upstream_error_detail(exc),
         ),
     )
@@ -510,8 +612,8 @@ async def generate(request: Request, req: GenerateRequest) -> GenerateResponse:
     """
     rt = get_runtime()
     router = get_router()
-    if req.request_id:
-        request.state.request_id = req.request_id[:128]
+    if req.request_id and not request.headers.get("X-Request-ID"):
+        request.state.correlation_id, _ = normalize_request_id(req.request_id)
 
     # ── Admission control (simple: just active request limit) ─────────
     from whooshd.config import get_max_active_requests
@@ -524,7 +626,7 @@ async def generate(request: Request, req: GenerateRequest) -> GenerateResponse:
                 ErrorCode.RUNNER_OVERLOADED,
                 "Whoosh'd is at its active request limit.",
                 http_status=429,
-                request_id=req.request_id,
+                **_request_error_kwargs(request),
                 details={"active_jobs": rt.active_jobs},
             ),
         )
@@ -532,12 +634,18 @@ async def generate(request: Request, req: GenerateRequest) -> GenerateResponse:
     rt.record_accepted()
 
     model = req.model_id or "stub-model"
-    request_id = rt.begin_request(model=model, stream=False)
-    request.state.request_id = request_id
+    request_id = _begin_http_request(rt, request, model=model, stream=False)
     rt.mark_running(request_id)
 
     try:
-        result = await router.generate(req, request_id=request_id)
+        values = _correlation_state(request)
+        result = await router.generate(
+            req,
+            request_id=request_id,
+            correlation_id=values["correlation_id"],
+            codexify_task_id=values["codexify_task_id"],
+            codexify_attempt_id=values["codexify_attempt_id"],
+        )
         rt.complete_request(request_id)
         return result
     except UpstreamRuntimeError:
@@ -551,7 +659,7 @@ async def generate(request: Request, req: GenerateRequest) -> GenerateResponse:
                 ErrorCode.INTERNAL_ERROR,
                 "Inference failed",
                 http_status=500,
-                request_id=req.request_id or request_id,
+                **_request_error_kwargs(request, request_id=request_id),
                 details={"diagnostic": exception_metadata(exc)},
             ),
         ) from exc
@@ -567,6 +675,7 @@ async def _streaming_not_supported_handler(request, exc: StreamingNotSupportedEr
             ErrorCode.UNSUPPORTED_CAPABILITY,
             "Streaming is not supported by the selected runtime.",
             http_status=422,
+            **_request_error_kwargs(request),
             details={"failure_class": "unsupported_capability"},
         ),
     )
@@ -600,6 +709,10 @@ async def _execute_non_streaming(
                 update={
                     "runtime_provenance": resolution.provenance(
                         request_id=request_id,
+                        correlation_id=getattr(ctx, "correlation_id", None),
+                        codexify_task_id=getattr(ctx, "codexify_task_id", None),
+                        codexify_attempt_id=getattr(ctx, "codexify_attempt_id", None),
+                        whooshd_request_id=request_id,
                         backend_reported_model_id=result.model,
                         streaming=False,
                         queued=queued,
@@ -653,6 +766,10 @@ async def _execute_streaming(
             empty_headers[WHOOSHD_RUNTIME_PROVENANCE_HEADER] = (
                 resolution.provenance(
                     request_id=request_id,
+                    correlation_id=getattr(ctx, "correlation_id", None),
+                    codexify_task_id=getattr(ctx, "codexify_task_id", None),
+                    codexify_attempt_id=getattr(ctx, "codexify_attempt_id", None),
+                    whooshd_request_id=request_id,
                     streaming=True,
                     queued=queued,
                     model_lifecycle=ModelLifecycleState.READY,
@@ -672,6 +789,10 @@ async def _execute_streaming(
                 safe_exception_message(exc),
                 http_status=exc.http_status,
                 request_id=request_id,
+                correlation_id=getattr(ctx, "correlation_id", None),
+                codexify_task_id=getattr(ctx, "codexify_task_id", None),
+                codexify_attempt_id=getattr(ctx, "codexify_attempt_id", None),
+                whooshd_request_id=request_id,
                 details=_safe_upstream_error_detail(exc),
             ),
         )
@@ -683,6 +804,10 @@ async def _execute_streaming(
     if resolution is not None:
         stream_provenance = resolution.provenance(
             request_id=request_id,
+            correlation_id=getattr(ctx, "correlation_id", None),
+            codexify_task_id=getattr(ctx, "codexify_task_id", None),
+            codexify_attempt_id=getattr(ctx, "codexify_attempt_id", None),
+            whooshd_request_id=request_id,
             backend_reported_model_id=first_chunk.model,
             streaming=True,
             queued=queued,
@@ -710,6 +835,10 @@ async def _execute_streaming(
                     safe_exception_message(exc),
                     http_status=exc.http_status,
                     request_id=request_id,
+                    correlation_id=getattr(ctx, "correlation_id", None),
+                    codexify_task_id=getattr(ctx, "codexify_task_id", None),
+                    codexify_attempt_id=getattr(ctx, "codexify_attempt_id", None),
+                    whooshd_request_id=request_id,
                     details={
                         **_safe_upstream_error_detail(exc),
                         "output_started": True,
@@ -773,6 +902,10 @@ async def _execute_non_streaming_with_threadwake(
                 update={
                     "runtime_provenance": resolution.provenance(
                         request_id=request_id,
+                        correlation_id=getattr(ctx, "correlation_id", None),
+                        codexify_task_id=getattr(ctx, "codexify_task_id", None),
+                        codexify_attempt_id=getattr(ctx, "codexify_attempt_id", None),
+                        whooshd_request_id=request_id,
                         backend_reported_model_id=result.model,
                         streaming=False,
                         queued=queued,
@@ -909,7 +1042,21 @@ async def _try_execute_live_batch(
             )
             for e in active_group
         ]
-        batch_responses = await adapter.chat_completion_batch(requests)
+        contexts = [
+            RequestExecutionContext(
+                request_id=e.request_id,
+                cancellation_token=rt.get_cancellation_token(e.request_id),
+                stream=False,
+                correlation_id=e.correlation_id,
+                codexify_task_id=e.codexify_task_id,
+                codexify_attempt_id=e.codexify_attempt_id,
+            )
+            for e in active_group
+        ]
+        batch_responses = await adapter.chat_completion_batch(
+            requests,
+            contexts=contexts,
+        )
 
         if len(batch_responses) != len(active_group):
             logger.warning(
@@ -931,6 +1078,10 @@ async def _try_execute_live_batch(
                             entry.request.model
                         ).provenance(
                             request_id=entry.request_id,
+                            correlation_id=entry.correlation_id,
+                            codexify_task_id=entry.codexify_task_id,
+                            codexify_attempt_id=entry.codexify_attempt_id,
+                            whooshd_request_id=entry.request_id,
                             backend_reported_model_id=response.model,
                             streaming=False,
                             queued=True,
@@ -988,6 +1139,7 @@ async def chat_completions(request: Request, req: ChatCompletionRequest):
                 admission.error_code or ErrorCode.QUEUE_FULL,
                 admission.message or "Request rejected.",
                 http_status=admission.http_status,
+                **_request_error_kwargs(request),
                 details=admission.details,
             ),
         )
@@ -1002,6 +1154,7 @@ async def chat_completions(request: Request, req: ChatCompletionRequest):
                 admission.error_code or ErrorCode.INVALID_REQUEST,
                 admission.message or "Request rejected.",
                 http_status=admission.http_status,
+                **_request_error_kwargs(request),
                 details=admission.details,
             ),
         )
@@ -1021,6 +1174,7 @@ async def chat_completions(request: Request, req: ChatCompletionRequest):
                 ErrorCode.MODEL_NOT_FOUND,
                 "Requested model is not available",
                 http_status=404,
+                **_request_error_kwargs(request),
                 details={"model_alias": safe_model_alias(exc.model_id)},
             ),
         )
@@ -1038,6 +1192,7 @@ async def chat_completions(request: Request, req: ChatCompletionRequest):
                     ErrorCode.UNSUPPORTED_CAPABILITY,
                     "The selected runtime does not support image input.",
                     http_status=422,
+                    **_request_error_kwargs(request),
                     details={"model_alias": safe_model_alias(req.model), "body_present": True},
                 ),
             )
@@ -1085,6 +1240,7 @@ async def chat_completions(request: Request, req: ChatCompletionRequest):
                     "policy_version": "cwc-006-v1",
                     "rejected_field_count": len(exc.rejected_fields),
                 },
+                **_request_error_kwargs(request),
             ),
         )
 
@@ -1092,11 +1248,19 @@ async def chat_completions(request: Request, req: ChatCompletionRequest):
     is_queued = admission.reason == AdmissionDecision.QUEUED
     if is_queued:
         # Create the request record and transition to queued.
-        request_id = rt.begin_request(model=req.model, stream=req.stream)
-        request.state.request_id = request_id
+        request_id = _begin_http_request(
+            rt, request, model=req.model, stream=req.stream
+        )
         rt.mark_queued(request_id)
         token = rt.get_cancellation_token(request_id)
-        entry = QueueEntry(request_id=request_id, request=backend_request)
+        values = _correlation_state(request)
+        entry = QueueEntry(
+            request_id=request_id,
+            request=backend_request,
+            correlation_id=values["correlation_id"],
+            codexify_task_id=values["codexify_task_id"],
+            codexify_attempt_id=values["codexify_attempt_id"],
+        )
         queue.enqueue(entry)
 
         from whooshd.config import get_max_active_requests
@@ -1119,7 +1283,7 @@ async def chat_completions(request: Request, req: ChatCompletionRequest):
                         ErrorCode.CANCELLED,
                         "Request was cancelled while queued.",
                         http_status=409,
-                        request_id=request_id,
+                        **_request_error_kwargs(request, request_id=request_id),
                         details={"request_id": request_id},
                     ),
                 )
@@ -1131,7 +1295,7 @@ async def chat_completions(request: Request, req: ChatCompletionRequest):
                         ErrorCode.TIMEOUT,
                         "Request timed out while waiting in queue.",
                         http_status=504,
-                        request_id=request_id,
+                        **_request_error_kwargs(request, request_id=request_id),
                         details={"request_id": request_id},
                     ),
                 )
@@ -1154,8 +1318,11 @@ async def chat_completions(request: Request, req: ChatCompletionRequest):
         # ── Non-streaming: dequeue then execute ───────────────────────
         if not req.stream:
             rt.mark_running(request_id)
-            ctx = RequestExecutionContext(
-                request_id=request_id, cancellation_token=token, stream=False
+            ctx = _execution_context(
+                request,
+                request_id=request_id,
+                cancellation_token=token,
+                stream=False,
             ) if token else None
             return await _execute_non_streaming_with_threadwake(
                 adapter, backend_request, ctx, rt, request_id,
@@ -1173,8 +1340,11 @@ async def chat_completions(request: Request, req: ChatCompletionRequest):
             raise StreamingNotSupportedError()
 
         rt.mark_streaming(request_id)
-        ctx = RequestExecutionContext(
-            request_id=request_id, cancellation_token=token, stream=True
+        ctx = _execution_context(
+            request,
+            request_id=request_id,
+            cancellation_token=token,
+            stream=True,
         ) if token else None
         return await _execute_streaming(
             adapter,
@@ -1188,12 +1358,16 @@ async def chat_completions(request: Request, req: ChatCompletionRequest):
 
     # ── Non-streaming path (immediate execution) ──────────────────────
     if not req.stream:
-        request_id = rt.begin_request(model=req.model, stream=False)
-        request.state.request_id = request_id
+        request_id = _begin_http_request(
+            rt, request, model=req.model, stream=False
+        )
         rt.mark_running(request_id)
         token = rt.get_cancellation_token(request_id)
-        ctx = RequestExecutionContext(
-            request_id=request_id, cancellation_token=token, stream=False
+        ctx = _execution_context(
+            request,
+            request_id=request_id,
+            cancellation_token=token,
+            stream=False,
         ) if token else None
         return await _execute_non_streaming_with_threadwake(
             adapter, backend_request, ctx, rt, request_id,
@@ -1207,12 +1381,16 @@ async def chat_completions(request: Request, req: ChatCompletionRequest):
     if not adapter.supports_streaming:
         raise StreamingNotSupportedError()
 
-    request_id = rt.begin_request(model=req.model, stream=True)
-    request.state.request_id = request_id
+    request_id = _begin_http_request(
+        rt, request, model=req.model, stream=True
+    )
     rt.mark_streaming(request_id)
     token = rt.get_cancellation_token(request_id)
-    ctx = RequestExecutionContext(
-        request_id=request_id, cancellation_token=token, stream=True
+    ctx = _execution_context(
+        request,
+        request_id=request_id,
+        cancellation_token=token,
+        stream=True,
     ) if token else None
     return await _execute_streaming(
         adapter,
@@ -1264,7 +1442,7 @@ async def runtime_requests():
 
 
 @app.post("/runtime/requests/{request_id}/cancel")
-async def runtime_cancel_request(request_id: str):
+async def runtime_cancel_request(request_id: str, request: Request):
     """Cancel an active request by ID.
 
     Internal/debug endpoint — not part of the OpenAI-compatible API.
@@ -1281,9 +1459,13 @@ async def runtime_cancel_request(request_id: str):
                 "Request was not found.",
                 http_status=404,
                 request_id=request_id,
-                details={"request_id": request_id},
+                details={"request_id": normalize_optional_identifier(request_id)},
             ),
         )
+    request.state.correlation_id = snap.correlation_id
+    request.state.codexify_task_id = snap.codexify_task_id
+    request.state.codexify_attempt_id = snap.codexify_attempt_id
+    request.state.request_id = snap.request_id
     if snap.status in (
         RequestLifecycleState.COMPLETED,
         RequestLifecycleState.CANCELLED,
@@ -1297,6 +1479,10 @@ async def runtime_cancel_request(request_id: str):
                 "Request is already in a terminal state.",
                 http_status=409,
                 request_id=request_id,
+                correlation_id=snap.correlation_id,
+                codexify_task_id=snap.codexify_task_id,
+                codexify_attempt_id=snap.codexify_attempt_id,
+                whooshd_request_id=snap.request_id,
                 details={"request_id": request_id, "status": snap.status.value},
             ),
         )
@@ -1306,6 +1492,10 @@ async def runtime_cancel_request(request_id: str):
     return {
         "ok": True,
         "request_id": request_id,
+        "correlation_id": snap.correlation_id,
+        "codexify_task_id": snap.codexify_task_id,
+        "codexify_attempt_id": snap.codexify_attempt_id,
+        "whooshd_request_id": snap.request_id,
         "cancelled": signalled,
         "status": "cancelled",
     }
