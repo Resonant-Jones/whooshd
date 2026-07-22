@@ -175,10 +175,6 @@ class ErrorResponse(BaseModel):
     retryable: bool = False
     retry_after_seconds: Optional[float] = Field(None, description="Suggested backoff in seconds")
     request_id: Optional[str] = None
-    correlation_id: Optional[str] = None
-    codexify_task_id: Optional[str] = None
-    codexify_attempt_id: Optional[str] = None
-    whooshd_request_id: Optional[str] = None
     category: ErrorCategory = ErrorCategory.INTERNAL
     details: Optional[dict] = Field(None, description="Bounded operational details")
 
@@ -415,10 +411,6 @@ class RuntimeProvenance(BaseModel):
 
     schema_version: Literal["whooshd.runtime.v1"] = "whooshd.runtime.v1"
     request_id: Optional[str] = Field(None, max_length=128)
-    correlation_id: Optional[str] = Field(None, max_length=128)
-    codexify_task_id: Optional[str] = Field(None, max_length=128)
-    codexify_attempt_id: Optional[str] = Field(None, max_length=128)
-    whooshd_request_id: Optional[str] = Field(None, max_length=128)
     requested_model_id: Optional[str] = Field(None, max_length=256)
     advertised_model_id: Optional[str] = Field(None, max_length=256)
     resolved_model_id: Optional[str] = Field(None, max_length=256)
@@ -478,9 +470,6 @@ class RequestSnapshot(BaseModel):
     """
 
     request_id: str = Field(..., description="Unique request identifier")
-    correlation_id: Optional[str] = None
-    codexify_task_id: Optional[str] = None
-    codexify_attempt_id: Optional[str] = None
     model: str = Field(..., description="Model ID used for the request")
     stream: bool = Field(..., description="Whether this is a streaming request")
     status: RequestLifecycleState = Field(..., description="Current lifecycle state")
@@ -538,17 +527,10 @@ class RequestExecutionContext:
         request_id: str,
         cancellation_token: CancellationToken,
         stream: bool = False,
-        *,
-        correlation_id: str | None = None,
-        codexify_task_id: str | None = None,
-        codexify_attempt_id: str | None = None,
     ) -> None:
         self.request_id = request_id
         self.cancellation_token = cancellation_token
         self.stream = stream
-        self.correlation_id = correlation_id
-        self.codexify_task_id = codexify_task_id
-        self.codexify_attempt_id = codexify_attempt_id
 
 
 # ── Model Lifecycle ─────────────────────────────────────────────────────────
