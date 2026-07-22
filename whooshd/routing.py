@@ -36,7 +36,6 @@ from whooshd.contracts import (
     RuntimeProvenance,
 )
 from whooshd.log_safety import exception_metadata, safe_model_alias
-from whooshd.correlation import normalize_optional_identifier
 
 logger = logging.getLogger(__name__)
 
@@ -107,10 +106,6 @@ class RuntimeResolution:
         self,
         *,
         request_id: str | None = None,
-        correlation_id: str | None = None,
-        codexify_task_id: str | None = None,
-        codexify_attempt_id: str | None = None,
-        whooshd_request_id: str | None = None,
         backend_reported_model_id: str | None = None,
         streaming: bool = False,
         queued: bool = False,
@@ -119,15 +114,8 @@ class RuntimeResolution:
     ) -> RuntimeProvenance:
         from whooshd import __version__
 
-        safe_request_id = normalize_optional_identifier(request_id)
         return RuntimeProvenance(
-            request_id=safe_request_id,
-            correlation_id=normalize_optional_identifier(correlation_id),
-            codexify_task_id=normalize_optional_identifier(codexify_task_id),
-            codexify_attempt_id=normalize_optional_identifier(codexify_attempt_id),
-            whooshd_request_id=normalize_optional_identifier(
-                whooshd_request_id or safe_request_id
-            ),
+            request_id=request_id,
             requested_model_id=safe_model_alias(self.requested_model_id),
             advertised_model_id=safe_model_alias(self.advertised_model_id),
             resolved_model_id=safe_model_alias(self.resolved_model_id),
@@ -446,9 +434,6 @@ class RuntimeRouter:
         request: GenerateRequest,
         *,
         request_id: str | None = None,
-        correlation_id: str | None = None,
-        codexify_task_id: str | None = None,
-        codexify_attempt_id: str | None = None,
     ) -> GenerateResponse:
         """Route a generate request to the correct adapter."""
         model_id = request.model_id or "stub-model"
@@ -460,10 +445,6 @@ class RuntimeRouter:
         )
         provenance = resolution.provenance(
             request_id=request_id or request.request_id or result.request_id,
-            correlation_id=correlation_id,
-            codexify_task_id=codexify_task_id,
-            codexify_attempt_id=codexify_attempt_id,
-            whooshd_request_id=request_id or result.request_id,
             backend_reported_model_id=result.model_id,
             streaming=False,
         )
@@ -489,21 +470,6 @@ class RuntimeRouter:
         return result.model_copy(
             update={
                 "runtime_provenance": resolution.provenance(
-                    request_id=getattr(context, "request_id", None)
-                    if context is not None
-                    else None,
-                    correlation_id=getattr(context, "correlation_id", None)
-                    if context is not None
-                    else None,
-                    codexify_task_id=getattr(context, "codexify_task_id", None)
-                    if context is not None
-                    else None,
-                    codexify_attempt_id=getattr(context, "codexify_attempt_id", None)
-                    if context is not None
-                    else None,
-                    whooshd_request_id=getattr(context, "request_id", None)
-                    if context is not None
-                    else None,
                     backend_reported_model_id=result.model,
                     streaming=False,
                 )
@@ -534,21 +500,6 @@ class RuntimeRouter:
                 yield chunk.model_copy(
                     update={
                         "runtime_provenance": resolution.provenance(
-                            request_id=getattr(context, "request_id", None)
-                            if context is not None
-                            else None,
-                            correlation_id=getattr(context, "correlation_id", None)
-                            if context is not None
-                            else None,
-                            codexify_task_id=getattr(context, "codexify_task_id", None)
-                            if context is not None
-                            else None,
-                            codexify_attempt_id=getattr(context, "codexify_attempt_id", None)
-                            if context is not None
-                            else None,
-                            whooshd_request_id=getattr(context, "request_id", None)
-                            if context is not None
-                            else None,
                             backend_reported_model_id=chunk.model,
                             streaming=True,
                         )

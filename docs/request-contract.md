@@ -90,12 +90,6 @@ keeps the established OpenAI SSE body shape and sends serialized provenance in
 `X-Whooshd-Runtime-Provenance` before the stream begins. Direct in-process
 router consumers may receive the additive first-chunk field.
 
-The provenance fields `correlation_id`, `codexify_task_id`,
-`codexify_attempt_id`, and `whooshd_request_id` carry bounded request
-correlation. `correlation_id` is the Codexify root; `whooshd_request_id` is the
-local lifecycle identity. The fields are optional for legacy callers and are
-not tracing spans.
-
 The field contains no prompts, completions, tool data, media, URLs, filesystem
 paths, process identifiers, environment values, or credentials. Unknown
 optional fields are ignored by consumers; malformed known provenance is not

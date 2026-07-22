@@ -43,11 +43,6 @@ from whooshd.config import (
     get_mlx_quantization,
     get_model_registry_path,
 )
-from whooshd.correlation import (
-    generate_local_request_id,
-    generate_request_id,
-    normalize_optional_identifier,
-)
 
 # Synthetic creation timestamp for inventory entries.
 _STUB_MODEL_CREATED = 1700000000
@@ -67,9 +62,6 @@ class _RequestRecord:
     request_id: str
     model: str
     stream: bool
-    correlation_id: str | None = None
-    codexify_task_id: str | None = None
-    codexify_attempt_id: str | None = None
     status: RequestLifecycleState = RequestLifecycleState.ACCEPTED
     cancel_requested: bool = False
     cancel_token: CancellationToken | None = None
@@ -708,28 +700,16 @@ class RuntimeState:
 
     # ── Request lifecycle bookkeeping ───────────────────────────────────
 
-    def begin_request(
-        self,
-        *,
-        model: str,
-        stream: bool,
-        correlation_id: str | None = None,
-        codexify_task_id: str | None = None,
-        codexify_attempt_id: str | None = None,
-    ) -> str:
+    def begin_request(self, *, model: str, stream: bool) -> str:
         """Register a new request and return its ID.
 
         The caller is responsible for eventually calling complete_request,
         cancel_request, or fail_request.
         """
-        request_id = generate_local_request_id()
+        request_id = str(uuid.uuid4())
         token = CancellationToken(request_id=request_id)
         self._requests[request_id] = _RequestRecord(
             request_id=request_id,
-            correlation_id=normalize_optional_identifier(correlation_id)
-            or generate_request_id(),
-            codexify_task_id=normalize_optional_identifier(codexify_task_id),
-            codexify_attempt_id=normalize_optional_identifier(codexify_attempt_id),
             model=model,
             stream=stream,
             status=RequestLifecycleState.ACCEPTED,
@@ -814,9 +794,6 @@ class RuntimeState:
             return None
         return RequestSnapshot(
             request_id=rec.request_id,
-            correlation_id=rec.correlation_id,
-            codexify_task_id=rec.codexify_task_id,
-            codexify_attempt_id=rec.codexify_attempt_id,
             model=rec.model,
             stream=rec.stream,
             status=rec.status,
@@ -831,9 +808,6 @@ class RuntimeState:
         return [
             RequestSnapshot(
                 request_id=r.request_id,
-                correlation_id=r.correlation_id,
-                codexify_task_id=r.codexify_task_id,
-                codexify_attempt_id=r.codexify_attempt_id,
                 model=r.model,
                 stream=r.stream,
                 status=r.status,
@@ -857,9 +831,6 @@ class RuntimeState:
         return [
             RequestSnapshot(
                 request_id=r.request_id,
-                correlation_id=r.correlation_id,
-                codexify_task_id=r.codexify_task_id,
-                codexify_attempt_id=r.codexify_attempt_id,
                 model=r.model,
                 stream=r.stream,
                 status=r.status,
