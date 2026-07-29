@@ -15,6 +15,7 @@ Inference is forwarded to the supervised mlx_lm.server process.
 from __future__ import annotations
 
 import asyncio
+from contextvars import ContextVar
 import logging
 import os
 import signal
@@ -375,7 +376,9 @@ class MlxLmServerAdapter:
     def __init__(self, config: MlxLmServerConfig | None = None) -> None:
         self._config = config or _build_config_from_env()
         self._managed_process: ManagedMlxLmServer | None = None
-        self._external_model_path: Path | None = None
+        self._external_model_path_var: ContextVar[Path | None] = ContextVar(
+            f"mlx_lm_server_external_model_path_{id(self)}", default=None
+        )
 
         # Per-runtime concurrency guard.
         from whooshd.config import get_mlx_max_concurrent_requests
@@ -387,11 +390,16 @@ class MlxLmServerAdapter:
 
     def set_external_model_path(self, path: str) -> None:
         """Bind an external model directory path for the next request."""
-        self._external_model_path = Path(path)
+        self._external_model_path_var.set(Path(path))
+
+    @property
+    def _external_model_path(self) -> Path | None:
+        """Return the external binding for this async request context."""
+        return self._external_model_path_var.get()
 
     def _clear_external_model_path(self) -> None:
         """Clear external path state after a request completes."""
-        self._external_model_path = None
+        self._external_model_path_var.set(None)
 
     @property
     def _effective_model_path(self) -> str | None:
@@ -647,6 +655,13 @@ class MlxLmServerAdapter:
     # ── Inference ────────────────────────────────────────────────────
 
     async def generate(self, request: GenerateRequest) -> GenerateResponse:
+        """Generate with request-scoped external binding cleanup."""
+        try:
+            return await self._generate_bound(request)
+        finally:
+            self._clear_external_model_path()
+
+    async def _generate_bound(self, request: GenerateRequest) -> GenerateResponse:
         """Codexify-style generate — forwarded to mlx_lm.server."""
         from whooshd.http_forwarding import (
             RuntimeUnavailable,
@@ -684,6 +699,7 @@ class MlxLmServerAdapter:
         chat_resp = await forward_non_streaming(
             self._server_url, chat_req, timeout=300.0,
             model_override=self._effective_model_path,
+            adapter_kind=self.kind,
         )
 
         # Map ChatCompletionResponse → GenerateResponse.
@@ -760,9 +776,11 @@ class MlxLmServerAdapter:
             return await forward_non_streaming(
                 self._server_url, request, timeout=300.0,
                 model_override=self._effective_model_path,
+                adapter_kind=self.kind,
             )
         finally:
             self._concurrency_semaphore.release()
+            self._clear_external_model_path()
 
     async def chat_completion_stream(
         self,
@@ -812,6 +830,7 @@ class MlxLmServerAdapter:
             async for chunk in forward_streaming(
                 self._server_url, request, timeout=300.0,
                 model_override=self._effective_model_path,
+                adapter_kind=self.kind,
                 cancellation_token=cancellation_token,
             ):
                 yield chunk

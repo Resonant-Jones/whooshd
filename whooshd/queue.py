@@ -287,7 +287,8 @@ class RequestQueue:
                         return True
                     # Unexpected: someone else dequeued us?  Treat as timeout.
                     logger.warning(
-                        "queue.dequeue_mismatch expected=%s got=%s",
+                        "queue.dequeue_mismatch expected_request_id=%s "
+                        "actual_request_id=%s",
                         entry.request_id,
                         dequeued.request_id if dequeued else None,
                     )

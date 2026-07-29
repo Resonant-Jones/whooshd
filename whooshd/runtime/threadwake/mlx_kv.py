@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import logging
 from typing import Any, Iterator
+from whooshd.log_safety import exception_metadata
 
 from .handles import KVCapability, KVHandle
 
@@ -116,7 +117,7 @@ class MLXKVBackendAdapter:
             )
         except Exception as exc:
             raise RuntimeError(
-                f"MLX KV prefill failed: {exc}"
+                f"MLX KV prefill failed ({exception_metadata(exc)})"
             ) from exc
 
     def generate_from_kv(

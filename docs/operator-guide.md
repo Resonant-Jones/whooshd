@@ -36,7 +36,10 @@ See [batching-arc-closeout-digest.md](batching-arc-closeout-digest.md).
 ## Troubleshooting
 
 Check `/health` for liveness, `/ready` for readiness, `/runtime` for
-full state, and server logs for errors.
+full state, and server logs for bounded operational errors. See the
+[Whoosh'd Logging Safety contract](security/whooshd-logging-safety.md) for
+what diagnostics are retained and which external or historical log surfaces
+remain unproven.
 
 ## Related
 

@@ -15,6 +15,7 @@ support.
 from __future__ import annotations
 
 import asyncio
+from contextvars import ContextVar
 import logging
 import os
 import signal
@@ -196,10 +197,8 @@ def _validate_managed_config(
             "auto_start=true requires model_path to be set"
         )
 
-    if not effective_model.endswith(".gguf"):  # type: ignore[arg-type]
-        raise LlamaCppConfigError(
-            f"Model path must end in .gguf: {effective_model}"
-        )
+    if not effective_model.endswith(".gguf"):  # type: ignore[union-attr]
+        raise LlamaCppConfigError("Model path must end in .gguf")
 
     if config.port < 1 or config.port > 65535:
         raise LlamaCppConfigError(
@@ -242,11 +241,9 @@ def _validate_files_exist(
         if model_path_override is not None:
             # Client-safe message for external paths.
             raise LlamaCppConfigError(
-                f"External model path is unavailable at execution time."
+                "External model path is unavailable at execution time."
             )
-        raise LlamaCppConfigError(
-            f"Model file not found: {config.model_path}"
-        )
+        raise LlamaCppConfigError("Model file not found")
 
 
 # ── Managed process wrapper ─────────────────────────────────────────────────
@@ -483,7 +480,9 @@ class LlamaCppAdapter:
     def __init__(self, config: LlamaCppAdapterConfig | None = None) -> None:
         self._config = config or _build_config_from_env()
         self._managed_process: ManagedLlamaServer | None = None
-        self._external_model_path: Path | None = None
+        self._external_model_path_var: ContextVar[Path | None] = ContextVar(
+            f"llama_cpp_external_model_path_{id(self)}", default=None
+        )
 
         # Per-runtime concurrency guard.
         from whooshd.config import get_llama_cpp_max_concurrent_requests
@@ -500,11 +499,16 @@ class LlamaCppAdapter:
         The path is used exactly as-is — no copying, registration, or
         normalization.
         """
-        self._external_model_path = Path(path)
+        self._external_model_path_var.set(Path(path))
+
+    @property
+    def _external_model_path(self) -> Path | None:
+        """Return the external binding for this async request context."""
+        return self._external_model_path_var.get()
 
     def _clear_external_model_path(self) -> None:
         """Clear external path state after a request completes."""
-        self._external_model_path = None
+        self._external_model_path_var.set(None)
 
     @property
     def _effective_model_path(self) -> str | None:
@@ -512,6 +516,15 @@ class LlamaCppAdapter:
         if self._external_model_path is not None:
             return str(self._external_model_path)
         return self._config.model_path
+
+    def _reject_managed_external_binding(self) -> None:
+        """Avoid forwarding to a managed server loaded with another model."""
+        if self._config.auto_start and self._external_model_path is not None:
+            from whooshd.http_forwarding import RuntimeUnavailable
+
+            raise RuntimeUnavailable(
+                "External models cannot use a managed llama.cpp runtime."
+            )
 
     # ── Protocol properties ────────────────────────────────────────────
 
@@ -817,6 +830,14 @@ class LlamaCppAdapter:
     # ── Inference ────────────────────────────────────────────────────
 
     async def generate(self, request: GenerateRequest) -> GenerateResponse:
+        """Generate with request-scoped external binding cleanup."""
+        try:
+            self._reject_managed_external_binding()
+            return await self._generate_bound(request)
+        finally:
+            self._clear_external_model_path()
+
+    async def _generate_bound(self, request: GenerateRequest) -> GenerateResponse:
         """Codexify-style generate — forwarded to llama.cpp server.
 
         Converts the prompt to a single-message chat completion,
@@ -861,11 +882,8 @@ class LlamaCppAdapter:
         chat_resp = await forward_non_streaming(
             url, chat_req, timeout=300.0,
             model_override=self._effective_model_path,
+            adapter_kind=self.kind,
         )
-
-        # Clear external path after request if it was set.
-        was_external = self._external_model_path is not None
-        self._clear_external_model_path()
 
         # Map ChatCompletionResponse → GenerateResponse.
         content = ""
@@ -927,6 +945,7 @@ class LlamaCppAdapter:
             )
 
         try:
+            self._reject_managed_external_binding()
             # Verify the server is ready for inference before forwarding.
             health = await self.check_health()
             if not health.reachable:
@@ -941,6 +960,7 @@ class LlamaCppAdapter:
             return await forward_non_streaming(
                 url, request, timeout=300.0,
                 model_override=self._effective_model_path,
+                adapter_kind=self.kind,
             )
         finally:
             self._concurrency_semaphore.release()
@@ -979,6 +999,7 @@ class LlamaCppAdapter:
             )
 
         try:
+            self._reject_managed_external_binding()
             # Verify the server is ready for inference before forwarding.
             health = await self.check_health()
             if not health.reachable:
@@ -994,6 +1015,7 @@ class LlamaCppAdapter:
             async for chunk in forward_streaming(
                 url, request, timeout=300.0,
                 model_override=self._effective_model_path,
+                adapter_kind=self.kind,
                 cancellation_token=cancellation_token,
             ):
                 yield chunk

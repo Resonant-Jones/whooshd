@@ -14,6 +14,7 @@ import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
+from whooshd.log_safety import exception_metadata
 
 logger = logging.getLogger(__name__)
 
@@ -97,7 +98,10 @@ class CandidateReplayAnalyzer:
         try:
             candidates = storage.list_candidates(limit=500)
         except Exception as exc:
-            logger.warning("Replay analysis storage read failed: %s", exc)
+            logger.warning(
+                "Replay analysis storage read failed diagnostic=%s",
+                exception_metadata(exc),
+            )
             candidates = []
         return self._build_summary(candidates, limit)
 

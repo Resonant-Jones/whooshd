@@ -23,14 +23,19 @@ from __future__ import annotations
 
 import json
 import logging
+from typing import Any, Optional
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from whooshd import __version__
 from whooshd.admission import AdmissionDecision, evaluate_chat_request
 from whooshd.adapters.base import StreamingNotSupportedError
+from whooshd.backend_request_policy import (
+    BackendRequestPolicyError,
+    ensure_backend_chat_request,
+)
 from whooshd.contracts import (
     ChatCompletionRequest,
     ChatCompletionResponse,
@@ -46,6 +51,15 @@ from whooshd.contracts import (
     RequestLifecycleState,
     RunnerStatus,
     RuntimeKind,
+    WHOOSHD_RUNTIME_PROVENANCE_HEADER,
+)
+from whooshd.control_plane import (
+    CONTROL_PLANE_CONTRACT_VERSION,
+    CONTROL_PLANE_VERSION_HEADER,
+    ErrorCode as ControlErrorCode,
+    code_for_http_status,
+    error_fields,
+    safe_contract_version,
 )
 from whooshd.config import (
     get_adapter_backend,
@@ -53,10 +67,21 @@ from whooshd.config import (
     get_mlx_lm_server_enabled,
     get_mlx_vlm_enabled,
 )
-from whooshd.routing import ModelResolutionError, get_router, reset_router
+from whooshd.routing import (
+    ModelResolutionError,
+    RuntimeResolution,
+    get_router,
+    reset_router,
+)
 from whooshd.runtime import get_runtime
 from whooshd.queue import QueueEntry, get_queue
 from whooshd.http_forwarding import UpstreamRuntimeError
+from whooshd.log_safety import (
+    exception_metadata,
+    failure_class,
+    safe_exception_message,
+    safe_model_alias,
+)
 from whooshd.runtime.threadwake import ThreadWakeManager
 from whooshd.runtime.threadwake.tokenization import BackendTokenizerAdapterRegistry
 from whooshd.runtime.threadwake.analysis_loop import ThreadWakeAnalysisLoop
@@ -66,6 +91,27 @@ logger = logging.getLogger(__name__)
 _tokenizer_registry = BackendTokenizerAdapterRegistry()
 _threadwake_manager = ThreadWakeManager(tokenizer_registry=_tokenizer_registry)
 _threadwake_analysis_loop: ThreadWakeAnalysisLoop | None = None
+
+
+def _safe_upstream_error_detail(exc: UpstreamRuntimeError) -> dict:
+    """Keep only bounded upstream failure metadata in outward diagnostics."""
+    detail = {
+        "kind": type(exc).__name__,
+        "failure_class": failure_class(exc),
+    }
+    allowed = {
+        "upstream_status",
+        "http_status",
+        "body_bytes",
+        "body_present",
+        "content_type",
+        "endpoint",
+        "timeout_seconds",
+    }
+    raw_detail = getattr(exc, "detail", None)
+    if isinstance(raw_detail, dict):
+        detail.update({key: raw_detail[key] for key in allowed if key in raw_detail})
+    return detail
 
 
 def _get_analysis_loop() -> ThreadWakeAnalysisLoop:
@@ -81,6 +127,46 @@ app = FastAPI(
     description="Memory-aware local inference broker for Apple Silicon",
     version=__version__,
 )
+
+
+@app.middleware("http")
+async def add_control_plane_version_header(request, call_next):
+    """Advertise the response contract on every Whoosh'd-owned API response."""
+    incoming_request_id = request.headers.get("X-Request-ID")
+    if incoming_request_id:
+        request.state.request_id = incoming_request_id.strip()[:128]
+    incoming_contract_version = request.headers.get(CONTROL_PLANE_VERSION_HEADER)
+    if incoming_contract_version is not None:
+        received_version = safe_contract_version(incoming_contract_version)
+        if received_version != CONTROL_PLANE_CONTRACT_VERSION:
+            response = JSONResponse(
+                status_code=400,
+                content=_error_body(
+                    ControlErrorCode.CONTRACT_VERSION_UNSUPPORTED,
+                    "Unsupported control-plane contract version",
+                    http_status=400,
+                    details={"received_version": received_version},
+                ),
+            )
+            response.headers[CONTROL_PLANE_VERSION_HEADER] = CONTROL_PLANE_CONTRACT_VERSION
+            return response
+    response = await call_next(request)
+    response.headers[CONTROL_PLANE_VERSION_HEADER] = CONTROL_PLANE_CONTRACT_VERSION
+
+    # Retry-After is deliberately derived from the already-bounded response
+    # envelope.  Streaming bodies are not inspected.
+    raw_body = getattr(response, "body", None)
+    if raw_body:
+        try:
+            payload = json.loads(raw_body)
+        except (TypeError, ValueError):
+            payload = None
+        if isinstance(payload, dict):
+            envelope = payload.get("error") if isinstance(payload.get("error"), dict) else payload
+            retry_after = envelope.get("retry_after_seconds") if isinstance(envelope, dict) else None
+            if isinstance(retry_after, (int, float)) and not isinstance(retry_after, bool):
+                response.headers["Retry-After"] = str(retry_after).rstrip("0").rstrip(".")
+    return response
 
 
 # ── Router setup ──────────────────────────────────────────────────────────
@@ -258,19 +344,33 @@ def _init_lifecycle():
 _init_lifecycle()
 
 
-# ── Helper: map HTTP status to ErrorCode ──────────────────────────────────
+# ── Canonical error response helpers ─────────────────────────────────────
 
 
 def _error_code_for_status(status: int) -> ErrorCode:
-    if status == 404:
-        return ErrorCode.MODEL_NOT_FOUND
-    elif status in (408, 504):
-        return ErrorCode.TIMEOUT
-    elif status == 429:
-        return ErrorCode.RUNNER_OVERLOADED
-    elif status == 503:
-        return ErrorCode.INTERNAL
-    return ErrorCode.INTERNAL
+    return ErrorCode(code_for_http_status(status).value)
+
+
+def _error_body(
+    code: ErrorCode | ControlErrorCode | str,
+    message: str,
+    *,
+    http_status: int | None = None,
+    retry_after_seconds: float | None = None,
+    request_id: str | None = None,
+    details: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Build one canonical, JSON-ready error envelope."""
+    return ErrorResponse(
+        **error_fields(
+            code.value if isinstance(code, (ErrorCode, ControlErrorCode)) else code,
+            message=message,
+            http_status=http_status,
+            retry_after_seconds=retry_after_seconds,
+            request_id=request_id,
+            details=details,
+        )
+    ).model_dump(mode="json", exclude_none=True)
 
 
 # ── Vision capability helpers ─────────────────────────────────────────────
@@ -313,11 +413,33 @@ def _adapter_supports_vision(adapter) -> bool:
 async def _validation_exception_handler(request, exc):
     return JSONResponse(
         status_code=422,
-        content=ErrorResponse(
-            code=ErrorCode.INTERNAL,
-            message="Validation error",
-            detail={"errors": exc.errors()},
-        ).model_dump(),
+        content=_error_body(
+            ErrorCode.INVALID_REQUEST,
+            "Request validation failed",
+            http_status=422,
+            details={"failure_class": "validation", "error_count": len(exc.errors())},
+        ),
+    )
+
+
+@app.exception_handler(HTTPException)
+async def _http_exception_handler(request, exc: HTTPException):
+    """Normalize route-raised HTTP errors without echoing arbitrary detail."""
+    detail = exc.detail
+    if isinstance(detail, dict) and detail.get("contract_version") == CONTROL_PLANE_CONTRACT_VERSION:
+        body = dict(detail)
+        body["http_status"] = exc.status_code
+        return JSONResponse(status_code=exc.status_code, content=body)
+    status = int(exc.status_code)
+    code = _error_code_for_status(status)
+    return JSONResponse(
+        status_code=status,
+        content=_error_body(
+            code,
+            "Request failed" if status < 500 else "Internal error",
+            http_status=status,
+            details={"http_status": status},
+        ),
     )
 
 
@@ -326,12 +448,31 @@ async def _validation_exception_handler(request, exc):
 @app.exception_handler(ModelResolutionError)
 async def _model_resolution_error_handler(request, exc: ModelResolutionError):
     return JSONResponse(
+        status_code=404,
+        content=_error_body(
+            ErrorCode.MODEL_NOT_FOUND,
+            "Requested model is not available",
+            http_status=404,
+            details={"model_alias": safe_model_alias(exc.model_id)},
+        ),
+    )
+
+
+@app.exception_handler(BackendRequestPolicyError)
+async def _backend_request_policy_error_handler(request, exc: BackendRequestPolicyError):
+    """Reject inference-shaped unknown fields without echoing their values."""
+    return JSONResponse(
         status_code=400,
-        content=ErrorResponse(
-            code=ErrorCode.MODEL_NOT_FOUND,
-            message=str(exc),
-            detail={"model_id": exc.model_id},
-        ).model_dump(),
+        content=_error_body(
+            ErrorCode.UNSUPPORTED_FIELD,
+            "Unsupported request field",
+            http_status=400,
+            details={
+                "failure_class": "validation",
+                "policy_version": "cwc-006-v1",
+                "rejected_field_count": len(exc.rejected_fields),
+            },
+        ),
     )
 
 
@@ -344,28 +485,17 @@ async def _upstream_runtime_error_handler(request, exc: UpstreamRuntimeError):
     Upstream errors carry their own http_status so the HTTP layer
     does not need conditionals per error type.
     """
-    # Map http_status to ErrorCode for the response body.
-    error_code: ErrorCode
-    if exc.http_status == 404:
-        error_code = ErrorCode.MODEL_NOT_FOUND
-    elif exc.http_status in (408, 504):
-        error_code = ErrorCode.TIMEOUT
-    elif exc.http_status == 425:
-        error_code = ErrorCode.MODEL_LOAD_FAILED  # warming
-    elif exc.http_status == 429:
-        error_code = ErrorCode.RUNNER_OVERLOADED
-    elif exc.http_status == 503:
-        error_code = ErrorCode.INTERNAL  # unavailable
-    else:
-        error_code = ErrorCode.INTERNAL
+    error_code = getattr(exc, "error_code", None) or _error_code_for_status(exc.http_status)
 
     return JSONResponse(
         status_code=exc.http_status,
-        content=ErrorResponse(
-            code=error_code,
-            message=str(exc),
-            detail={"kind": type(exc).__name__},
-        ).model_dump(),
+        content=_error_body(
+            error_code,
+            safe_exception_message(exc),
+            http_status=exc.http_status,
+            request_id=getattr(request.state, "request_id", None),
+            details=_safe_upstream_error_detail(exc),
+        ),
     )
 
 
@@ -373,13 +503,15 @@ async def _upstream_runtime_error_handler(request, exc: UpstreamRuntimeError):
 
 
 @app.post("/v1/generate", response_model=GenerateResponse)
-async def generate(req: GenerateRequest) -> GenerateResponse:
+async def generate(request: Request, req: GenerateRequest) -> GenerateResponse:
     """Generate text from a prompt using the correct runtime adapter.
 
     Routed based on model_id → runtime resolution.
     """
     rt = get_runtime()
     router = get_router()
+    if req.request_id:
+        request.state.request_id = req.request_id[:128]
 
     # ── Admission control (simple: just active request limit) ─────────
     from whooshd.config import get_max_active_requests
@@ -388,32 +520,40 @@ async def generate(req: GenerateRequest) -> GenerateResponse:
         rt.record_rejected("rejected_overloaded")
         raise HTTPException(
             status_code=429,
-            detail=ErrorResponse(
-                code=ErrorCode.RUNNER_OVERLOADED,
-                message=f"Whoosh'd is at its active request limit.",
-                detail={"active_jobs": rt.active_jobs},
-            ).model_dump(),
+            detail=_error_body(
+                ErrorCode.RUNNER_OVERLOADED,
+                "Whoosh'd is at its active request limit.",
+                http_status=429,
+                request_id=req.request_id,
+                details={"active_jobs": rt.active_jobs},
+            ),
         )
 
     rt.record_accepted()
 
     model = req.model_id or "stub-model"
     request_id = rt.begin_request(model=model, stream=False)
+    request.state.request_id = request_id
     rt.mark_running(request_id)
 
     try:
-        result = await router.generate(req)
+        result = await router.generate(req, request_id=request_id)
         rt.complete_request(request_id)
         return result
+    except UpstreamRuntimeError:
+        rt.fail_request(request_id)
+        raise
     except Exception as exc:
         rt.fail_request(request_id)
         raise HTTPException(
             status_code=500,
-            detail=ErrorResponse(
-                code=ErrorCode.INTERNAL,
-                message="Inference failed",
-                detail={"error": str(exc)},
-            ).model_dump(),
+            detail=_error_body(
+                ErrorCode.INTERNAL_ERROR,
+                "Inference failed",
+                http_status=500,
+                request_id=req.request_id or request_id,
+                details={"diagnostic": exception_metadata(exc)},
+            ),
         ) from exc
 
 
@@ -422,23 +562,52 @@ async def generate(req: GenerateRequest) -> GenerateResponse:
 @app.exception_handler(StreamingNotSupportedError)
 async def _streaming_not_supported_handler(request, exc: StreamingNotSupportedError):
     return JSONResponse(
-        status_code=501,
-        content=ErrorResponse(
-            code=ErrorCode.INTERNAL,
-            message=str(exc),
-            detail={"hint": "Set stream=false or use an adapter that supports streaming."},
-        ).model_dump(),
+        status_code=422,
+        content=_error_body(
+            ErrorCode.UNSUPPORTED_CAPABILITY,
+            "Streaming is not supported by the selected runtime.",
+            http_status=422,
+            details={"failure_class": "unsupported_capability"},
+        ),
     )
 
 
 # ── Shared execution helpers (used by both queued and immediate paths) ────
 
 
-async def _execute_non_streaming(adapter, req, ctx, rt, request_id):
+async def _execute_non_streaming(
+    adapter,
+    req,
+    ctx,
+    rt,
+    request_id,
+    *,
+    resolution: RuntimeResolution | None = None,
+    queued: bool = False,
+    batched: bool = False,
+):
     """Execute a non-streaming request and return the JSON response."""
+    req = ensure_backend_chat_request(
+        req,
+        adapter_kind=getattr(adapter, "kind", None),
+        request_id=request_id,
+    )
     try:
         result = await adapter.chat_completion(req, context=ctx)
         rt.complete_request(request_id)
+        if resolution is not None:
+            result = result.model_copy(
+                update={
+                    "runtime_provenance": resolution.provenance(
+                        request_id=request_id,
+                        backend_reported_model_id=result.model,
+                        streaming=False,
+                        queued=queued,
+                        batched=batched,
+                        model_lifecycle=ModelLifecycleState.READY,
+                    )
+                }
+            )
         return result
     except UpstreamRuntimeError:
         rt.fail_request(request_id)
@@ -448,12 +617,26 @@ async def _execute_non_streaming(adapter, req, ctx, rt, request_id):
         raise
 
 
-async def _execute_streaming(adapter, req, ctx, rt, request_id):
+async def _execute_streaming(
+    adapter,
+    req,
+    ctx,
+    rt,
+    request_id,
+    *,
+    resolution: RuntimeResolution | None = None,
+    queued: bool = False,
+):
     """Eagerly fetch the first SSE chunk, then return a StreamingResponse.
 
     No SSE chunks are emitted until the first chunk is successfully retrieved,
     so upstream errors surface as structured JSON before the stream starts.
     """
+    req = ensure_backend_chat_request(
+        req,
+        adapter_kind=getattr(adapter, "kind", None),
+        request_id=request_id,
+    )
     stream_gen = adapter.chat_completion_stream(req, context=ctx)
     try:
         first_chunk = await stream_gen.__anext__()
@@ -461,24 +644,55 @@ async def _execute_streaming(adapter, req, ctx, rt, request_id):
         async def _empty_sse():
             yield "data: [DONE]\n\n"
         rt.complete_request(request_id)
+        empty_headers = {
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        }
+        if resolution is not None:
+            empty_headers[WHOOSHD_RUNTIME_PROVENANCE_HEADER] = (
+                resolution.provenance(
+                    request_id=request_id,
+                    streaming=True,
+                    queued=queued,
+                    model_lifecycle=ModelLifecycleState.READY,
+                ).model_dump_json(exclude_none=True)
+            )
         return StreamingResponse(
             _empty_sse(),
             media_type="text/event-stream",
-            headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"},
+            headers=empty_headers,
         )
     except UpstreamRuntimeError as exc:
         rt.fail_request(request_id)
         return JSONResponse(
             status_code=exc.http_status,
-            content=ErrorResponse(
-                code=_error_code_for_status(exc.http_status),
-                message=str(exc),
-                detail={"kind": type(exc).__name__},
-            ).model_dump(),
+            content=_error_body(
+                getattr(exc, "error_code", None) or _error_code_for_status(exc.http_status),
+                safe_exception_message(exc),
+                http_status=exc.http_status,
+                request_id=request_id,
+                details=_safe_upstream_error_detail(exc),
+            ),
         )
     except Exception:
         rt.fail_request(request_id)
         raise
+
+    stream_provenance = None
+    if resolution is not None:
+        stream_provenance = resolution.provenance(
+            request_id=request_id,
+            backend_reported_model_id=first_chunk.model,
+            streaming=True,
+            queued=queued,
+            model_lifecycle=ModelLifecycleState.READY,
+        )
+        # Keep the established OpenAI chunk shape stable.  Provenance is
+        # available before visible output through a bounded response header.
+        first_chunk = first_chunk.model_copy(
+            update={"runtime_provenance": None}
+        )
 
     async def _sse_stream():
         finished_normally = False
@@ -490,10 +704,17 @@ async def _execute_streaming(adapter, req, ctx, rt, request_id):
             finished_normally = True
         except UpstreamRuntimeError as exc:
             error_json = json.dumps({
-                "error": {
-                    "message": str(exc),
-                    "type": type(exc).__name__,
-                }
+                "error": _error_body(
+                    getattr(exc, "error_code", None)
+                    or _error_code_for_status(exc.http_status),
+                    safe_exception_message(exc),
+                    http_status=exc.http_status,
+                    request_id=request_id,
+                    details={
+                        **_safe_upstream_error_detail(exc),
+                        "output_started": True,
+                    },
+                )
             })
             yield f"data: {error_json}\n\n"
         finally:
@@ -503,14 +724,20 @@ async def _execute_streaming(adapter, req, ctx, rt, request_id):
                 rt.record_stream_disconnect(request_id)
                 rt.cancel_request(request_id)
 
+    stream_headers = {
+        "Cache-Control": "no-cache",
+        "Connection": "keep-alive",
+        "X-Accel-Buffering": "no",
+    }
+    if stream_provenance is not None:
+        stream_headers[WHOOSHD_RUNTIME_PROVENANCE_HEADER] = (
+            stream_provenance.model_dump_json(exclude_none=True)
+        )
+
     return StreamingResponse(
         _sse_stream(),
         media_type="text/event-stream",
-        headers={
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "X-Accel-Buffering": "no",
-        },
+        headers=stream_headers,
     )
 
 
@@ -521,6 +748,9 @@ async def _execute_non_streaming_with_threadwake(
     adapter, req, ctx, rt, request_id,
     *,
     backend: str | None,
+    threadwake_request=None,
+    resolution: RuntimeResolution | None = None,
+    queued: bool = False,
 ):
     """Execute non-streaming chat with optional ThreadWake ephemeral KV reuse.
 
@@ -532,16 +762,36 @@ async def _execute_non_streaming_with_threadwake(
     Streaming requests are never routed through this bridge.
     """
     result = await _threadwake_manager.execute_ephemeral_chat_completion(
-        req,
+        threadwake_request or req,
         backend=backend or "unknown",
         full_generation_fn=lambda: adapter.chat_completion(req, context=ctx),
     )
     if result is not None:
         rt.complete_request(request_id)
+        if resolution is not None:
+            result = result.model_copy(
+                update={
+                    "runtime_provenance": resolution.provenance(
+                        request_id=request_id,
+                        backend_reported_model_id=result.model,
+                        streaming=False,
+                        queued=queued,
+                        model_lifecycle=ModelLifecycleState.READY,
+                    )
+                }
+            )
         return result
 
     # Fall through to normal adapter execution.
-    return await _execute_non_streaming(adapter, req, ctx, rt, request_id)
+    return await _execute_non_streaming(
+        adapter,
+        req,
+        ctx,
+        rt,
+        request_id,
+        resolution=resolution,
+        queued=queued,
+    )
 
 
 # ── OpenAI-compatible Chat Completions ─────────────────────────────────────
@@ -556,6 +806,7 @@ async def _try_execute_live_batch(
     adapter,
     queue: Any,
     rt: Any,
+    resolution: RuntimeResolution | None = None,
 ) -> Any | None:
     """Attempt live-path batch execution for the selected request.
 
@@ -601,7 +852,10 @@ async def _try_execute_live_batch(
     for e in group:
         token = rt.get_cancellation_token(e.request_id)
         if token is not None and token.is_cancelled():
-            logger.debug("batch: excluding cancelled entry %s", e.request_id)
+            logger.debug(
+                "batch: excluding cancelled entry request_id=%s",
+                e.request_id,
+            )
             continue
         active_group.append(e)
 
@@ -647,7 +901,14 @@ async def _try_execute_live_batch(
         return None
 
     try:
-        requests = [e.request for e in active_group]
+        requests = [
+            ensure_backend_chat_request(
+                e.request,
+                adapter_kind=backend,
+                request_id=e.request_id,
+            )
+            for e in active_group
+        ]
         batch_responses = await adapter.chat_completion_batch(requests)
 
         if len(batch_responses) != len(active_group):
@@ -659,18 +920,35 @@ async def _try_execute_live_batch(
 
         # Resolve futures for peer entries.
         results = []
+        response_by_request_id = {}
         for entry, response in zip(active_group, batch_responses):
             rt.mark_running(entry.request_id)
             rt.complete_request(entry.request_id)
+            if resolution is not None:
+                response = response.model_copy(
+                    update={
+                        "runtime_provenance": resolution.for_model(
+                            entry.request.model
+                        ).provenance(
+                            request_id=entry.request_id,
+                            backend_reported_model_id=response.model,
+                            streaming=False,
+                            queued=True,
+                            batched=True,
+                            model_lifecycle=ModelLifecycleState.READY,
+                        )
+                    }
+                )
             results.append((entry.request_id, response))
+            response_by_request_id[entry.request_id] = response
 
         queue.resolve_batch_results(active_group, results)
 
         # Return the selected entry's response.
-        for entry, response in zip(active_group, batch_responses):
-            if entry.request_id == selected_request_id:
-                queue.notify_capacity()
-                return response
+        response = response_by_request_id.get(selected_request_id)
+        if response is not None:
+            queue.notify_capacity()
+            return response
 
         return None
     except Exception:
@@ -679,7 +957,7 @@ async def _try_execute_live_batch(
 
 
 @app.post("/v1/chat/completions")
-async def chat_completions(req: ChatCompletionRequest):
+async def chat_completions(request: Request, req: ChatCompletionRequest):
     """OpenAI-compatible chat completion endpoint.
 
     - stream=false → JSON response with the full completion.
@@ -706,11 +984,12 @@ async def chat_completions(req: ChatCompletionRequest):
         rt.record_rejected(admission.reason.value)
         return JSONResponse(
             status_code=admission.http_status,
-            content=ErrorResponse(
-                code=admission.error_code or ErrorCode.INTERNAL,
-                message=admission.message or "Request rejected.",
-                detail=admission.details,
-            ).model_dump(),
+            content=_error_body(
+                admission.error_code or ErrorCode.QUEUE_FULL,
+                admission.message or "Request rejected.",
+                http_status=admission.http_status,
+                details=admission.details,
+            ),
         )
 
     # All non-accepted, non-queued decisions are hard rejections.
@@ -719,11 +998,12 @@ async def chat_completions(req: ChatCompletionRequest):
         rt.record_rejected(admission.reason.value)
         return JSONResponse(
             status_code=admission.http_status,
-            content=ErrorResponse(
-                code=admission.error_code or ErrorCode.INTERNAL,
-                message=admission.message or "Request rejected.",
-                detail=admission.details,
-            ).model_dump(),
+            content=_error_body(
+                admission.error_code or ErrorCode.INVALID_REQUEST,
+                admission.message or "Request rejected.",
+                http_status=admission.http_status,
+                details=admission.details,
+            ),
         )
 
     # Accepted or queued — both count as non-rejected.
@@ -731,16 +1011,18 @@ async def chat_completions(req: ChatCompletionRequest):
 
     # ── Resolve the adapter via router ───────────────────────────────
     try:
-        adapter = await router._resolve_model_runtime(req.model)
+        resolution = await router.resolve_model_runtime(req.model)
+        adapter = resolution.adapter
     except ModelResolutionError as exc:
         rt.record_rejected("rejected_model_not_ready")
         return JSONResponse(
-            status_code=400,
-            content=ErrorResponse(
-                code=ErrorCode.MODEL_NOT_FOUND,
-                message=str(exc),
-                detail={"model_id": exc.model_id},
-            ).model_dump(),
+            status_code=404,
+            content=_error_body(
+                ErrorCode.MODEL_NOT_FOUND,
+                "Requested model is not available",
+                http_status=404,
+                details={"model_alias": safe_model_alias(exc.model_id)},
+            ),
         )
 
     # ── Vision capability check ──────────────────────────────────────
@@ -751,13 +1033,13 @@ async def chat_completions(req: ChatCompletionRequest):
         if not adapter_supports_vision:
             rt.record_rejected("rejected_model_not_ready")
             return JSONResponse(
-                status_code=400,
-                content=ErrorResponse(
-                    code=ErrorCode.INTERNAL,
-                    message=f"Model '{req.model}' does not support vision/image input. "
-                            f"Use a vision-capable model (mlx-vlm).",
-                    detail={"model_id": req.model, "has_image": True},
-                ).model_dump(),
+                status_code=422,
+                content=_error_body(
+                    ErrorCode.UNSUPPORTED_CAPABILITY,
+                    "The selected runtime does not support image input.",
+                    http_status=422,
+                    details={"model_alias": safe_model_alias(req.model), "body_present": True},
+                ),
             )
 
     # ── ThreadWake observe-mode metadata ──────────────────────────────
@@ -781,14 +1063,40 @@ async def chat_completions(req: ChatCompletionRequest):
             threadwake_observation.cache_scope,
         )
 
+    # ThreadWake and lifecycle code retain the ingress request.  Every
+    # execution mode receives a separate backend representation so controls
+    # and undeclared extras cannot be restored by queueing, batching, or
+    # fallback code.
+    try:
+        backend_request = ensure_backend_chat_request(
+            req,
+            adapter_kind=getattr(adapter, "kind", None),
+        )
+    except BackendRequestPolicyError as exc:
+        rt.record_rejected("rejected_unsupported_fields")
+        return JSONResponse(
+            status_code=400,
+            content=_error_body(
+                ErrorCode.UNSUPPORTED_FIELD,
+                "Unsupported request field",
+                http_status=400,
+                details={
+                    "failure_class": "validation",
+                    "policy_version": "cwc-006-v1",
+                    "rejected_field_count": len(exc.rejected_fields),
+                },
+            ),
+        )
+
     # ── Queue wait (when admission returned QUEUED) ───────────────────
     is_queued = admission.reason == AdmissionDecision.QUEUED
     if is_queued:
         # Create the request record and transition to queued.
         request_id = rt.begin_request(model=req.model, stream=req.stream)
+        request.state.request_id = request_id
         rt.mark_queued(request_id)
         token = rt.get_cancellation_token(request_id)
-        entry = QueueEntry(request_id=request_id, request=req)
+        entry = QueueEntry(request_id=request_id, request=backend_request)
         queue.enqueue(entry)
 
         from whooshd.config import get_max_active_requests
@@ -807,21 +1115,25 @@ async def chat_completions(req: ChatCompletionRequest):
                 # Return cancellation-compatible response.
                 return JSONResponse(
                     status_code=409,
-                    content=ErrorResponse(
-                        code=ErrorCode.CANCELLED,
-                        message="Request was cancelled while queued.",
-                        detail={"request_id": request_id},
-                    ).model_dump(),
+                    content=_error_body(
+                        ErrorCode.CANCELLED,
+                        "Request was cancelled while queued.",
+                        http_status=409,
+                        request_id=request_id,
+                        details={"request_id": request_id},
+                    ),
                 )
             else:
                 rt.mark_timed_out(request_id)
                 return JSONResponse(
-                    status_code=429,
-                    content=ErrorResponse(
-                        code=ErrorCode.TIMEOUT,
-                        message=f"Request timed out while waiting in queue.",
-                        detail={"request_id": request_id},
-                    ).model_dump(),
+                    status_code=504,
+                    content=_error_body(
+                        ErrorCode.TIMEOUT,
+                        "Request timed out while waiting in queue.",
+                        http_status=504,
+                        request_id=request_id,
+                        details={"request_id": request_id},
+                    ),
                 )
 
         # Successfully dequeued — proceed to execution.
@@ -834,6 +1146,7 @@ async def chat_completions(req: ChatCompletionRequest):
                 adapter=adapter,
                 queue=queue,
                 rt=rt,
+                resolution=resolution,
             )
             if batch_response is not None:
                 return batch_response
@@ -845,8 +1158,11 @@ async def chat_completions(req: ChatCompletionRequest):
                 request_id=request_id, cancellation_token=token, stream=False
             ) if token else None
             return await _execute_non_streaming_with_threadwake(
-                adapter, req, ctx, rt, request_id,
+                adapter, backend_request, ctx, rt, request_id,
                 backend=getattr(adapter, "kind", None),
+                threadwake_request=req,
+                resolution=resolution,
+                queued=True,
             )
 
         # ── Streaming: dequeue then stream ────────────────────────────
@@ -860,19 +1176,31 @@ async def chat_completions(req: ChatCompletionRequest):
         ctx = RequestExecutionContext(
             request_id=request_id, cancellation_token=token, stream=True
         ) if token else None
-        return await _execute_streaming(adapter, req, ctx, rt, request_id)
+        return await _execute_streaming(
+            adapter,
+            backend_request,
+            ctx,
+            rt,
+            request_id,
+            resolution=resolution,
+            queued=True,
+        )
 
     # ── Non-streaming path (immediate execution) ──────────────────────
     if not req.stream:
         request_id = rt.begin_request(model=req.model, stream=False)
+        request.state.request_id = request_id
         rt.mark_running(request_id)
         token = rt.get_cancellation_token(request_id)
         ctx = RequestExecutionContext(
             request_id=request_id, cancellation_token=token, stream=False
         ) if token else None
         return await _execute_non_streaming_with_threadwake(
-            adapter, req, ctx, rt, request_id,
+            adapter, backend_request, ctx, rt, request_id,
             backend=getattr(adapter, "kind", None),
+            threadwake_request=req,
+            resolution=resolution,
+            queued=False,
         )
 
     # ── Streaming path (immediate execution) ──────────────────────────
@@ -880,12 +1208,21 @@ async def chat_completions(req: ChatCompletionRequest):
         raise StreamingNotSupportedError()
 
     request_id = rt.begin_request(model=req.model, stream=True)
+    request.state.request_id = request_id
     rt.mark_streaming(request_id)
     token = rt.get_cancellation_token(request_id)
     ctx = RequestExecutionContext(
         request_id=request_id, cancellation_token=token, stream=True
     ) if token else None
-    return await _execute_streaming(adapter, req, ctx, rt, request_id)
+    return await _execute_streaming(
+        adapter,
+        backend_request,
+        ctx,
+        rt,
+        request_id,
+        resolution=resolution,
+        queued=False,
+    )
 
 
 # ── OpenAI-compatible Model Inventory ──────────────────────────────────────
@@ -939,10 +1276,13 @@ async def runtime_cancel_request(request_id: str):
     if snap is None:
         raise HTTPException(
             status_code=404,
-            detail=ErrorResponse(
-                code=ErrorCode.INTERNAL,
-                message=f"Request {request_id} not found",
-            ).model_dump(),
+            detail=_error_body(
+                ErrorCode.INTERNAL_ERROR,
+                "Request was not found.",
+                http_status=404,
+                request_id=request_id,
+                details={"request_id": request_id},
+            ),
         )
     if snap.status in (
         RequestLifecycleState.COMPLETED,
@@ -952,10 +1292,13 @@ async def runtime_cancel_request(request_id: str):
     ):
         raise HTTPException(
             status_code=409,
-            detail=ErrorResponse(
-                code=ErrorCode.INTERNAL,
-                message=f"Request {request_id} is already in terminal state {snap.status.value}",
-            ).model_dump(),
+            detail=_error_body(
+                ErrorCode.CANCELLED,
+                "Request is already in a terminal state.",
+                http_status=409,
+                request_id=request_id,
+                details={"request_id": request_id, "status": snap.status.value},
+            ),
         )
     signalled = rt.request_cancellation(request_id)
     if signalled:
@@ -1011,14 +1354,16 @@ async def runtime_model_warmup():
     except Exception as exc:
         rt.fail_warmup(
             error_code="MODEL_LOAD_FAILED",
-            error_message=str(exc)[:256],
+            error_message=exception_metadata(exc),
         )
         raise HTTPException(
             status_code=500,
-            detail=ErrorResponse(
-                code=ErrorCode.MODEL_LOAD_FAILED,
-                message=f"Model warmup failed: {exc}",
-            ).model_dump(),
+            detail=_error_body(
+                ErrorCode.MODEL_LOAD_FAILED,
+                "Model warmup failed",
+                http_status=500,
+                details={"diagnostic": exception_metadata(exc)},
+            ),
         ) from exc
 
     configured = get_advertised_model_id()
@@ -1039,10 +1384,12 @@ async def runtime_model_unload():
     if rt.active_jobs > 0:
         raise HTTPException(
             status_code=409,
-            detail=ErrorResponse(
-                code=ErrorCode.INTERNAL,
-                message=f"Cannot unload: {rt.active_jobs} active request(s) in progress.",
-            ).model_dump(),
+            detail=_error_body(
+                ErrorCode.CANCELLED,
+                "Cannot unload while requests are active.",
+                http_status=409,
+                details={"active_jobs": rt.active_jobs},
+            ),
         )
 
     await router.unload_all()

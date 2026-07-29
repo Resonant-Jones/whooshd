@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from whooshd.log_safety import exception_metadata
+
 
 @dataclass
 class ProviderSmokeResult:
@@ -57,7 +59,7 @@ async def smoke_test_server(
         else:
             errors.append(f"/health returned status {resp.status_code}")
     except Exception as exc:
-        errors.append(f"/health probe failed: {exc}")
+        errors.append(f"/health probe failed ({exception_metadata(exc)})")
 
     # ── /ready ─────────────────────────────────────────────────────────
     try:
@@ -67,7 +69,7 @@ async def smoke_test_server(
         result.ready = body.get("ready", False)
         result.readiness_reason = body.get("reason")
     except Exception as exc:
-        errors.append(f"/ready probe failed: {exc}")
+        errors.append(f"/ready probe failed ({exception_metadata(exc)})")
 
     # ── /v1/models ─────────────────────────────────────────────────────
     try:
@@ -78,7 +80,7 @@ async def smoke_test_server(
         else:
             errors.append("/v1/models returned empty or non-200")
     except Exception as exc:
-        errors.append(f"/v1/models probe failed: {exc}")
+        errors.append(f"/v1/models probe failed ({exception_metadata(exc)})")
 
     # ── /api/tags ──────────────────────────────────────────────────────
     try:
@@ -89,7 +91,7 @@ async def smoke_test_server(
         else:
             errors.append("/api/tags returned empty or non-200")
     except Exception as exc:
-        errors.append(f"/api/tags probe failed: {exc}")
+        errors.append(f"/api/tags probe failed ({exception_metadata(exc)})")
 
     # ── Non-streaming chat ─────────────────────────────────────────────
     try:
@@ -111,7 +113,9 @@ async def smoke_test_server(
         else:
             errors.append(f"non-streaming chat returned status {resp.status_code}")
     except Exception as exc:
-        errors.append(f"non-streaming chat probe failed: {exc}")
+        errors.append(
+            f"non-streaming chat probe failed ({exception_metadata(exc)})"
+        )
 
     # ── Streaming chat ─────────────────────────────────────────────────
     try:
@@ -133,7 +137,7 @@ async def smoke_test_server(
         else:
             errors.append(f"streaming chat returned status {resp.status_code}")
     except Exception as exc:
-        errors.append(f"streaming chat probe failed: {exc}")
+        errors.append(f"streaming chat probe failed ({exception_metadata(exc)})")
 
     # ── Final verdict ──────────────────────────────────────────────────
     result.errors = errors

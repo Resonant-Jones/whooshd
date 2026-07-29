@@ -27,3 +27,10 @@ provider gate or guessing at a stale alias.
 - `POST /v1/chat/completions`
 - `POST /v1/generate`
 
+## Request boundary
+
+The permissive ingress request is filtered into an explicit backend request
+after routing. Internal `metadata`, `threadwake`, reserved orchestration
+namespaces, and undeclared extras do not reach adapters. See the
+[request and backend boundary](request-contract.md) for the field matrix and
+adapter extension policy.

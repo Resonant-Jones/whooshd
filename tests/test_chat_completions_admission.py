@@ -76,7 +76,7 @@ async def test_overloaded_non_streaming_returns_429(client, monkeypatch):
         )
         assert resp.status_code == 429
         body = resp.json()
-        assert body["code"] == "RUNNER_OVERLOADED"
+        assert body["code"] == "runner_overloaded"
     finally:
         rt.complete_request(rid)
 

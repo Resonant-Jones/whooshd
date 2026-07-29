@@ -55,14 +55,22 @@ The bundle intentionally avoids `whooshd --codexify` because the current local
 launcher implementation forces `0.0.0.0:8000` when that flag is present. For
 the launchd path we want the bind host to remain renderer-controlled.
 
+The Whoosh'd Python interpreter is also renderer-controlled. It has no implicit
+default: the operator must provide one absolute machine-local path, and that
+exact path is written to the generated plist as `WHOOSHD_PYTHON`. The renderer
+does not select `.venv`, `.venv311`, system Python, or a `PATH` candidate.
+
 ## Render
 
 From the Whoosh'd repo root:
 
 ```bash
+WHOOSHD_PYTHON="$PWD/.venv311/bin/python"
+
 python3 ops/launchd/render_launchd_plists.py \
   --output-dir .local/launchd \
   --whooshd-root "/Volumes/Dev_SSD/ResonantConstructs/Whoosh'd" \
+  --whooshd-python "$WHOOSHD_PYTHON" \
   --user chriscastillo \
   --dry-run
 ```
@@ -71,22 +79,31 @@ This writes concrete plists into `.local/launchd/` and prints the exact
 install commands without calling `sudo`.
 
 For the Friends & Family guest launch profile, select the pinned guest
-registry explicitly:
+registry explicitly while retaining the explicit interpreter binding:
 
 ```bash
 python3 ops/launchd/render_launchd_plists.py \
   --profile friends-family-guest \
   --output-dir .local/launchd \
   --whooshd-root "/Volumes/Dev_SSD/ResonantConstructs/Whoosh'd" \
+  --whooshd-python "$WHOOSHD_PYTHON" \
   --user chriscastillo \
   --dry-run
 ```
 
-That profile renders `WHOOSHD_MODEL_REGISTRY_PATH` to
+That profile pins `WHOOSHD_MODEL_REGISTRY_PATH` to
 `configs/models.friends-family-guest.yaml`, binds Whoosh'd and the MLX-VLM
 sidecar to loopback, and keeps the runtime local to the host. It is a model
-allowlist/startup configuration only; it does not establish capacity,
-invite, or guest-readiness claims, and it does not configure Codexify.
+allowlist/startup configuration only; it does not establish capacity, invite,
+or guest-readiness claims, and it does not configure Codexify.
+
+The selected interpreter must be an absolute path to an existing executable.
+Before rendering, it is launched from the Whoosh'd repository root and must
+successfully import `fastapi`, `uvicorn`, `pydantic_core._pydantic_core`, and
+`whooshd.app`. Any missing path, non-executable file, failed import, native
+extension failure, timeout, or missing success marker stops rendering. VaultNode
+currently proves `.venv311/bin/python`; that is machine-local evidence, not a
+portable repository-wide interpreter requirement.
 
 ## Validate
 
@@ -114,12 +131,105 @@ bash ops/launchd/install_local_launchd.sh install
 The installer:
 
 - validates both generated plists with `plutil -lint`
+- reads `WHOOSHD_PYTHON` and `WHOOSHD_ROOT` back from the rendered Whoosh'd plist
+- repeats the complete interpreter/import preflight before the first `sudo`
+- validates the installed target paths and any existing plist ownership/mode
+- acquires a machine-local exclusion lock before inspecting or mutating launchd
+- classifies both exact system service targets before transition
 - backs up the existing `com.resonant.whooshd.plist` before replacement
 - copies both plists into `/Library/LaunchDaemons/`
 - sets `root:wheel` ownership and `0644` permissions
-- `bootout`s old jobs before `bootstrap` + `kickstart`
+- verifies each required `bootout` by polling until the exact service is absent
+- reconciles every `bootstrap` exit status against a post-command service query
+- confirms both jobs are registered before either job is kickstarted
+- verifies both jobs remain registered before reporting convergence
 
 It never stores credentials and relies on operator-provided `sudo`.
+
+Interpreter validation occurs before any installed plist is copied and before
+either service is unloaded. A stale, missing, non-executable, or incompatible
+machine-local Python therefore fails closed without converting a running service
+into an outage.
+
+## Convergent two-service installation
+
+Installation treats Whoosh'd and MLX-VLM as one bundle. An exact-target
+`launchctl print system/<label>` query supplies the registration decision:
+
+- exit `0`: registered; a bounded `state = running` match is reported only as a
+  runtime hint
+- exit `113`: absent
+- any other exit: indeterminate, so mutation stops
+
+The installer does not use the rest of `launchctl print` as a stable data
+format and does not print its environment-bearing output. Before removing a
+registered job, it polls that exact target until absence is confirmed. The
+poll has a bounded attempt count and interval; an arbitrary delay is never the
+sole removal test.
+
+After each bootstrap, the installer queries the exact service even when
+bootstrap returned nonzero. A nonzero result such as error `5` is reconciled
+when the intended service is demonstrably registered. Conversely, exit `0`
+does not count as success when the job remains absent or indeterminate. Both
+jobs must be registered before either kickstart, and both must remain
+registered before installation is reported as converged.
+
+The machine-local lock defaults to:
+
+```text
+/tmp/com.resonant.whooshd-launchd-installer.lock
+```
+
+A concurrent invocation fails before privileged mutation. The lock is removed
+on normal exit and handled signals. If a process is forcibly killed and leaves
+a stale directory, first verify that no installer process is running, then
+remove only that exact lock directory before retrying.
+
+### Partial-state recovery
+
+When either service fails transition, the installer returns nonzero and prints:
+
+- the failing stage and label
+- bounded launchctl status and error interpretation
+- the post-command registered, absent, or indeterminate state
+- the companion service state
+- the supported recovery path
+
+Do not blindly loop the installer, manually start a competing process, or
+restore the historical backup plist. Resolve the reported launchctl condition,
+then invoke the same installer once; it will reclassify both service targets and
+converge from registered, absent, or mixed state. Error `5` by itself does not
+prove whether launchd registered a job—the post-command query is authoritative
+for that installation decision.
+
+Installer convergence proves registered service definitions only. Listener
+containment, health, Docker bridge access, non-loopback denial, model inventory,
+real generation, and restart stability remain mandatory in the separate live
+containment proof.
+
+## Diagnose Python preflight failures
+
+Use the same absolute value supplied to `--whooshd-python`:
+
+```bash
+WHOOSHD_PYTHON="$PWD/.venv311/bin/python"
+
+"$WHOOSHD_PYTHON" -c '
+import fastapi
+import uvicorn
+import pydantic_core._pydantic_core
+import whooshd.app
+print("Whoosh launchd Python imports: OK")
+'
+
+python3 ops/launchd/validate_whooshd_python.py \
+  --python "$WHOOSHD_PYTHON" \
+  --whooshd-root "$PWD"
+```
+
+If the preflight fails, repair or deliberately replace that machine-local
+environment, then render again with its explicit absolute path. Do not rename or
+remove another environment to trigger launcher fallback behavior.
 
 ## Proof Commands
 
@@ -151,22 +261,10 @@ Dockerized Codexify services should continue using:
 - `LOCAL_BASE_URL=http://host.docker.internal:8000/v1`
 - `VAULTNODE_BASE_URL=http://host.docker.internal:8000`
 
-## Rollback
+## Rollback boundary
 
-To roll back:
-
-```bash
-sudo launchctl bootout system/com.resonant.whooshd 2>/dev/null || true
-sudo launchctl bootout system/com.resonant.mlx-vlm-gemma12b 2>/dev/null || true
-sudo cp /Library/LaunchDaemons/com.resonant.whooshd.plist.bak /Library/LaunchDaemons/com.resonant.whooshd.plist
-sudo chown root:wheel /Library/LaunchDaemons/com.resonant.whooshd.plist
-sudo chmod 644 /Library/LaunchDaemons/com.resonant.whooshd.plist
-sudo launchctl bootstrap system /Library/LaunchDaemons/com.resonant.whooshd.plist
-sudo launchctl kickstart -k system/com.resonant.whooshd
-```
-
-If the sidecar plist was added only for this path, remove it explicitly:
-
-```bash
-sudo rm -f /Library/LaunchDaemons/com.resonant.mlx-vlm-gemma12b.plist
-```
+The installer does not automatically restore its backup because historical
+Whoosh'd plists may reintroduce `--codexify` or a wildcard listener. Treat the
+backup as evidence, not as a known-safe executable rollback. Any future
+rollback must first be audited for explicit loopback binding, the intended
+Python interpreter, registry continuity, and paired-sidecar behavior.

@@ -25,6 +25,7 @@ from .tokenization import (
     TokenSpan,
 )
 from whooshd.adapters.mlx_prompt import extract_chat_messages, render_mlx_chat_prompt
+from whooshd.log_safety import exception_metadata
 
 logger = logging.getLogger(__name__)
 
@@ -204,12 +205,15 @@ class MLXInProcessTokenizerAdapter:
             )
 
         except Exception as exc:
-            logger.warning("MLX tokenizer adapter failed: %s", exc)
+            logger.warning(
+                "MLX tokenizer adapter failed diagnostic=%s",
+                exception_metadata(exc),
+            )
             return TokenizedPrompt(
                 model_id=model_id,
                 backend="mlx",
                 tokenizer_hash=tok_hash,
                 chat_template_hash=tmpl_hash,
                 real_tokenization=False,
-                unavailable_reason=f"mlx_tokenizer_error: {exc}",
+                unavailable_reason=f"mlx_tokenizer_error: {exception_metadata(exc)}",
             )
