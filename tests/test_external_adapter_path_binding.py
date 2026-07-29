@@ -12,6 +12,8 @@ import asyncio
 import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -26,6 +28,7 @@ from whooshd.adapters.mlx_lm_server import (
     MlxLmServerConfig,
     build_mlx_lm_server_argv,
 )
+from whooshd.contracts import GenerateRequest
 
 
 # ── Helpers ─────────────────────────────────────────────────────────────────
@@ -103,6 +106,102 @@ class TestLlamaCppAdapterPathBinding:
             adapter.set_external_model_path(str(gguf_file))
             adapter._clear_external_model_path()
             assert adapter.model_id() == adapter._config.model_path
+
+    def test_generate_clears_external_path_when_health_probe_fails(self):
+        adapter = LlamaCppAdapter(
+            LlamaCppAdapterConfig(server_url="http://127.0.0.1:8080")
+        )
+
+        async def generate():
+            adapter.set_external_model_path("/models/external.gguf")
+            try:
+                await adapter.generate(GenerateRequest(prompt="hello"))
+            except RuntimeError:
+                assert adapter._external_model_path is None
+                raise
+
+        with patch.object(
+            adapter,
+            "check_health",
+            AsyncMock(side_effect=RuntimeError("probe failed")),
+        ):
+            with pytest.raises(RuntimeError, match="probe failed"):
+                asyncio.run(generate())
+
+        assert adapter._external_model_path is None
+
+    def test_generate_clears_external_path_when_forwarding_fails(self):
+        adapter = LlamaCppAdapter(
+            LlamaCppAdapterConfig(server_url="http://127.0.0.1:8080")
+        )
+        health = SimpleNamespace(reachable=True)
+
+        async def generate():
+            adapter.set_external_model_path("/models/external.gguf")
+            try:
+                await adapter.generate(GenerateRequest(prompt="hello"))
+            except RuntimeError:
+                assert adapter._external_model_path is None
+                raise
+
+        with patch.object(adapter, "check_health", AsyncMock(return_value=health)), patch(
+            "whooshd.http_forwarding.forward_non_streaming",
+            AsyncMock(side_effect=RuntimeError("forward failed")),
+        ):
+            with pytest.raises(RuntimeError, match="forward failed"):
+                asyncio.run(generate())
+
+        assert adapter._external_model_path is None
+
+    def test_generate_failure_does_not_clear_concurrent_request_path(self):
+        adapter = LlamaCppAdapter(
+            LlamaCppAdapterConfig(server_url="http://127.0.0.1:8080")
+        )
+        first_probe_started = asyncio.Event()
+        allow_first_probe_failure = asyncio.Event()
+        first_request_finished = asyncio.Event()
+        forwarded_overrides = []
+
+        async def check_health():
+            if adapter._effective_model_path == "/models/first.gguf":
+                first_probe_started.set()
+                await allow_first_probe_failure.wait()
+                raise RuntimeError("probe failed")
+            await first_request_finished.wait()
+            return SimpleNamespace(reachable=True)
+
+        async def forward(
+            _url, _request, *, timeout, model_override, adapter_kind=None
+        ):
+            forwarded_overrides.append(model_override)
+            raise RuntimeError("forward failed")
+
+        async def first_request():
+            adapter.set_external_model_path("/models/first.gguf")
+            try:
+                await adapter.generate(GenerateRequest(prompt="first"))
+            finally:
+                first_request_finished.set()
+
+        async def second_request():
+            await first_probe_started.wait()
+            adapter.set_external_model_path("/models/second.gguf")
+            allow_first_probe_failure.set()
+            await adapter.generate(GenerateRequest(prompt="second"))
+
+        async def run_overlapping_requests():
+            results = await asyncio.gather(
+                first_request(), second_request(), return_exceptions=True
+            )
+            assert all(isinstance(result, RuntimeError) for result in results)
+
+        with patch.object(adapter, "check_health", check_health), patch(
+            "whooshd.http_forwarding.forward_non_streaming", forward
+        ):
+            asyncio.run(run_overlapping_requests())
+
+        assert forwarded_overrides == ["/models/second.gguf"]
+        assert adapter._external_model_path is None
 
 
 # ── LlamaCppAdapter: argv building with external path ──────────────────────
