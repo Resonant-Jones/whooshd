@@ -52,10 +52,23 @@ path. An explicit non-v1 response header is a bounded contract failure and is
 not routed through legacy fallback. Unknown optional v1 body fields are
 ignored.
 
-For incoming requests, missing `X-Whooshd-Contract-Version` preserves legacy
-compatibility, exact v1 proceeds normally, and an explicit non-v1 value returns
-`contract_version_unsupported` with HTTP 400 and the normal v1 response
-header. Only a bounded version identifier is retained in `details`.
+Request contract negotiation happens in middleware before lifecycle creation:
+
+| `X-Whoosh-Contract-Version` | `X-Whooshd-Contract-Version` | Result |
+|---|---|---|
+| absent | absent | accepted as a legacy client |
+| `1` | absent | accepted as contract major 1 |
+| absent | `whooshd.control.v1` | accepted as contract major 1 |
+| `1` | `whooshd.control.v1` | accepted as contract major 1 |
+| any other value | any | HTTP 400 `contract_version_unsupported` |
+| any | unsupported or conflicting value | HTTP 400 `contract_version_unsupported` |
+
+Rejected values are reduced to bounded operational metadata and never reflected
+raw when malformed or oversized. Rejection occurs before execution and before
+Whoosh'd creates `X-Whoosh-Request-ID`; a valid upstream `X-Request-ID` may
+still be echoed. Responses continue to advertise only
+`X-Whooshd-Contract-Version: whooshd.control.v1`. This slice does not promise a
+new target response header.
 
 ## Streaming and request identity
 

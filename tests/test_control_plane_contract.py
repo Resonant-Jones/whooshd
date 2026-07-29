@@ -14,7 +14,15 @@ from whooshd.contracts import ChatCompletionChunk, ChatCompletionRequest, ErrorC
 from whooshd.control_plane import (
     CONTROL_PLANE_CONTRACT_VERSION,
     CONTROL_PLANE_VERSION_HEADER,
+    LEGACY_CONTROL_PLANE_CONTRACT_VERSION,
+    LEGACY_CONTROL_PLANE_VERSION_HEADER,
+    TARGET_CONTRACT_VERSION_HEADER,
+    TARGET_CONTRACT_VERSION_VALUE,
     error_fields,
+)
+from whooshd.correlation import (
+    UPSTREAM_REQUEST_ID_HEADER,
+    WHOOSH_REQUEST_ID_HEADER,
 )
 from whooshd.http_forwarding import StreamInterrupted
 
@@ -116,37 +124,71 @@ async def test_owned_success_and_error_paths_advertise_contract_header():
 
 
 @pytest.mark.asyncio
-async def test_missing_and_exact_v1_request_versions_preserve_success():
+@pytest.mark.parametrize(
+    "headers",
+    [
+        {},
+        {TARGET_CONTRACT_VERSION_HEADER: TARGET_CONTRACT_VERSION_VALUE},
+        {
+            LEGACY_CONTROL_PLANE_VERSION_HEADER: (
+                LEGACY_CONTROL_PLANE_CONTRACT_VERSION
+            ),
+        },
+        {
+            TARGET_CONTRACT_VERSION_HEADER: TARGET_CONTRACT_VERSION_VALUE,
+            LEGACY_CONTROL_PLANE_VERSION_HEADER: (
+                LEGACY_CONTROL_PLANE_CONTRACT_VERSION
+            ),
+        },
+    ],
+    ids=["missing", "target", "legacy", "matching-dual"],
+)
+async def test_supported_request_version_forms_preserve_success(headers):
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        missing = await client.get("/health")
-        exact = await client.get(
-            "/health",
-            headers={CONTROL_PLANE_VERSION_HEADER: CONTROL_PLANE_CONTRACT_VERSION},
-        )
+        response = await client.get("/health", headers=headers)
 
-    assert missing.status_code == 200
-    assert exact.status_code == 200
-    assert missing.headers[CONTROL_PLANE_VERSION_HEADER] == CONTROL_PLANE_CONTRACT_VERSION
-    assert exact.headers[CONTROL_PLANE_VERSION_HEADER] == CONTROL_PLANE_CONTRACT_VERSION
+    assert response.status_code == 200
+    assert (
+        response.headers[LEGACY_CONTROL_PLANE_VERSION_HEADER]
+        == LEGACY_CONTROL_PLANE_CONTRACT_VERSION
+    )
+    assert TARGET_CONTRACT_VERSION_HEADER not in response.headers
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "received_version",
+    ("headers", "bounded_version"),
     [
-        "whooshd.control.v2",
-        "malformed-api-key-secret",
-        "x" * 200,
+        ({TARGET_CONTRACT_VERSION_HEADER: "2"}, "2"),
+        ({TARGET_CONTRACT_VERSION_HEADER: "malformed-api-key-secret"}, "invalid"),
+        ({TARGET_CONTRACT_VERSION_HEADER: "x" * 200}, "invalid"),
+        (
+            {LEGACY_CONTROL_PLANE_VERSION_HEADER: "whooshd.control.v2"},
+            "whooshd.control.v2",
+        ),
+        (
+            {
+                TARGET_CONTRACT_VERSION_HEADER: "1",
+                LEGACY_CONTROL_PLANE_VERSION_HEADER: "whooshd.control.v2",
+            },
+            "conflicting",
+        ),
+    ],
+    ids=[
+        "unsupported-target",
+        "unsafe-target",
+        "oversized-target",
+        "unsupported-legacy",
+        "conflicting-dual",
     ],
 )
-async def test_explicit_non_v1_request_version_is_rejected_safely(received_version):
+async def test_unsupported_request_versions_are_rejected_safely(
+    headers, bounded_version
+):
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
-        response = await client.get(
-            "/health",
-            headers={CONTROL_PLANE_VERSION_HEADER: received_version},
-        )
+        response = await client.get("/health", headers=headers)
 
     assert response.status_code == 400
     assert response.headers[CONTROL_PLANE_VERSION_HEADER] == CONTROL_PLANE_CONTRACT_VERSION
@@ -155,14 +197,58 @@ async def test_explicit_non_v1_request_version_is_rejected_safely(received_versi
     assert body["code"] == "contract_version_unsupported"
     assert body["http_status"] == 400
     assert body["retryable"] is False
-    assert body["details"]["received_version"] in {
-        "whooshd.control.v2",
-        "invalid",
-    }
-    if received_version == "whooshd.control.v2":
-        assert received_version in response.text
+    assert body["details"]["received_version"] == bounded_version
+    for value in headers.values():
+        if bounded_version == "invalid":
+            assert value not in response.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stream", [False, True], ids=["non-streaming", "streaming"])
+@pytest.mark.parametrize(
+    ("upstream_id", "echoed"),
+    [
+        ("codexify-contract-rejection-01", True),
+        ("unsafe request id with spaces", False),
+    ],
+    ids=["safe-upstream-id", "unsafe-upstream-id"],
+)
+async def test_negotiation_failure_precedes_lifecycle_and_preserves_safe_correlation(
+    monkeypatch, stream, upstream_id, echoed
+):
+    def fail_if_lifecycle_begins(*_args, **_kwargs):
+        raise AssertionError("contract rejection began a request lifecycle")
+
+    monkeypatch.setattr(
+        "whooshd.app._begin_request_lifecycle",
+        fail_if_lifecycle_begins,
+    )
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/v1/chat/completions",
+            headers={
+                TARGET_CONTRACT_VERSION_HEADER: "2",
+                UPSTREAM_REQUEST_ID_HEADER: upstream_id,
+            },
+            json={
+                "model": "stub-model",
+                "messages": [{"role": "user", "content": "not-executed"}],
+                "stream": stream,
+            },
+        )
+
+    assert response.status_code == 400
+    assert response.json()["code"] == "contract_version_unsupported"
+    assert WHOOSH_REQUEST_ID_HEADER not in response.headers
+    assert "request_id" not in response.json()
+    assert "not-executed" not in response.text
+    if echoed:
+        assert response.headers[UPSTREAM_REQUEST_ID_HEADER] == upstream_id
+        assert response.json()["upstream_request_id"] == upstream_id
     else:
-        assert received_version not in response.text
+        assert UPSTREAM_REQUEST_ID_HEADER not in response.headers
+        assert "upstream_request_id" not in response.json()
 
 
 class _FailingStreamAdapter:
