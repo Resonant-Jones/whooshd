@@ -174,7 +174,14 @@ class ErrorResponse(BaseModel):
     http_status: int = Field(500, ge=400, le=599)
     retryable: bool = False
     retry_after_seconds: Optional[float] = Field(None, description="Suggested backoff in seconds")
-    request_id: Optional[str] = None
+    request_id: Optional[str] = Field(
+        None,
+        description="Whoosh'd-owned lifecycle request identifier when created",
+    )
+    upstream_request_id: Optional[str] = Field(
+        None,
+        description="Bounded upstream X-Request-ID when supplied",
+    )
     category: ErrorCategory = ErrorCategory.INTERNAL
     details: Optional[dict] = Field(None, description="Bounded operational details")
 
@@ -410,7 +417,12 @@ class RuntimeProvenance(BaseModel):
     model_config = {"extra": "ignore"}
 
     schema_version: Literal["whooshd.runtime.v1"] = "whooshd.runtime.v1"
-    request_id: Optional[str] = Field(None, max_length=128)
+    request_id: Optional[str] = Field(
+        None, max_length=128, description="Whoosh'd-owned lifecycle request identifier"
+    )
+    upstream_request_id: Optional[str] = Field(
+        None, max_length=128, description="Bounded upstream X-Request-ID"
+    )
     requested_model_id: Optional[str] = Field(None, max_length=256)
     advertised_model_id: Optional[str] = Field(None, max_length=256)
     resolved_model_id: Optional[str] = Field(None, max_length=256)
@@ -469,7 +481,10 @@ class RequestSnapshot(BaseModel):
     runtime metadata only.
     """
 
-    request_id: str = Field(..., description="Unique request identifier")
+    request_id: str = Field(..., description="Whoosh'd-owned lifecycle request identifier")
+    upstream_request_id: Optional[str] = Field(
+        None, description="Bounded upstream X-Request-ID when supplied"
+    )
     model: str = Field(..., description="Model ID used for the request")
     stream: bool = Field(..., description="Whether this is a streaming request")
     status: RequestLifecycleState = Field(..., description="Current lifecycle state")
@@ -527,10 +542,13 @@ class RequestExecutionContext:
         request_id: str,
         cancellation_token: CancellationToken,
         stream: bool = False,
+        *,
+        upstream_request_id: str | None = None,
     ) -> None:
         self.request_id = request_id
         self.cancellation_token = cancellation_token
         self.stream = stream
+        self.upstream_request_id = upstream_request_id
 
 
 # ── Model Lifecycle ─────────────────────────────────────────────────────────

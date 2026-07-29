@@ -36,6 +36,7 @@ from whooshd.contracts import (
     RuntimeProvenance,
 )
 from whooshd.log_safety import exception_metadata, safe_model_alias
+from whooshd.correlation import normalize_identifier
 
 logger = logging.getLogger(__name__)
 
@@ -106,6 +107,7 @@ class RuntimeResolution:
         self,
         *,
         request_id: str | None = None,
+        upstream_request_id: str | None = None,
         backend_reported_model_id: str | None = None,
         streaming: bool = False,
         queued: bool = False,
@@ -115,7 +117,8 @@ class RuntimeResolution:
         from whooshd import __version__
 
         return RuntimeProvenance(
-            request_id=request_id,
+            request_id=normalize_identifier(request_id),
+            upstream_request_id=normalize_identifier(upstream_request_id),
             requested_model_id=safe_model_alias(self.requested_model_id),
             advertised_model_id=safe_model_alias(self.advertised_model_id),
             resolved_model_id=safe_model_alias(self.resolved_model_id),
@@ -470,6 +473,12 @@ class RuntimeRouter:
         return result.model_copy(
             update={
                 "runtime_provenance": resolution.provenance(
+                    request_id=getattr(context, "request_id", None)
+                    if context is not None
+                    else None,
+                    upstream_request_id=getattr(context, "upstream_request_id", None)
+                    if context is not None
+                    else None,
                     backend_reported_model_id=result.model,
                     streaming=False,
                 )
@@ -500,6 +509,12 @@ class RuntimeRouter:
                 yield chunk.model_copy(
                     update={
                         "runtime_provenance": resolution.provenance(
+                            request_id=getattr(context, "request_id", None)
+                            if context is not None
+                            else None,
+                            upstream_request_id=getattr(context, "upstream_request_id", None)
+                            if context is not None
+                            else None,
                             backend_reported_model_id=chunk.model,
                             streaming=True,
                         )

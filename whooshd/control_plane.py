@@ -13,6 +13,8 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any, Mapping
 
+from whooshd.correlation import normalize_identifier
+
 
 CONTROL_PLANE_CONTRACT_VERSION = "whooshd.control.v1"
 CONTROL_PLANE_VERSION_HEADER = "X-Whooshd-Contract-Version"
@@ -225,6 +227,7 @@ def error_fields(
     http_status: int | None = None,
     retry_after_seconds: float | None = None,
     request_id: str | None = None,
+    upstream_request_id: str | None = None,
     details: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build the canonical, bounded error envelope fields."""
@@ -243,7 +246,11 @@ def error_fields(
         "http_status": int(http_status if http_status is not None else spec.http_status),
         "retryable": spec.retryable,
         "retry_after_seconds": retry_after,
-        "request_id": request_id[:128] if isinstance(request_id, str) else None,
+        # request_id remains the established Whoosh'd lifecycle identifier.
+        # The upstream caller identity is carried separately and never replaces
+        # cancellation, queue, batch, or adapter state.
+        "request_id": normalize_identifier(request_id),
+        "upstream_request_id": normalize_identifier(upstream_request_id),
         "category": spec.category,
         "details": bounded_details(details),
     }
