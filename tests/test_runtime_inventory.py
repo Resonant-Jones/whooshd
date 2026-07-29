@@ -22,6 +22,7 @@ def _clean_router():
     from whooshd.runtime import get_runtime
     get_runtime()._registry = None
     yield
+    get_runtime()._registry = None
     routing_reset()
     _init_router()
 

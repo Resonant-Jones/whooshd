@@ -14,6 +14,8 @@ import urllib.request
 from collections.abc import Sequence
 from pathlib import Path
 
+from whooshd.log_safety import exception_metadata
+
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8000
@@ -145,15 +147,17 @@ def launch_server(command: list[str], env: dict[str, str]) -> subprocess.Popen:
 
 
 def fetch_json(host: str, port: int, path: str, timeout: float = 2.0) -> tuple[int | None, str]:
+    """Fetch endpoint metadata without retaining or returning its body."""
     url = f"http://{host}:{port}{path}"
     try:
         with urllib.request.urlopen(url, timeout=timeout) as response:
-            return response.status, response.read().decode("utf-8", errors="replace")
+            body = response.read()
+            return response.status, f"body_bytes={len(body)}"
     except urllib.error.HTTPError as exc:
-        body = exc.read().decode("utf-8", errors="replace")
-        return exc.code, body
+        body = exc.read()
+        return exc.code, f"body_bytes={len(body)}"
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
-        return None, str(exc)
+        return None, exception_metadata(exc)
 
 
 def wait_until_reachable(host: str, port: int, timeout: float) -> bool:
@@ -191,7 +195,7 @@ def start_server(args: argparse.Namespace) -> int:
     process = launch_server(command, build_server_env(args))
     write_tracked_pid(process.pid)
     print(f"Started Whoosh'd with PID {process.pid}.")
-    print(f"Logs: {log_path()}")
+    print("Logs: available=True")
 
     if args.no_wait:
         return 0
@@ -262,7 +266,7 @@ def status_server(args: argparse.Namespace) -> int:
         status, body = fetch_json(args.host, args.port, path)
         label = path.removeprefix("/")
         if status is None:
-            print(f"{label}: unreachable ({body})")
+            print(f"{label}: unreachable (transport_failure)")
             exit_code = 1
         else:
             print(f"{label}: HTTP {status}")
@@ -281,7 +285,7 @@ def show_logs(args: argparse.Namespace) -> int:
     try:
         lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
     except FileNotFoundError:
-        print(f"No Whoosh'd log file found at {path}.")
+        print("No Whoosh'd log file found (logs_available=False).")
         return 0
     for line in lines[-args.tail :]:
         print(line)

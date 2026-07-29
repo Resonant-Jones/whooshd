@@ -12,7 +12,6 @@ from __future__ import annotations
 import json
 import os
 import time
-import uuid
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -43,6 +42,7 @@ from whooshd.config import (
     get_mlx_quantization,
     get_model_registry_path,
 )
+from whooshd.correlation import generate_whoosh_request_id, normalize_identifier
 
 # Synthetic creation timestamp for inventory entries.
 _STUB_MODEL_CREATED = 1700000000
@@ -62,6 +62,7 @@ class _RequestRecord:
     request_id: str
     model: str
     stream: bool
+    upstream_request_id: str | None = None
     status: RequestLifecycleState = RequestLifecycleState.ACCEPTED
     cancel_requested: bool = False
     cancel_token: CancellationToken | None = None
@@ -220,7 +221,7 @@ class RuntimeState:
         Falls back to WHOOSHD_MLX_CONTEXT_WINDOW / WHOOSHD_MLX_QUANTIZATION
         env vars, then to sensible defaults.
         """
-        from whooshd.routing import get_router
+        from whooshd.routing import get_router, inventory_provenance
 
         router = get_router()
         model_id = get_advertised_model_id()
@@ -239,6 +240,15 @@ class RuntimeState:
         quantization = metadata.get("quantization") or None
         memory_class = metadata.get("memory_class") or "small"
         max_concurrent = metadata.get("max_concurrent_jobs") or 2
+        adapter = None
+        for candidate in router._adapters.values():
+            if candidate.model_id() == model_id:
+                adapter = candidate
+                break
+        if adapter is None and len(router._adapters) == 1:
+            adapter = next(iter(router._adapters.values()))
+        runtime_kind = getattr(adapter, "kind", "stub")
+        adapter_name = getattr(adapter, "name", None)
 
         return ModelInfo(
             id=model_id,
@@ -248,6 +258,17 @@ class RuntimeState:
             context_window=context_window,
             quantization=quantization,
             memory_class=memory_class,
+            runtime_provenance=inventory_provenance(
+                model_id=model_id,
+                runtime_kind=runtime_kind,
+                resolution_source=(
+                    "loaded_model_match"
+                    if loaded and adapter is not None
+                    else "stub_only_compatibility"
+                ),
+                loaded=loaded,
+                adapter_name=adapter_name,
+            ),
         )
 
     def build_runtime_response(self) -> RuntimeResponse:
@@ -433,7 +454,7 @@ class RuntimeState:
         When only the stub adapter is registered, falls back to the
         legacy single-model behaviour driven by WHOOSHD_ADAPTER / WHOOSHD_MLX_MODEL.
         """
-        from whooshd.routing import get_router
+        from whooshd.routing import get_router, inventory_provenance
 
         router = get_router()
         results: list[ModelInfo] = []
@@ -471,6 +492,17 @@ class RuntimeState:
                     context_window=rm.context_window or 32768,
                     quantization=None,
                     memory_class="small",
+                    runtime_provenance=inventory_provenance(
+                        model_id=rm.id,
+                        runtime_kind=adapter.kind,
+                        resolution_source=(
+                            "loaded_model_match"
+                            if loaded
+                            else "single_runtime_compatibility"
+                        ),
+                        loaded=loaded,
+                        adapter_name=adapter.name,
+                    ),
                 ))
 
         if not results:
@@ -492,6 +524,13 @@ class RuntimeState:
         results: list[ModelInfo] = []
 
         from whooshd.registry import ModelModality, RegistryModelEntry
+        from whooshd.routing import inventory_provenance
+
+        engine_kind_map = {
+            "llama_cpp": "llama_cpp",
+            "mlx_lm": "mlx_lm_server",
+            "mlx_vlm": "mlx_vlm",
+        }
 
         for model_id, entry in registry.enabled_models():
             loaded = bool(loaded_model_id and loaded_model_id == model_id)
@@ -524,6 +563,14 @@ class RuntimeState:
                 context_window=entry.context_window,
                 quantization=None,  # registry does not carry quantization yet
                 memory_class=memory_class,
+                runtime_provenance=inventory_provenance(
+                    model_id=model_id,
+                    runtime_kind=engine_kind_map.get(
+                        entry.engine.value, entry.engine.value
+                    ),
+                    resolution_source="authoritative_registry",
+                    loaded=loaded,
+                ),
             ))
         return results
 
@@ -545,6 +592,8 @@ class RuntimeState:
         Compatible registered models from the durable model-store are
         appended after built-in/static entries.
         """
+        from whooshd.routing import inventory_provenance
+
         entries: list[OpenAIModelEntry] = []
         reg = self._load_registry()
 
@@ -563,6 +612,16 @@ class RuntimeState:
                             "display_name": entry.display_name,
                             "priority": entry.priority,
                             "warm_policy": entry.warm_policy.value,
+                            "runtime_provenance": inventory_provenance(
+                                model_id=model_id,
+                                runtime_kind={
+                                    "llama_cpp": "llama_cpp",
+                                    "mlx_lm": "mlx_lm_server",
+                                    "mlx_vlm": "mlx_vlm",
+                                }.get(entry.engine.value, entry.engine.value),
+                                resolution_source="authoritative_registry",
+                                loaded=False,
+                            ).model_dump(mode="json"),
                         },
                     )
                 )
@@ -575,6 +634,11 @@ class RuntimeState:
                         id=m.id,
                         created=_STUB_MODEL_CREATED,
                         owned_by="whooshd",
+                        metadata=(
+                            {"runtime_provenance": m.runtime_provenance.model_dump(mode="json")}
+                            if m.runtime_provenance is not None
+                            else None
+                        ),
                     )
                 )
 
@@ -637,18 +701,25 @@ class RuntimeState:
 
     # ── Request lifecycle bookkeeping ───────────────────────────────────
 
-    def begin_request(self, *, model: str, stream: bool) -> str:
+    def begin_request(
+        self,
+        *,
+        model: str,
+        stream: bool,
+        upstream_request_id: str | None = None,
+    ) -> str:
         """Register a new request and return its ID.
 
         The caller is responsible for eventually calling complete_request,
         cancel_request, or fail_request.
         """
-        request_id = str(uuid.uuid4())
+        request_id = generate_whoosh_request_id()
         token = CancellationToken(request_id=request_id)
         self._requests[request_id] = _RequestRecord(
             request_id=request_id,
             model=model,
             stream=stream,
+            upstream_request_id=normalize_identifier(upstream_request_id),
             status=RequestLifecycleState.ACCEPTED,
             cancel_token=token,
         )
@@ -731,6 +802,7 @@ class RuntimeState:
             return None
         return RequestSnapshot(
             request_id=rec.request_id,
+            upstream_request_id=rec.upstream_request_id,
             model=rec.model,
             stream=rec.stream,
             status=rec.status,
@@ -745,6 +817,7 @@ class RuntimeState:
         return [
             RequestSnapshot(
                 request_id=r.request_id,
+                upstream_request_id=r.upstream_request_id,
                 model=r.model,
                 stream=r.stream,
                 status=r.status,
@@ -768,6 +841,7 @@ class RuntimeState:
         return [
             RequestSnapshot(
                 request_id=r.request_id,
+                upstream_request_id=r.upstream_request_id,
                 model=r.model,
                 stream=r.stream,
                 status=r.status,
@@ -912,6 +986,7 @@ async def _append_registered_models_openai(
     from whooshd.model_registry.inventory import (
         collect_advertisable_registered_models,
     )
+    from whooshd.routing import inventory_provenance
 
     existing_ids = {e.id for e in entries}
 
@@ -934,6 +1009,12 @@ async def _append_registered_models_openai(
             "warm_policy": "warm_on_first_use",
             "source": "registered",
             "storage_mode": rm.storage_mode,
+            "runtime_provenance": inventory_provenance(
+                model_id=rm.model_id,
+                runtime_kind=_adapter_to_engine(rm),
+                resolution_source="authoritative_registry",
+                loaded=False,
+            ).model_dump(mode="json"),
         }
         if rm.detected_family and rm.detected_family != "unknown":
             meta["family"] = rm.detected_family
@@ -1025,6 +1106,8 @@ async def _append_external_models_openai(
     Skips models whose id duplicates an existing entry (managed registry
     or built-in wins).
     """
+    from whooshd.routing import inventory_provenance
+
     external = _get_external_inventory()
     if not external:
         return entries
@@ -1044,6 +1127,16 @@ async def _append_external_models_openai(
             "runtime": ext.runtime,
             "path_available": ext.path_available,
             "servable": ext.servable,
+            "runtime_provenance": inventory_provenance(
+                model_id=ext.id,
+                runtime_kind={
+                    "mlx_lm": "mlx_lm_server",
+                    "mlx_vlm": "mlx_vlm",
+                    "llama_cpp": "llama_cpp",
+                }.get(ext.runtime or "", ext.runtime or "stub"),
+                resolution_source="external_route",
+                loaded=False,
+            ).model_dump(mode="json"),
         }
         if ext.metadata.get("quant"):
             meta["quant"] = ext.metadata["quant"]

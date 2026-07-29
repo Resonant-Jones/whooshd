@@ -11,6 +11,7 @@ from whooshd.batching import (
     RealBatchFeasibilityReport,
     RealBatchFeasibilityStatus,
 )
+from whooshd.log_safety import exception_metadata
 
 
 def probe_mlx_batch_generate_capability() -> RealBatchFeasibilityReport:
@@ -57,7 +58,7 @@ def probe_mlx_batch_generate_capability() -> RealBatchFeasibilityReport:
         return RealBatchFeasibilityReport(
             backend=RealBatchBackend.MLX,
             status=RealBatchFeasibilityStatus.INCONCLUSIVE,
-            notes=(f"signature inspection failed: {exc}",),
+            notes=(f"signature inspection failed ({exception_metadata(exc)})",),
         )
 
     # API shape looks compatible.

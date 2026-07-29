@@ -416,8 +416,8 @@ def write_candidate_record(
     # ── Validate store is bootstrapped ────────────────────────────────
     if not layout.registry_dir.exists():
         raise ValueError(
-            f"Model-store not bootstrapped: {layout.registry_dir} does not exist. "
-            f"Run bootstrap_model_store() first."
+            "Model-store not bootstrapped: registry directory is absent. "
+            "Run bootstrap_model_store() first."
         )
 
     # ── Validate candidate_id is safe ─────────────────────────────────
@@ -428,8 +428,8 @@ def write_candidate_record(
     target_path = (candidates_dir / f"{safe_id}.json").resolve()
     if not str(target_path).startswith(str(layout.store_root.resolve())):
         raise ValueError(
-            f"Candidate record path {target_path} escapes the store root "
-            f"{layout.store_root}"
+            "Candidate record path escapes the model-store root "
+            "(path_present=True)"
         )
 
     # ── Idempotency: skip if unchanged ────────────────────────────────

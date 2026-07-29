@@ -170,7 +170,9 @@ class TestLlamaCppAdapterPathBinding:
             await first_request_finished.wait()
             return SimpleNamespace(reachable=True)
 
-        async def forward(_url, _request, *, timeout, model_override):
+        async def forward(
+            _url, _request, *, timeout, model_override, adapter_kind=None
+        ):
             forwarded_overrides.append(model_override)
             raise RuntimeError("forward failed")
 
@@ -361,6 +363,35 @@ class TestMlxLmArgvWithExternalPath:
 
 
 class TestStateLeakPrevention:
+    @pytest.mark.parametrize("adapter_type", [LlamaCppAdapter, MlxLmServerAdapter])
+    def test_external_bindings_are_isolated_between_overlapping_tasks(
+        self, adapter_type
+    ):
+        adapter = adapter_type()
+
+        async def exercise() -> None:
+            first_bound = asyncio.Event()
+            second_bound = asyncio.Event()
+
+            async def first() -> None:
+                adapter.set_external_model_path("/external/model-a")
+                first_bound.set()
+                await second_bound.wait()
+                assert adapter._effective_model_path == "/external/model-a"
+                adapter._clear_external_model_path()
+
+            async def second() -> None:
+                await first_bound.wait()
+                adapter.set_external_model_path("/external/model-b")
+                second_bound.set()
+                await asyncio.sleep(0)
+                assert adapter._effective_model_path == "/external/model-b"
+                adapter._clear_external_model_path()
+
+            await asyncio.gather(first(), second())
+
+        asyncio.run(exercise())
+
     def test_llama_cpp_clear_prevents_leak(self):
         with TemporaryDirectory() as d:
             gguf1 = Path(d) / "model-a.gguf"

@@ -20,6 +20,7 @@ from whooshd.config import (
     get_threadwake_min_prefix_tokens,
     get_threadwake_mode,
 )
+from whooshd.log_safety import exception_metadata
 
 from .backend import BackendKVAdapterRegistry, KVCapableBackend, NoOpKVBackendAdapter
 from .compiler import compile_prompt_graph, canonicalize_content
@@ -441,7 +442,10 @@ class ThreadWakeManager:
                 ),
             )
         except Exception as exc:
-            logger.warning("ThreadWake ephemeral HIT failed: %s — falling back", exc)
+            logger.warning(
+                "ThreadWake ephemeral HIT failed diagnostic=%s — falling back",
+                exception_metadata(exc),
+            )
             self._index.mark_stale(cache_key)
             return self._full_generation_result(generate_fn, request, gen_params, observation)
 
@@ -479,7 +483,10 @@ class ThreadWakeManager:
                         kv_handle_id=kv_handle.id,
                     )
         except Exception as exc:
-            logger.warning("ThreadWake ephemeral MISS store failed: %s", exc)
+            logger.warning(
+                "ThreadWake ephemeral MISS store failed diagnostic=%s",
+                exception_metadata(exc),
+            )
         return result
 
     def _try_session_continuation(
@@ -561,7 +568,10 @@ class ThreadWakeManager:
                 ),
             )
         except Exception as exc:
-            logger.warning("ThreadWake session continuation failed: %s — falling back", exc)
+            logger.warning(
+                "ThreadWake session continuation failed diagnostic=%s — falling back",
+                exception_metadata(exc),
+            )
             self._index.clear_thread_tip(thread_id, model_id, backend)
             return None  # Fall through to ephemeral hit/miss
 

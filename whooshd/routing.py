@@ -15,9 +15,14 @@ Routing policy (initial):
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from typing import AsyncIterator, Optional
 
 from whooshd.adapters.base import InferenceAdapter, StreamingNotSupportedError
+from whooshd.backend_request_policy import (
+    ensure_backend_chat_request,
+    ensure_backend_generate_request,
+)
 from whooshd.contracts import (
     ChatCompletionChunk,
     ChatCompletionRequest,
@@ -28,9 +33,110 @@ from whooshd.contracts import (
     RuntimeHealth,
     RuntimeKind,
     RuntimeModel,
+    RuntimeProvenance,
 )
+from whooshd.log_safety import exception_metadata, safe_model_alias
+from whooshd.correlation import normalize_identifier
 
 logger = logging.getLogger(__name__)
+
+
+_EXECUTION_MODES = {
+    RuntimeKind.STUB.value: "stub",
+    RuntimeKind.MLX_LM.value: "in_process",
+    RuntimeKind.MLX_LM_SERVER.value: "managed_sidecar",
+    RuntimeKind.MLX_VLM.value: "managed_sidecar",
+    RuntimeKind.LLAMA_CPP.value: "external_sidecar",
+}
+_ADAPTER_NAMES = {
+    RuntimeKind.STUB.value: "stub",
+    RuntimeKind.MLX_LM.value: "mlx-lm",
+    RuntimeKind.MLX_LM_SERVER.value: "mlx-lm-server",
+    RuntimeKind.MLX_VLM.value: "mlx-vlm",
+    RuntimeKind.LLAMA_CPP.value: "llama-cpp",
+}
+
+
+def inventory_provenance(
+    *,
+    model_id: str,
+    runtime_kind: str,
+    resolution_source: str,
+    loaded: bool,
+    adapter_name: str | None = None,
+) -> RuntimeProvenance:
+    """Build safe provenance for a model advertised by inventory."""
+    from whooshd import __version__
+
+    return RuntimeProvenance(
+        requested_model_id=safe_model_alias(model_id),
+        advertised_model_id=safe_model_alias(model_id),
+        resolved_model_id=safe_model_alias(model_id),
+        runtime_kind=str(runtime_kind)[:64],
+        adapter_name=str(adapter_name or _ADAPTER_NAMES.get(runtime_kind, runtime_kind))[:64],
+        resolution_source=resolution_source,
+        execution_mode=_EXECUTION_MODES.get(runtime_kind, "external_sidecar"),
+        model_lifecycle="ready" if loaded else "unloaded",
+        whooshd_version=str(__version__)[:64],
+    )
+
+
+@dataclass(frozen=True)
+class RuntimeResolution:
+    """Authoritative route evidence retained through execution."""
+
+    adapter: InferenceAdapter
+    requested_model_id: str
+    resolution_source: str
+    advertised_model_id: str
+    resolved_model_id: str
+    execution_mode: str
+
+    def for_model(self, model_id: str) -> "RuntimeResolution":
+        """Retain the selected adapter while describing one batch member."""
+        return RuntimeResolution(
+            adapter=self.adapter,
+            requested_model_id=model_id,
+            resolution_source=self.resolution_source,
+            advertised_model_id=model_id,
+            resolved_model_id=self.resolved_model_id,
+            execution_mode=self.execution_mode,
+        )
+
+    def provenance(
+        self,
+        *,
+        request_id: str | None = None,
+        upstream_request_id: str | None = None,
+        backend_reported_model_id: str | None = None,
+        streaming: bool = False,
+        queued: bool = False,
+        batched: bool = False,
+        model_lifecycle=None,
+    ) -> RuntimeProvenance:
+        from whooshd import __version__
+
+        return RuntimeProvenance(
+            request_id=normalize_identifier(request_id),
+            upstream_request_id=normalize_identifier(upstream_request_id),
+            requested_model_id=safe_model_alias(self.requested_model_id),
+            advertised_model_id=safe_model_alias(self.advertised_model_id),
+            resolved_model_id=safe_model_alias(self.resolved_model_id),
+            backend_reported_model_id=(
+                safe_model_alias(backend_reported_model_id)
+                if backend_reported_model_id
+                else None
+            ),
+            runtime_kind=str(self.adapter.kind)[:64],
+            adapter_name=str(self.adapter.name)[:64],
+            resolution_source=self.resolution_source,
+            execution_mode=self.execution_mode,
+            streaming=bool(streaming),
+            queued=bool(queued),
+            batched=bool(batched),
+            model_lifecycle=model_lifecycle,
+            whooshd_version=str(__version__)[:64],
+        )
 
 
 class ModelResolutionError(Exception):
@@ -39,7 +145,10 @@ class ModelResolutionError(Exception):
     def __init__(self, model_id: str, detail: str = ""):
         self.model_id = model_id
         self.detail = detail
-        super().__init__(f"Cannot resolve model '{model_id}' to a runtime. {detail}".strip())
+        super().__init__(
+            f"Cannot resolve model '{safe_model_alias(model_id)}' to a runtime. "
+            f"{detail}".strip()
+        )
 
 
 class RuntimeRouter:
@@ -100,7 +209,29 @@ class RuntimeRouter:
 
     # ── Model resolution ────────────────────────────────────────────────
 
-    async def _resolve_model_runtime(self, model_id: str) -> InferenceAdapter:
+    def _resolution(
+        self,
+        adapter: InferenceAdapter,
+        model_id: str,
+        source: str,
+    ) -> RuntimeResolution:
+        loaded_model_id = None
+        try:
+            loaded_model_id = adapter.model_id()
+        except Exception:
+            loaded_model_id = None
+        return RuntimeResolution(
+            adapter=adapter,
+            requested_model_id=model_id,
+            resolution_source=source,
+            advertised_model_id=model_id,
+            resolved_model_id=loaded_model_id or model_id,
+            execution_mode=_EXECUTION_MODES.get(
+                str(adapter.kind), "external_sidecar"
+            ),
+        )
+
+    async def resolve_model_runtime(self, model_id: str) -> RuntimeResolution:
         """Resolve a model ID to its runtime adapter.
 
         Resolution order:
@@ -109,7 +240,7 @@ class RuntimeRouter:
           3. Check if any adapter already has this model loaded.
           4. Return 404-style error.
 
-        Returns the adapter that should serve the request.
+        Returns the adapter and bounded evidence that should serve the request.
 
         Raises ``ModelResolutionError`` if the model cannot be resolved.
         """
@@ -127,7 +258,10 @@ class RuntimeRouter:
             rt = get_runtime()
             reg = rt._load_registry()
         except Exception as exc:
-            logger.warning("router.registry_lookup_failed error=%s", type(exc).__name__)
+            logger.warning(
+                "router.registry_lookup_failed exception_type=%s",
+                type(exc).__name__,
+            )
 
         if authoritative_registry and (reg is None or reg is False):
             raise ModelResolutionError(
@@ -159,7 +293,9 @@ class RuntimeRouter:
                 }
                 kind = engine_kind_map.get(engine)
                 if kind and kind in self._adapters:
-                    return self._adapters[kind]
+                    return self._resolution(
+                        self._adapters[kind], model_id, "authoritative_registry"
+                    )
                 if kind:
                     raise ModelResolutionError(
                         model_id,
@@ -175,13 +311,13 @@ class RuntimeRouter:
         # ── Step 1b: Check external route inventory ─────────────────
         external = await self._resolve_external_model(model_id)
         if external is not None:
-            return external
+            return self._resolution(external, model_id, "external_route")
 
         # ── Step 2: Heuristic by file extension ────────────────────
         if model_id.endswith(".gguf"):
             adapter = self._adapters.get(RuntimeKind.LLAMA_CPP.value)
             if adapter:
-                return adapter
+                return self._resolution(adapter, model_id, "format_heuristic")
             raise ModelResolutionError(
                 model_id,
                 "GGUF model detected but llama_cpp runtime is not registered.",
@@ -191,7 +327,7 @@ class RuntimeRouter:
         for adapter in self._adapters.values():
             loaded_id = adapter.model_id()
             if loaded_id and loaded_id == model_id:
-                return adapter
+                return self._resolution(adapter, model_id, "loaded_model_match")
 
         # ── Step 3a: When WHOOSHD_ADAPTER=stub, prefer stub for
         #            unresolved model IDs (test/default posture). ──
@@ -199,7 +335,7 @@ class RuntimeRouter:
         if get_adapter_backend() == "stub":
             stub_adapter = self._adapters.get(RuntimeKind.STUB.value)
             if stub_adapter is not None:
-                return stub_adapter
+                return self._resolution(stub_adapter, model_id, "configured_stub")
 
         # ── Step 4: If there's exactly one enabled non-stub adapter,
         #            use it as default (backward compat).          ────
@@ -208,18 +344,24 @@ class RuntimeRouter:
             if k != RuntimeKind.STUB.value
         ]
         if len(non_stub) == 1:
-            return non_stub[0]
+            return self._resolution(
+                non_stub[0], model_id, "single_runtime_compatibility"
+            )
 
         # ── Step 5: If stub is the only adapter, use it. ─────────
         stub = self._adapters.get(RuntimeKind.STUB.value)
         if stub and len(self._adapters) == 1:
-            return stub
+            return self._resolution(stub, model_id, "stub_only_compatibility")
 
         raise ModelResolutionError(
             model_id,
             f"Model '{model_id}' does not match any registered runtime. "
             f"Available runtimes: {self.registered_kinds}",
         )
+
+    async def _resolve_model_runtime(self, model_id: str) -> InferenceAdapter:
+        """Backward-compatible adapter-only resolution helper."""
+        return (await self.resolve_model_runtime(model_id)).adapter
 
     async def _resolve_external_model(
         self, model_id: str
@@ -290,11 +432,30 @@ class RuntimeRouter:
 
     # ── Inference dispatch ──────────────────────────────────────────────
 
-    async def generate(self, request: GenerateRequest) -> GenerateResponse:
+    async def generate(
+        self,
+        request: GenerateRequest,
+        *,
+        request_id: str | None = None,
+    ) -> GenerateResponse:
         """Route a generate request to the correct adapter."""
         model_id = request.model_id or "stub-model"
-        adapter = await self._resolve_model_runtime(model_id)
-        return await adapter.generate(request)
+        resolution = await self.resolve_model_runtime(model_id)
+        result = await resolution.adapter.generate(
+            ensure_backend_generate_request(
+                request, adapter_kind=resolution.adapter.kind
+            )
+        )
+        provenance = resolution.provenance(
+            request_id=request_id or request.request_id or result.request_id,
+            backend_reported_model_id=result.model_id,
+            streaming=False,
+        )
+        return result.model_copy(
+            update={
+                "runtime": result.runtime.model_copy(update={"provenance": provenance})
+            }
+        )
 
     async def chat_completion(
         self,
@@ -302,8 +463,27 @@ class RuntimeRouter:
         context=None,
     ) -> ChatCompletionResponse:
         """Route a chat completion request to the correct adapter."""
-        adapter = await self._resolve_model_runtime(request.model)
-        return await adapter.chat_completion(request, context=context)
+        resolution = await self.resolve_model_runtime(request.model)
+        result = await resolution.adapter.chat_completion(
+            ensure_backend_chat_request(
+                request, adapter_kind=resolution.adapter.kind
+            ),
+            context=context,
+        )
+        return result.model_copy(
+            update={
+                "runtime_provenance": resolution.provenance(
+                    request_id=getattr(context, "request_id", None)
+                    if context is not None
+                    else None,
+                    upstream_request_id=getattr(context, "upstream_request_id", None)
+                    if context is not None
+                    else None,
+                    backend_reported_model_id=result.model,
+                    streaming=False,
+                )
+            }
+        )
 
     async def chat_completion_stream(
         self,
@@ -311,13 +491,37 @@ class RuntimeRouter:
         context=None,
     ) -> AsyncIterator[ChatCompletionChunk]:
         """Route a streaming chat completion request to the correct adapter."""
-        adapter = await self._resolve_model_runtime(request.model)
-        if not adapter.supports_streaming:
+        resolution = await self.resolve_model_runtime(request.model)
+        if not resolution.adapter.supports_streaming:
             raise StreamingNotSupportedError(
-                f"Runtime '{adapter.kind}' does not support streaming."
+                f"Runtime '{resolution.adapter.kind}' does not support streaming."
             )
-        async for chunk in adapter.chat_completion_stream(request, context=context):
-            yield chunk
+        backend_request = ensure_backend_chat_request(
+            request,
+            adapter_kind=resolution.adapter.kind,
+        )
+        first = True
+        async for chunk in resolution.adapter.chat_completion_stream(
+            backend_request, context=context
+        ):
+            if first:
+                first = False
+                yield chunk.model_copy(
+                    update={
+                        "runtime_provenance": resolution.provenance(
+                            request_id=getattr(context, "request_id", None)
+                            if context is not None
+                            else None,
+                            upstream_request_id=getattr(context, "upstream_request_id", None)
+                            if context is not None
+                            else None,
+                            backend_reported_model_id=chunk.model,
+                            streaming=True,
+                        )
+                    }
+                )
+            else:
+                yield chunk
 
     # ── Aggregated model inventory ──────────────────────────────────────
 
@@ -359,15 +563,15 @@ class RuntimeRouter:
                         aggregate_status = "degraded"
             except Exception as exc:
                 logger.warning(
-                    "router.health.error kind=%s error=%s",
+                    "router.health.error kind=%s diagnostic=%s",
                     adapter.kind,
-                    exc,
+                    exception_metadata(exc),
                 )
                 runtimes[adapter.kind] = RuntimeHealth(
                     kind=adapter.kind,
                     enabled=True,
                     state="error",
-                    detail=str(exc),
+                    detail=exception_metadata(exc),
                 )
                 aggregate_status = "degraded"
 
@@ -395,11 +599,13 @@ class RuntimeRouter:
                 results[adapter.kind] = "ready"
             except Exception as exc:
                 logger.warning(
-                    "router.warmup.error kind=%s error=%s",
+                    "router.warmup.error kind=%s diagnostic=%s",
                     adapter.kind,
-                    exc,
+                    exception_metadata(exc),
                 )
-                results[adapter.kind] = f"failed: {exc}"
+                results[adapter.kind] = (
+                    f"failed: {type(exc).__name__}"
+                )
         return results
 
     async def unload_all(self) -> dict[str, str]:
@@ -411,11 +617,13 @@ class RuntimeRouter:
                 results[adapter.kind] = "unloaded"
             except Exception as exc:
                 logger.warning(
-                    "router.unload.error kind=%s error=%s",
+                    "router.unload.error kind=%s diagnostic=%s",
                     adapter.kind,
-                    exc,
+                    exception_metadata(exc),
                 )
-                results[adapter.kind] = f"failed: {exc}"
+                results[adapter.kind] = (
+                    f"failed: {type(exc).__name__}"
+                )
         return results
 
 

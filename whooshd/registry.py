@@ -14,6 +14,7 @@ from typing import Optional
 
 import yaml  # type: ignore[import-untyped]
 from pydantic import BaseModel, Field, field_validator, model_validator
+from whooshd.log_safety import safe_model_alias
 
 
 # ── Enums ───────────────────────────────────────────────────────────────────
@@ -176,7 +177,7 @@ class RegistryValidationError(Exception):
     def __init__(self, model_id: str, message: str):
         self.model_id = model_id
         self.message = message
-        super().__init__(f"[{model_id}] {message}")
+        super().__init__(f"[{safe_model_alias(model_id)}] {message}")
 
 
 def _validate_registry_entry(model_id: str, entry: RegistryModelEntry) -> None:
@@ -254,25 +255,30 @@ def load_model_registry(path: str | Path | None = None) -> ModelRegistryConfig |
     if resolved_path is None or not resolved_path.is_file():
         return None
 
-    raw = resolved_path.read_text(encoding="utf-8")
+    try:
+        raw = resolved_path.read_text(encoding="utf-8")
+    except OSError as read_error:
+        raise RegistryValidationError(
+            "<registry>", "Registry file could not be read"
+        ) from read_error
 
     try:
         data = yaml.safe_load(raw)
-    except yaml.YAMLError as exc:
+    except yaml.YAMLError as yaml_error:
         raise RegistryValidationError(
-            str(resolved_path), f"Invalid YAML: {exc}"
-        ) from exc
+            "<registry>", "Invalid YAML"
+        ) from yaml_error
 
     if not isinstance(data, dict) or "models" not in data:
         raise RegistryValidationError(
-            str(resolved_path),
+            "<registry>",
             "Registry file must contain a top-level 'models' key",
         )
 
     raw_models = data["models"]
     if not isinstance(raw_models, dict):
         raise RegistryValidationError(
-            str(resolved_path),
+            "<registry>",
             "'models' must be a mapping of model_id → model entry",
         )
 

@@ -809,7 +809,7 @@ class TestAppErrorClassification:
                 })
                 assert resp.status_code == 503
                 body = resp.json()
-                assert body["code"] == ErrorCode.INTERNAL.value
+                assert body["code"] == ErrorCode.RUNTIME_UNAVAILABLE.value
 
         # Cleanup
         routing_reset()
@@ -936,15 +936,15 @@ class TestFieldPreservation:
             body = build_forward_body(req)
             assert body["reasoning_effort"] == level
 
-    def test_metadata_forwarded(self):
-        """metadata dict is preserved."""
+    def test_metadata_is_internal(self):
+        """Generic request metadata never reaches an upstream body."""
         meta = {"source": "codexify", "session_id": "abc123"}
         req = ChatCompletionRequest(
             model="m", messages=[ChatMessage(role="user", content="H")],
             metadata=meta,
         )
         body = build_forward_body(req)
-        assert body["metadata"] == meta
+        assert "metadata" not in body
 
     def test_max_completion_tokens_forwarded(self):
         """max_completion_tokens is preserved."""
@@ -970,8 +970,8 @@ class TestFieldPreservation:
         d2 = _serialize_message(msg2)
         assert d2["tool_call_id"] == "call_1"
 
-    def test_unknown_extra_fields_forwarded(self):
-        """Unknown fields in the request body are forwarded as-is."""
+    def test_unknown_extra_fields_are_not_forwarded(self):
+        """Unknown fields are retained at ingress but stripped for execution."""
         req = ChatCompletionRequest(
             model="m", messages=[ChatMessage(role="user", content="H")],
             custom_field="custom_value",
@@ -985,9 +985,9 @@ class TestFieldPreservation:
         }
 
         body = build_forward_body(req)
-        assert body["custom_field"] == "custom_value"
-        assert body["another_extra"] == 123
-        assert body["nested_extra"] == {"key": "value"}
+        assert "custom_field" not in body
+        assert "another_extra" not in body
+        assert "nested_extra" not in body
 
     def test_null_fields_not_forwarded(self):
         """Fields explicitly set to None are NOT forwarded."""
@@ -1035,7 +1035,8 @@ class TestFieldPreservation:
                 )
                 await adapter.chat_completion(req)
 
-                # Verify the forwarded body contains all the fields.
+                # Verify the forwarded body contains canonical fields while
+                # generic metadata remains internal.
                 call_args = mock_client.post.call_args
                 forwarded_body = call_args.kwargs["json"]
                 assert forwarded_body["tools"] == tools
@@ -1044,7 +1045,6 @@ class TestFieldPreservation:
                 assert forwarded_body["reasoning_effort"] == "medium"
                 assert forwarded_body["max_completion_tokens"] == 512
                 assert forwarded_body["parallel_tool_calls"] is False
-                assert forwarded_body["metadata"] == {"source": "test"}
+                assert "metadata" not in forwarded_body
 
             asyncio.run(_run())
-

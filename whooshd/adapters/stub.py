@@ -11,6 +11,10 @@ import uuid
 from typing import AsyncIterator
 
 from whooshd.config import get_stub_response_delay_seconds
+from whooshd.backend_request_policy import (
+    ensure_backend_chat_request,
+    ensure_backend_generate_request,
+)
 from whooshd.contracts import (
     ChatCompletionChunk,
     ChatCompletionChunkChoice,
@@ -75,6 +79,7 @@ class StubInferenceAdapter:
         """Execute a batch of chat completions — deterministic stub output."""
         results = []
         for i, req in enumerate(requests):
+            req = ensure_backend_chat_request(req, adapter_kind=self.kind)
             ctx = contexts[i] if contexts and i < len(contexts) else None
             result = await self.chat_completion(req, context=ctx)
             results.append(result)
@@ -83,6 +88,7 @@ class StubInferenceAdapter:
     # ── Codexify-style generate ────────────────────────────────────────
 
     async def generate(self, request: GenerateRequest) -> GenerateResponse:
+        request = ensure_backend_generate_request(request, adapter_kind=self.kind)
         t0 = time.monotonic()
 
         self._call_count += 1
@@ -120,6 +126,7 @@ class StubInferenceAdapter:
 
     async def chat_completion(self, request: ChatCompletionRequest, context=None) -> ChatCompletionResponse:
         """Non-streaming chat completion — returns the full response at once."""
+        request = ensure_backend_chat_request(request, adapter_kind=self.kind)
         self._chat_call_count += 1
 
         t0 = time.monotonic()
@@ -165,6 +172,7 @@ class StubInferenceAdapter:
         Checks the cancellation token in *context* before each chunk and
         stops cleanly when cancellation is requested.
         """
+        request = ensure_backend_chat_request(request, adapter_kind=self.kind)
         self._chat_call_count += 1
 
         request_id = f"chatcmpl-stub-{uuid.uuid4().hex[:12]}"

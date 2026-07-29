@@ -9,7 +9,16 @@ from __future__ import annotations
 from enum import Enum
 from typing import Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
+
+from whooshd.control_plane import (
+    CONTROL_PLANE_CONTRACT_VERSION,
+    ErrorCategory,
+    ErrorCode,
+)
+
+
+WHOOSHD_RUNTIME_PROVENANCE_HEADER = "X-Whooshd-Runtime-Provenance"
 
 
 # ── Shared enums ────────────────────────────────────────────────────────────
@@ -134,6 +143,10 @@ class ModelInfo(BaseModel):
     context_window: int = Field(32768, ge=0, description="Max context window in tokens")
     quantization: Optional[str] = Field(None, description="Quantization level, e.g. 4bit, 8bit")
     memory_class: str = Field("small", description="small | medium | large — sizing hint")
+    runtime_provenance: Optional["RuntimeProvenance"] = Field(
+        None,
+        description="Bounded runtime ownership and resolution metadata.",
+    )
 
 
 class ModelsResponse(BaseModel):
@@ -145,24 +158,45 @@ class ModelsResponse(BaseModel):
 # ── Error ───────────────────────────────────────────────────────────────────
 
 
-class ErrorCode(str, Enum):
-    MEMORY_PRESSURE = "MEMORY_PRESSURE"
-    MODEL_LOAD_FAILED = "MODEL_LOAD_FAILED"
-    MODEL_NOT_FOUND = "MODEL_NOT_FOUND"
-    CONTEXT_OVERFLOW = "CONTEXT_OVERFLOW"
-    TIMEOUT = "TIMEOUT"
-    RUNNER_OVERLOADED = "RUNNER_OVERLOADED"
-    CANCELLED = "CANCELLED"
-    INTERNAL = "INTERNAL"
-
-
 class ErrorResponse(BaseModel):
-    """Standard error body returned for non-2xx responses."""
+    """Canonical versioned error body returned for non-2xx responses.
+
+    ``detail`` was the pre-v1 input name.  It remains accepted as an input
+    compatibility alias, while serialized responses use the canonical
+    ``details`` field.
+    """
+
+    model_config = {"populate_by_name": True}
 
     code: ErrorCode
-    message: str
+    message: str = "Request failed"
+    contract_version: str = CONTROL_PLANE_CONTRACT_VERSION
+    http_status: int = Field(500, ge=400, le=599)
+    retryable: bool = False
     retry_after_seconds: Optional[float] = Field(None, description="Suggested backoff in seconds")
-    detail: Optional[dict] = Field(None, description="Optional machine-readable detail")
+    request_id: Optional[str] = Field(
+        None,
+        description="Whoosh'd-owned lifecycle request identifier when created",
+    )
+    upstream_request_id: Optional[str] = Field(
+        None,
+        description="Bounded upstream X-Request-ID when supplied",
+    )
+    category: ErrorCategory = ErrorCategory.INTERNAL
+    details: Optional[dict] = Field(None, description="Bounded operational details")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _accept_legacy_detail_name(cls, value):
+        if isinstance(value, dict) and "detail" in value and "details" not in value:
+            value = dict(value)
+            value["details"] = value.pop("detail")
+        return value
+
+    @property
+    def detail(self) -> Optional[dict]:
+        """Compatibility accessor for pre-v1 callers."""
+        return self.details
 
 
 # ── Generation ─────────────────────────────────────────────────────────────
@@ -194,6 +228,10 @@ class ResponseRuntimeInfo(BaseModel):
     adapter: str = Field(..., description="Name of the inference adapter used")
     queued: bool = Field(False, description="Whether the request spent time in queue")
     elapsed_ms: float = Field(..., ge=0, description="Wall-clock time from request to response")
+    provenance: Optional["RuntimeProvenance"] = Field(
+        None,
+        description="Bounded runtime provenance for the completed request.",
+    )
 
 
 class GenerateResponse(BaseModel):
@@ -228,9 +266,10 @@ class ChatMessage(BaseModel):
 class ChatCompletionRequest(BaseModel):
     """OpenAI-compatible POST /v1/chat/completions request body.
 
-    Fields not explicitly listed here are captured in ``extra_fields``
-    and forwarded to the upstream runtime without validation.
-    This ensures Whoosh'd never silently discards an OpenAI-compatible field.
+    Fields not explicitly listed here are captured in ``extra_fields`` for
+    compatibility and internal diagnostics.  They are filtered by the
+    authoritative backend request policy before any adapter executes.  The
+    ingress model is therefore not itself a backend payload contract.
     """
 
     model_config = {"extra": "allow"}
@@ -268,8 +307,9 @@ class ChatCompletionRequest(BaseModel):
     metadata: Optional[dict] = Field(None, description="User-supplied metadata for the request")
     threadwake: Optional[dict] = Field(None, description="Optional ThreadWake observe-mode request config")
 
-    # Extra fields captured by model_config extra=allow, forwarded to upstream.
-    extra_fields: dict = Field(default_factory=dict, description="Additional fields captured from the request body, forwarded to upstream")
+    # Extra fields captured by model_config extra=allow.  The backend request
+    # policy decides whether an explicit adapter extension survives.
+    extra_fields: dict = Field(default_factory=dict, description="Additional ingress fields retained for policy filtering")
 
     def model_post_init(self, __context) -> None:
         """Capture any extra fields not explicitly declared in the model."""
@@ -305,6 +345,10 @@ class ChatCompletionResponse(BaseModel):
     model: str = Field(..., description="Model that served the request")
     choices: list[ChatCompletionChoice] = Field(..., min_length=1)
     usage: ChatCompletionUsage = Field(default_factory=ChatCompletionUsage)
+    runtime_provenance: Optional["RuntimeProvenance"] = Field(
+        None,
+        description="Bounded runtime provenance for the completed request.",
+    )
 
 
 # ── OpenAI-compatible Streaming Chat Chunks ────────────────────────────────
@@ -336,10 +380,14 @@ class ChatCompletionChunk(BaseModel):
     created: int = Field(..., description="Unix timestamp of creation")
     model: str = Field(..., description="Model that served the request")
     choices: list[ChatCompletionChunkChoice] = Field(..., min_length=1)
+    runtime_provenance: Optional["RuntimeProvenance"] = Field(
+        None,
+        description="Bounded runtime provenance; emitted on the first visible chunk.",
+    )
 
     def to_sse(self) -> str:
         """Render this chunk as an SSE data line with trailing blank line."""
-        return f"data: {self.model_dump_json()}\n\n"
+        return f"data: {self.model_dump_json(exclude_none=True)}\n\n"
 
 
 # ── OpenAI-compatible Model List ───────────────────────────────────────────
@@ -356,6 +404,51 @@ class OpenAIModelEntry(BaseModel):
         None,
         description="Internal engine/format metadata — not part of OpenAI spec but useful for clients",
     )
+
+
+class RuntimeProvenance(BaseModel):
+    """Versioned, bounded evidence of which Whoosh'd runtime served work.
+
+    This is deliberately additive metadata.  It contains no prompts, output,
+    endpoint, filesystem, process, or credential material.  Unknown optional
+    fields are ignored so consumers can move forward without trusting them.
+    """
+
+    model_config = {"extra": "ignore"}
+
+    schema_version: Literal["whooshd.runtime.v1"] = "whooshd.runtime.v1"
+    request_id: Optional[str] = Field(
+        None, max_length=128, description="Whoosh'd-owned lifecycle request identifier"
+    )
+    upstream_request_id: Optional[str] = Field(
+        None, max_length=128, description="Bounded upstream X-Request-ID"
+    )
+    requested_model_id: Optional[str] = Field(None, max_length=256)
+    advertised_model_id: Optional[str] = Field(None, max_length=256)
+    resolved_model_id: Optional[str] = Field(None, max_length=256)
+    backend_reported_model_id: Optional[str] = Field(None, max_length=256)
+    runtime_kind: str = Field(..., max_length=64)
+    adapter_name: str = Field(..., max_length=64)
+    resolution_source: Literal[
+        "authoritative_registry",
+        "external_route",
+        "format_heuristic",
+        "loaded_model_match",
+        "configured_stub",
+        "single_runtime_compatibility",
+        "stub_only_compatibility",
+    ]
+    execution_mode: Literal[
+        "in_process",
+        "managed_sidecar",
+        "external_sidecar",
+        "stub",
+    ]
+    streaming: bool = False
+    queued: bool = False
+    batched: bool = False
+    model_lifecycle: Optional[ModelLifecycleState] = None
+    whooshd_version: Optional[str] = Field(None, max_length=64)
 
 
 class OpenAIModelListResponse(BaseModel):
@@ -388,7 +481,10 @@ class RequestSnapshot(BaseModel):
     runtime metadata only.
     """
 
-    request_id: str = Field(..., description="Unique request identifier")
+    request_id: str = Field(..., description="Whoosh'd-owned lifecycle request identifier")
+    upstream_request_id: Optional[str] = Field(
+        None, description="Bounded upstream X-Request-ID when supplied"
+    )
     model: str = Field(..., description="Model ID used for the request")
     stream: bool = Field(..., description="Whether this is a streaming request")
     status: RequestLifecycleState = Field(..., description="Current lifecycle state")
@@ -446,10 +542,13 @@ class RequestExecutionContext:
         request_id: str,
         cancellation_token: CancellationToken,
         stream: bool = False,
+        *,
+        upstream_request_id: str | None = None,
     ) -> None:
         self.request_id = request_id
         self.cancellation_token = cancellation_token
         self.stream = stream
+        self.upstream_request_id = upstream_request_id
 
 
 # ── Model Lifecycle ─────────────────────────────────────────────────────────

@@ -21,6 +21,7 @@ from whooshd.model_registry.contracts import (
     ModelRegistryState,
     ModelStoreLayout,
 )
+from whooshd.log_safety import exception_metadata
 
 
 def bootstrap_model_store(
@@ -84,7 +85,7 @@ def bootstrap_model_store(
                 store_root=str(expanded),
                 manifest_path=str(layout.manifest_path),
                 directories_created=dirs_created,
-                error=f"Existing manifest is unreadable: {exc}",
+                error=f"Existing manifest is unreadable ({exception_metadata(exc)})",
             )
 
         manifest = ModelRegistryManifest.from_dict(data)
