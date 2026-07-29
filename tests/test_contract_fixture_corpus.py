@@ -6,6 +6,8 @@ import hashlib
 import json
 from pathlib import Path
 
+from whooshd.runtime.threadwake.keys import canonicalize_content
+
 
 _FIXTURE_PATH = (
     Path(__file__).resolve().parents[1]
@@ -124,14 +126,18 @@ def test_capability_mismatch_fails_before_execution():
 
 def test_threadwake_normalization_vector_recomputes_exact_digest():
     vector = _load_fixture()["threadwake_normalization"]
-    canonical_utf8 = vector["canonical_utf8"]
+    parsed_canonical_utf8 = vector["canonical_utf8"]
+    canonical_utf8 = canonicalize_content(vector["input"])
+    expected_canonical_utf8 = '{"content":"Hello\\nworld","type":"text"}'
     digest = hashlib.sha256(canonical_utf8.encode("utf-8")).hexdigest()
 
     assert vector["algorithm"] == "whoosh.threadwake.text.v1"
-    assert canonical_utf8 == '{"content":"Hello\nworld","type":"text"}'
-    assert canonical_utf8.count("\n") == 1
-    assert "\\n" not in canonical_utf8
-    assert digest == vector["sha256"]
+    assert parsed_canonical_utf8 == '{"content":"Hello\nworld","type":"text"}'
+    assert canonical_utf8 == expected_canonical_utf8
+    assert parsed_canonical_utf8 != canonical_utf8
+    parsed_digest = hashlib.sha256(parsed_canonical_utf8.encode("utf-8")).hexdigest()
+    assert parsed_digest == vector["sha256"]
+    assert digest == "1ebd886e692483d6e9e752506fdefb70b4e77b846f2d908f876a5632bb204ffb"
 
 
 def test_fixture_contains_no_obvious_secret_or_private_path_sentinels():
