@@ -97,5 +97,11 @@ treated as verified. Absence remains compatible with legacy runtimes. This
 metadata records code-path evidence only and does not prove that a live
 runtime, model, or external collector is currently available.
 
+For chat work that enters the local lifecycle, provenance `request_id` is the
+Whoosh'd-owned ID also returned in `X-Whoosh-Request-ID`; an optional
+`upstream_request_id` mirrors only a valid incoming `X-Request-ID`. These
+values are bounded operational metadata and remain distinct through queues,
+batches, and adapter contexts.
+
 For the shared HTTP error, retry, request-ID, and streaming-terminal contract,
 see [Control-Plane v1](control-plane-v1.md).

@@ -12,7 +12,6 @@ from __future__ import annotations
 import json
 import os
 import time
-import uuid
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -43,6 +42,7 @@ from whooshd.config import (
     get_mlx_quantization,
     get_model_registry_path,
 )
+from whooshd.correlation import generate_whoosh_request_id, normalize_identifier
 
 # Synthetic creation timestamp for inventory entries.
 _STUB_MODEL_CREATED = 1700000000
@@ -62,6 +62,7 @@ class _RequestRecord:
     request_id: str
     model: str
     stream: bool
+    upstream_request_id: str | None = None
     status: RequestLifecycleState = RequestLifecycleState.ACCEPTED
     cancel_requested: bool = False
     cancel_token: CancellationToken | None = None
@@ -700,18 +701,25 @@ class RuntimeState:
 
     # ── Request lifecycle bookkeeping ───────────────────────────────────
 
-    def begin_request(self, *, model: str, stream: bool) -> str:
+    def begin_request(
+        self,
+        *,
+        model: str,
+        stream: bool,
+        upstream_request_id: str | None = None,
+    ) -> str:
         """Register a new request and return its ID.
 
         The caller is responsible for eventually calling complete_request,
         cancel_request, or fail_request.
         """
-        request_id = str(uuid.uuid4())
+        request_id = generate_whoosh_request_id()
         token = CancellationToken(request_id=request_id)
         self._requests[request_id] = _RequestRecord(
             request_id=request_id,
             model=model,
             stream=stream,
+            upstream_request_id=normalize_identifier(upstream_request_id),
             status=RequestLifecycleState.ACCEPTED,
             cancel_token=token,
         )
@@ -794,6 +802,7 @@ class RuntimeState:
             return None
         return RequestSnapshot(
             request_id=rec.request_id,
+            upstream_request_id=rec.upstream_request_id,
             model=rec.model,
             stream=rec.stream,
             status=rec.status,
@@ -808,6 +817,7 @@ class RuntimeState:
         return [
             RequestSnapshot(
                 request_id=r.request_id,
+                upstream_request_id=r.upstream_request_id,
                 model=r.model,
                 stream=r.stream,
                 status=r.status,
@@ -831,6 +841,7 @@ class RuntimeState:
         return [
             RequestSnapshot(
                 request_id=r.request_id,
+                upstream_request_id=r.upstream_request_id,
                 model=r.model,
                 stream=r.stream,
                 status=r.status,

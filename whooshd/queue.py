@@ -18,7 +18,7 @@ import logging
 import time
 from collections import deque
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Any, Optional
 
 from whooshd.config import (
     get_enable_queue,
@@ -27,6 +27,7 @@ from whooshd.config import (
     get_queue_timeout_seconds,
 )
 from whooshd.contracts import CancellationToken, ChatCompletionRequest
+from whooshd.correlation import normalize_identifier
 from whooshd.scheduler import (
     Scheduler,
     SchedulerCandidate,
@@ -41,9 +42,13 @@ class QueueEntry:
     request_id: str
     request: ChatCompletionRequest
     enqueued_at: float = field(default_factory=time.time)
+    upstream_request_id: str | None = None
     # ── Batch execution ────────────────────────────────────────────
     batch_claimed: bool = False
     batch_result_future: Any = None  # asyncio.Future, set at runtime
+
+    def __post_init__(self) -> None:
+        self.upstream_request_id = normalize_identifier(self.upstream_request_id)
 
 
 class RequestQueue:

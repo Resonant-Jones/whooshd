@@ -10,7 +10,8 @@ The contract identifier is `whooshd.control.v1`. Whoosh'd-owned HTTP responses
 advertise it with `X-Whooshd-Contract-Version: whooshd.control.v1`, including
 non-2xx responses. Canonical error bodies contain `contract_version`, `code`, a
 bounded `message`, `http_status`, `retryable`, optional bounded
-`retry_after_seconds`, `request_id` when available, `category`, and bounded
+`retry_after_seconds`, the Whoosh'd-owned lifecycle `request_id` when
+available, optional bounded `upstream_request_id`, `category`, and bounded
 `details`.
 
 `details` contains operational metadata only. It does not contain prompts,
@@ -58,15 +59,27 @@ header. Only a bounded version identifier is retained in `details`.
 
 ## Streaming and request identity
 
+Whoosh'd accepts `X-Request-ID` only when it contains 1–128 characters from
+`A-Za-z0-9._:-`. It preserves that value as `upstream_request_id` and echoes it
+on Whoosh'd-owned responses. A chat request that enters the local lifecycle
+also receives an independently generated `X-Whoosh-Request-ID` beginning with
+`whoosh-`; this is the `request_id` used for lifecycle snapshots, queues,
+cancellation, batch members, and adapter contexts. The upstream value never
+replaces the local value. Unsafe or oversized values are omitted rather than
+reflected. Callers that omit `X-Request-ID` retain the legacy response shape,
+apart from the additive local chat lifecycle header.
+
 If an upstream failure occurs after visible output has begun, Whoosh'd emits a
 canonical SSE error event with `output_started: true` and does not emit a
 successful `[DONE]` sentinel. It does not fabricate terminal success or fall
 back after visible output. Before output begins, the same canonical body is
 returned as an ordinary HTTP error.
 
-Request IDs generated or supplied by Whoosh'd are retained in canonical error
-bodies wherever the route has one. Lifecycle and cancellation state continue
-to use the original request identity.
+Canonical errors and streaming error events retain the local lifecycle
+`request_id` and the separate `upstream_request_id` when each exists. An
+admission rejection that happens before lifecycle creation can expose only the
+valid upstream identifier. Cancellation is addressed by the Whoosh'd request
+ID and returns the correlation pair associated with that target.
 
 This v1 slice does not change routing, provider selection, queue policy,
 authentication, terminal-integrity behavior, or successful provider payloads.
