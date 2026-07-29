@@ -1,0 +1,144 @@
+{
+  "fixture_version": 1,
+  "contract": {
+    "name": "whoosh.control",
+    "major": 1,
+    "request_version_header": "X-Whoosh-Contract-Version",
+    "request_version_value": "1",
+    "legacy_response_header": "X-Whooshd-Contract-Version",
+    "legacy_response_value": "whooshd.control.v1"
+  },
+  "request_correlation": {
+    "request_headers": {
+      "X-Request-ID": "codexify-request-0001",
+      "X-Whoosh-Contract-Version": "1"
+    },
+    "response_headers": {
+      "X-Request-ID": "codexify-request-0001",
+      "X-Whoosh-Request-ID": "whoosh-request-0001"
+    },
+    "rules": {
+      "codexify_request_id_is_preserved": true,
+      "whoosh_request_id_is_distinct": true,
+      "identifiers_are_bounded_operational_metadata": true
+    }
+  },
+  "model_record": {
+    "id": "fixture-text-model",
+    "contract_version": 1,
+    "runtime": "stub",
+    "modalities": [
+      "text"
+    ],
+    "capabilities": [
+      "chat",
+      "stream"
+    ],
+    "context_window": 32768,
+    "model_revision": "sha256:fixture-model-revision",
+    "tokenizer_revision": "sha256:fixture-tokenizer-revision",
+    "template_revision": "sha256:fixture-template-revision",
+    "state": "ready",
+    "reason_code": null,
+    "retry_after_ms": null
+  },
+  "errors": [
+    {
+      "condition": "invalid_request",
+      "http_status": 400,
+      "code": "invalid_request",
+      "retryable": false
+    },
+    {
+      "condition": "model_unknown",
+      "http_status": 404,
+      "code": "model_unknown",
+      "retryable": false
+    },
+    {
+      "condition": "cancelled",
+      "http_status": 409,
+      "code": "cancelled",
+      "retryable": false
+    },
+    {
+      "condition": "capability_unsupported",
+      "http_status": 422,
+      "code": "capability_unsupported",
+      "retryable": false
+    },
+    {
+      "condition": "model_warming",
+      "http_status": 425,
+      "code": "model_warming",
+      "retryable": true,
+      "retry_after_seconds": 2
+    },
+    {
+      "condition": "overloaded",
+      "http_status": 429,
+      "code": "overloaded",
+      "retryable": true,
+      "retry_after_seconds": 2
+    },
+    {
+      "condition": "runtime_unavailable",
+      "http_status": 503,
+      "code": "runtime_unavailable",
+      "retryable": true
+    },
+    {
+      "condition": "execution_timeout",
+      "http_status": 504,
+      "code": "execution_timeout",
+      "retryable": true
+    }
+  ],
+  "stream_success": {
+    "content_type": "text/event-stream",
+    "events": [
+      "data: {\"id\":\"chatcmpl-fixture\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\"},\"finish_reason\":null}]}",
+      "data: {\"id\":\"chatcmpl-fixture\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"hello\"},\"finish_reason\":null}]}",
+      "data: {\"id\":\"chatcmpl-fixture\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}",
+      "data: [DONE]"
+    ],
+    "requires_finish_reason_stop": true,
+    "requires_done": true,
+    "persistable": true
+  },
+  "stream_failure": {
+    "content_type": "text/event-stream",
+    "events": [
+      "data: {\"id\":\"chatcmpl-fixture\",\"object\":\"chat.completion.chunk\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"partial\"},\"finish_reason\":null}]}",
+      "data: {\"error\":{\"contract_version\":1,\"code\":\"runtime_unavailable\",\"http_status\":503,\"retryable\":true,\"output_started\":true}}"
+    ],
+    "requires_done": false,
+    "must_not_emit_done": true,
+    "persistable": false,
+    "partial_output_classification": "diagnostic_only"
+  },
+  "cancellation": {
+    "request_id": "whoosh-request-0001",
+    "http_status": 409,
+    "code": "cancelled",
+    "persistable": false
+  },
+  "capability_mismatch": {
+    "requested": "vision",
+    "model_modalities": [
+      "text"
+    ],
+    "http_status": 422,
+    "code": "capability_unsupported",
+    "execution_must_not_begin": true
+  },
+  "threadwake_normalization": {
+    "algorithm": "whoosh.threadwake.text.v1",
+    "input": {
+      "type": "text",
+      "content": "Hello\r\nworld"
+    },
+    "canonical_utf8": "{\"content\":\"Hello\\nworld\",\"type\":\"text\"}",
+    "sha256": "1ebd886e692483d6e9e752506fdefb70b4e77b846f2d908f876a5632bb204ffb"
+  }
+}
