@@ -830,69 +830,68 @@ class LlamaCppAdapter:
             forward_non_streaming,
         )
 
-        url = self._server_url
-        if url is None:
-            raise RuntimeUnavailable(
-                "llama.cpp server is not configured or not reachable."
-            )
-
-        # Verify the server is ready before forwarding.
-        health = await self.check_health()
-        if not health.reachable:
-            if health.model_lifecycle == "warming":
-                raise RuntimeWarming(
-                    "llama.cpp server is reachable but model is still warming."
+        try:
+            url = self._server_url
+            if url is None:
+                raise RuntimeUnavailable(
+                    "llama.cpp server is not configured or not reachable."
                 )
-            raise RuntimeUnavailable(
-                f"llama.cpp server is not ready: {health.detail}"
+
+            # Verify the server is ready before forwarding.
+            health = await self.check_health()
+            if not health.reachable:
+                if health.model_lifecycle == "warming":
+                    raise RuntimeWarming(
+                        "llama.cpp server is reachable but model is still warming."
+                    )
+                raise RuntimeUnavailable(
+                    f"llama.cpp server is not ready: {health.detail}"
+                )
+
+            import time, uuid
+
+            # Convert generate request to chat completion.
+            chat_req = ChatCompletionRequest(
+                model=request.model_id or (self._effective_model_path or "gguf-model"),
+                messages=[ChatMessage(role="user", content=request.prompt)],
+                temperature=request.temperature,
+                max_tokens=request.max_tokens,
+                stream=False,
             )
 
-        import time, uuid
+            chat_resp = await forward_non_streaming(
+                url, chat_req, timeout=300.0,
+                model_override=self._effective_model_path,
+            )
 
-        # Convert generate request to chat completion.
-        chat_req = ChatCompletionRequest(
-            model=request.model_id or (self._effective_model_path or "gguf-model"),
-            messages=[ChatMessage(role="user", content=request.prompt)],
-            temperature=request.temperature,
-            max_tokens=request.max_tokens,
-            stream=False,
-        )
+            # Map ChatCompletionResponse → GenerateResponse.
+            content = ""
+            if chat_resp.choices:
+                content = chat_resp.choices[0].message.content
 
-        chat_resp = await forward_non_streaming(
-            url, chat_req, timeout=300.0,
-            model_override=self._effective_model_path,
-        )
+            prompt_tokens = chat_resp.usage.prompt_tokens if chat_resp.usage else None
+            completion_tokens = chat_resp.usage.completion_tokens if chat_resp.usage else None
+            total_tokens = chat_resp.usage.total_tokens if chat_resp.usage else None
 
-        # Clear external path after request if it was set.
-        was_external = self._external_model_path is not None
-        self._clear_external_model_path()
-
-        # Map ChatCompletionResponse → GenerateResponse.
-        content = ""
-        if chat_resp.choices:
-            content = chat_resp.choices[0].message.content
-
-        prompt_tokens = chat_resp.usage.prompt_tokens if chat_resp.usage else None
-        completion_tokens = chat_resp.usage.completion_tokens if chat_resp.usage else None
-        total_tokens = chat_resp.usage.total_tokens if chat_resp.usage else None
-
-        return GenerateResponse(
-            ok=True,
-            request_id=request.request_id or str(uuid.uuid4()),
-            model_id=chat_resp.model,
-            text=content,
-            finish_reason=chat_resp.choices[0].finish_reason if chat_resp.choices else "stop",
-            usage=TokenUsage(
-                prompt_tokens=prompt_tokens,
-                completion_tokens=completion_tokens,
-                total_tokens=total_tokens,
-            ),
-            runtime=ResponseRuntimeInfo(
-                adapter=self.name,
-                queued=False,
-                elapsed_ms=0.0,
-            ),
-        )
+            return GenerateResponse(
+                ok=True,
+                request_id=request.request_id or str(uuid.uuid4()),
+                model_id=chat_resp.model,
+                text=content,
+                finish_reason=chat_resp.choices[0].finish_reason if chat_resp.choices else "stop",
+                usage=TokenUsage(
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens,
+                    total_tokens=total_tokens,
+                ),
+                runtime=ResponseRuntimeInfo(
+                    adapter=self.name,
+                    queued=False,
+                    elapsed_ms=0.0,
+                ),
+            )
+        finally:
+            self._clear_external_model_path()
 
     async def chat_completion(
         self,

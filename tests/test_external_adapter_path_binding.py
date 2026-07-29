@@ -8,9 +8,12 @@ exposure.  Synthetic filesystem fixtures — no real model execution.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -25,6 +28,7 @@ from whooshd.adapters.mlx_lm_server import (
     MlxLmServerConfig,
     build_mlx_lm_server_argv,
 )
+from whooshd.contracts import GenerateRequest
 
 
 # ── Helpers ─────────────────────────────────────────────────────────────────
@@ -102,6 +106,38 @@ class TestLlamaCppAdapterPathBinding:
             adapter.set_external_model_path(str(gguf_file))
             adapter._clear_external_model_path()
             assert adapter.model_id() == adapter._config.model_path
+
+    def test_generate_clears_external_path_when_health_probe_fails(self):
+        adapter = LlamaCppAdapter(
+            LlamaCppAdapterConfig(server_url="http://127.0.0.1:8080")
+        )
+        adapter.set_external_model_path("/models/external.gguf")
+
+        with patch.object(
+            adapter,
+            "check_health",
+            AsyncMock(side_effect=RuntimeError("probe failed")),
+        ):
+            with pytest.raises(RuntimeError, match="probe failed"):
+                asyncio.run(adapter.generate(GenerateRequest(prompt="hello")))
+
+        assert adapter._external_model_path is None
+
+    def test_generate_clears_external_path_when_forwarding_fails(self):
+        adapter = LlamaCppAdapter(
+            LlamaCppAdapterConfig(server_url="http://127.0.0.1:8080")
+        )
+        adapter.set_external_model_path("/models/external.gguf")
+        health = SimpleNamespace(reachable=True)
+
+        with patch.object(adapter, "check_health", AsyncMock(return_value=health)), patch(
+            "whooshd.http_forwarding.forward_non_streaming",
+            AsyncMock(side_effect=RuntimeError("forward failed")),
+        ):
+            with pytest.raises(RuntimeError, match="forward failed"):
+                asyncio.run(adapter.generate(GenerateRequest(prompt="hello")))
+
+        assert adapter._external_model_path is None
 
 
 # ── LlamaCppAdapter: argv building with external path ──────────────────────
