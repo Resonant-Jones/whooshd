@@ -124,10 +124,13 @@ def test_capability_mismatch_fails_before_execution():
 
 def test_threadwake_normalization_vector_recomputes_exact_digest():
     vector = _load_fixture()["threadwake_normalization"]
-    digest = hashlib.sha256(vector["canonical_utf8"].encode("utf-8")).hexdigest()
+    canonical_utf8 = vector["canonical_utf8"]
+    digest = hashlib.sha256(canonical_utf8.encode("utf-8")).hexdigest()
 
     assert vector["algorithm"] == "whoosh.threadwake.text.v1"
-    assert vector["canonical_utf8"] == '{"content":"Hello\\nworld","type":"text"}'
+    assert canonical_utf8 == '{"content":"Hello\nworld","type":"text"}'
+    assert canonical_utf8.count("\n") == 1
+    assert "\\n" not in canonical_utf8
     assert digest == vector["sha256"]
 
 
