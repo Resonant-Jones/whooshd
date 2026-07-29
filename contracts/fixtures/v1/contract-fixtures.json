@@ -138,7 +138,7 @@
       "type": "text",
       "content": "Hello\r\nworld"
     },
-    "canonical_utf8": "{\"content\":\"Hello\\nworld\",\"type\":\"text\"}",
-    "sha256": "1ebd886e692483d6e9e752506fdefb70b4e77b846f2d908f876a5632bb204ffb"
+    "canonical_utf8": "{\"content\":\"Hello\nworld\",\"type\":\"text\"}",
+    "sha256": "8229a9f9be93369e685c5a3beef2a9eec397752f8735d814e196522b2c46b4ca"
   }
 }
