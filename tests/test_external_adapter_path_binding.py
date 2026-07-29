@@ -111,7 +111,14 @@ class TestLlamaCppAdapterPathBinding:
         adapter = LlamaCppAdapter(
             LlamaCppAdapterConfig(server_url="http://127.0.0.1:8080")
         )
-        adapter.set_external_model_path("/models/external.gguf")
+
+        async def generate():
+            adapter.set_external_model_path("/models/external.gguf")
+            try:
+                await adapter.generate(GenerateRequest(prompt="hello"))
+            except RuntimeError:
+                assert adapter._external_model_path is None
+                raise
 
         with patch.object(
             adapter,
@@ -119,7 +126,7 @@ class TestLlamaCppAdapterPathBinding:
             AsyncMock(side_effect=RuntimeError("probe failed")),
         ):
             with pytest.raises(RuntimeError, match="probe failed"):
-                asyncio.run(adapter.generate(GenerateRequest(prompt="hello")))
+                asyncio.run(generate())
 
         assert adapter._external_model_path is None
 
@@ -127,16 +134,71 @@ class TestLlamaCppAdapterPathBinding:
         adapter = LlamaCppAdapter(
             LlamaCppAdapterConfig(server_url="http://127.0.0.1:8080")
         )
-        adapter.set_external_model_path("/models/external.gguf")
         health = SimpleNamespace(reachable=True)
+
+        async def generate():
+            adapter.set_external_model_path("/models/external.gguf")
+            try:
+                await adapter.generate(GenerateRequest(prompt="hello"))
+            except RuntimeError:
+                assert adapter._external_model_path is None
+                raise
 
         with patch.object(adapter, "check_health", AsyncMock(return_value=health)), patch(
             "whooshd.http_forwarding.forward_non_streaming",
             AsyncMock(side_effect=RuntimeError("forward failed")),
         ):
             with pytest.raises(RuntimeError, match="forward failed"):
-                asyncio.run(adapter.generate(GenerateRequest(prompt="hello")))
+                asyncio.run(generate())
 
+        assert adapter._external_model_path is None
+
+    def test_generate_failure_does_not_clear_concurrent_request_path(self):
+        adapter = LlamaCppAdapter(
+            LlamaCppAdapterConfig(server_url="http://127.0.0.1:8080")
+        )
+        first_probe_started = asyncio.Event()
+        allow_first_probe_failure = asyncio.Event()
+        first_request_finished = asyncio.Event()
+        forwarded_overrides = []
+
+        async def check_health():
+            if adapter._effective_model_path == "/models/first.gguf":
+                first_probe_started.set()
+                await allow_first_probe_failure.wait()
+                raise RuntimeError("probe failed")
+            await first_request_finished.wait()
+            return SimpleNamespace(reachable=True)
+
+        async def forward(_url, _request, *, timeout, model_override):
+            forwarded_overrides.append(model_override)
+            raise RuntimeError("forward failed")
+
+        async def first_request():
+            adapter.set_external_model_path("/models/first.gguf")
+            try:
+                await adapter.generate(GenerateRequest(prompt="first"))
+            finally:
+                first_request_finished.set()
+
+        async def second_request():
+            await first_probe_started.wait()
+            adapter.set_external_model_path("/models/second.gguf")
+            allow_first_probe_failure.set()
+            await adapter.generate(GenerateRequest(prompt="second"))
+
+        async def run_overlapping_requests():
+            results = await asyncio.gather(
+                first_request(), second_request(), return_exceptions=True
+            )
+            assert all(isinstance(result, RuntimeError) for result in results)
+
+        with patch.object(adapter, "check_health", check_health), patch(
+            "whooshd.http_forwarding.forward_non_streaming", forward
+        ):
+            asyncio.run(run_overlapping_requests())
+
+        assert forwarded_overrides == ["/models/second.gguf"]
         assert adapter._external_model_path is None
 
 

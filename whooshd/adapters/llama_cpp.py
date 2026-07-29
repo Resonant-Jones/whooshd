@@ -15,6 +15,7 @@ support.
 from __future__ import annotations
 
 import asyncio
+from contextvars import ContextVar
 import logging
 import os
 import signal
@@ -483,7 +484,12 @@ class LlamaCppAdapter:
     def __init__(self, config: LlamaCppAdapterConfig | None = None) -> None:
         self._config = config or _build_config_from_env()
         self._managed_process: ManagedLlamaServer | None = None
-        self._external_model_path: Path | None = None
+        # The router and adapter are singletons shared by concurrent request
+        # tasks.  Keep the temporary model override in task-local context so
+        # one request cannot replace or clear another request's binding.
+        self._external_model_path_var: ContextVar[Path | None] = ContextVar(
+            f"llama_cpp_external_model_path_{id(self)}", default=None
+        )
 
         # Per-runtime concurrency guard.
         from whooshd.config import get_llama_cpp_max_concurrent_requests
@@ -500,11 +506,16 @@ class LlamaCppAdapter:
         The path is used exactly as-is — no copying, registration, or
         normalization.
         """
-        self._external_model_path = Path(path)
+        self._external_model_path_var.set(Path(path))
+
+    @property
+    def _external_model_path(self) -> Path | None:
+        """Return the external path bound to the current request task."""
+        return self._external_model_path_var.get()
 
     def _clear_external_model_path(self) -> None:
         """Clear external path state after a request completes."""
-        self._external_model_path = None
+        self._external_model_path_var.set(None)
 
     @property
     def _effective_model_path(self) -> str | None:
