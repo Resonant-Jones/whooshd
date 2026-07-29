@@ -14,6 +14,14 @@ from validate_whooshd_python import PythonPreflightError, validate_whooshd_pytho
 REPO_ROOT = Path(__file__).resolve().parents[2]
 TEMPLATE_DIR = Path(__file__).resolve().parent
 
+PROFILE_DEFAULTS = {
+    "friends-family-guest": {
+        "model_registry_path": "configs/models.friends-family-guest.yaml",
+        "whooshd_host": "127.0.0.1",
+        "mlx_vlm_host": "127.0.0.1",
+    },
+}
+
 
 def _xml_escape(value: str) -> str:
     return html.escape(value, quote=False)
@@ -80,7 +88,16 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--whooshd-label", default="com.resonant.whooshd")
     parser.add_argument("--mlx-vlm-label", default="com.resonant.mlx-vlm-gemma12b")
-    parser.add_argument("--model-registry-path", default="configs/models.yaml")
+    parser.add_argument(
+        "--profile",
+        choices=sorted(PROFILE_DEFAULTS),
+        help="Deployment profile to render with its pinned runtime defaults.",
+    )
+    parser.add_argument(
+        "--model-registry-path",
+        default=None,
+        help="Override the profile registry path; otherwise use the selected profile or configs/models.yaml.",
+    )
     parser.add_argument("--whooshd-host", default="127.0.0.1")
     parser.add_argument("--whooshd-port", default="8000")
     parser.add_argument("--mlx-vlm-host", default="127.0.0.1")
@@ -109,7 +126,25 @@ def main() -> int:
     mlx_vlm_python = Path(args.mlx_vlm_python)
     mlx_vlm_model_path = Path(args.mlx_vlm_model_path)
 
-    registry_path = _resolve_registry_path(whooshd_root, args.model_registry_path)
+    profile_defaults = PROFILE_DEFAULTS.get(args.profile, {})
+    if args.profile and args.model_registry_path:
+        pinned_path = profile_defaults["model_registry_path"]
+        if args.model_registry_path != pinned_path:
+            raise SystemExit(
+                f"Profile '{args.profile}' pins --model-registry-path={pinned_path}; "
+                "do not override the profile registry."
+            )
+    for argument_name in ("whooshd_host", "mlx_vlm_host"):
+        pinned_host = profile_defaults.get(argument_name)
+        if args.profile and pinned_host and getattr(args, argument_name) != pinned_host:
+            raise SystemExit(
+                f"Profile '{args.profile}' requires --{argument_name.replace('_', '-')}={pinned_host}."
+            )
+    model_registry_path = (
+        args.model_registry_path
+        or profile_defaults.get("model_registry_path", "configs/models.yaml")
+    )
+    registry_path = _resolve_registry_path(whooshd_root, model_registry_path)
 
     _require_dir(whooshd_root, "Whoosh'd root")
     _require_file(registry_path, "Model registry")

@@ -15,9 +15,11 @@ support.
 from __future__ import annotations
 
 import asyncio
+from contextvars import ContextVar
 import logging
 import os
 import signal
+from pathlib import Path
 import subprocess
 import time
 from typing import AsyncIterator, Optional
@@ -42,7 +44,6 @@ from whooshd.contracts import (
     RuntimeModel,
     TokenUsage,
 )
-from whooshd.log_safety import exception_metadata
 
 # Optional httpx import — only needed when server_url is configured.
 try:
@@ -123,19 +124,27 @@ class LlamaCppProcessError(Exception):
 # ── argv builder ────────────────────────────────────────────────────────────
 
 
-def build_llama_server_argv(config: LlamaCppAdapterConfig) -> list[str]:
+def build_llama_server_argv(
+    config: LlamaCppAdapterConfig,
+    model_path_override: str | None = None,
+) -> list[str]:
     """Build a safe argv list for llama-server.
 
     Never uses ``shell=True``.  Returns a list of string arguments
     suitable for ``subprocess.Popen``.
 
+    If *model_path_override* is provided, it replaces ``config.model_path``
+    in the argv.  This supports external model path binding (Phase 4B).
+
     Raises ``LlamaCppConfigError`` if required fields are missing or invalid.
     """
-    _validate_managed_config(config)
+    _validate_managed_config(config, model_path_override=model_path_override)
+
+    effective_model = model_path_override or config.model_path
 
     argv: list[str] = [
         config.binary_path,  # type: ignore[arg-type]  # validated above
-        "--model", config.model_path,  # type: ignore[arg-type]
+        "--model", effective_model,  # type: ignore[arg-type]
         "--host", config.host,
         "--port", str(config.port),
     ]
@@ -150,10 +159,9 @@ def build_llama_server_argv(config: LlamaCppAdapterConfig) -> list[str]:
         argv.extend(config.extra_args)
 
     logger.info(
-        "llama_cpp.process.argv_built binary_path_present=%s "
-        "model_path_present=%s host=%s port=%s",
-        bool(config.binary_path),
-        bool(config.model_path),
+        "llama_cpp.process.argv_built binary=%s model=%s host=%s port=%s",
+        config.binary_path,
+        config.model_path,
         config.host,
         config.port,
     )
@@ -163,25 +171,33 @@ def build_llama_server_argv(config: LlamaCppAdapterConfig) -> list[str]:
 # ── Config validation ───────────────────────────────────────────────────────
 
 
-def _validate_managed_config(config: LlamaCppAdapterConfig) -> None:
+def _validate_managed_config(
+    config: LlamaCppAdapterConfig,
+    model_path_override: str | None = None,
+) -> None:
     """Validate that the config has everything needed for managed mode.
 
     Checks field presence, format, and range.  Does NOT check whether
     files exist on disk (that's a pre-flight check before launch).
 
+    If *model_path_override* is provided, validates it instead of
+    ``config.model_path`` (external path binding, Phase 4B).
+
     Raises ``LlamaCppConfigError`` on the first validation failure.
     """
+    effective_model = model_path_override or config.model_path
+
     if not config.binary_path:
         raise LlamaCppConfigError(
             "auto_start=true requires binary_path to be set"
         )
 
-    if not config.model_path:
+    if not effective_model:
         raise LlamaCppConfigError(
             "auto_start=true requires model_path to be set"
         )
 
-    if not config.model_path.endswith(".gguf"):
+    if not effective_model.endswith(".gguf"):  # type: ignore[union-attr]
         raise LlamaCppConfigError("Model path must end in .gguf")
 
     if config.port < 1 or config.port > 65535:
@@ -200,18 +216,33 @@ def _validate_managed_config(config: LlamaCppAdapterConfig) -> None:
         )
 
 
-def _validate_files_exist(config: LlamaCppAdapterConfig) -> None:
+def _validate_files_exist(
+    config: LlamaCppAdapterConfig,
+    model_path_override: str | None = None,
+) -> None:
     """Pre-flight check that binary and model files exist on disk.
 
     Called before process launch, separate from field-level validation
     so argv tests don't need filesystem mocks.
 
+    If *model_path_override* is provided, checks that file instead of
+    ``config.model_path`` (external path binding, Phase 4B).
+
     Raises ``LlamaCppConfigError`` if either file is missing.
     """
-    if not os.path.isfile(config.binary_path):  # type: ignore[arg-type]
-        raise LlamaCppConfigError("llama-server binary not found")
+    effective_model = model_path_override or config.model_path
 
-    if not os.path.isfile(config.model_path):  # type: ignore[arg-type]
+    if not os.path.isfile(config.binary_path):  # type: ignore[arg-type]
+        raise LlamaCppConfigError(
+            f"llama-server binary not found: {config.binary_path}"
+        )
+
+    if not os.path.isfile(effective_model):  # type: ignore[arg-type]
+        if model_path_override is not None:
+            # Client-safe message for external paths.
+            raise LlamaCppConfigError(
+                "External model path is unavailable at execution time."
+            )
         raise LlamaCppConfigError("Model file not found")
 
 
@@ -275,10 +306,9 @@ class ManagedLlamaServer:
         argv = build_llama_server_argv(self._config)
 
         logger.info(
-            "llama_cpp.process.starting binary_path_present=%s "
-            "model_path_present=%s port=%s",
-            bool(self._config.binary_path),
-            bool(self._config.model_path),
+            "llama_cpp.process.starting binary=%s model=%s port=%s",
+            self._config.binary_path,
+            self._config.model_path,
             self._config.port,
         )
 
@@ -291,7 +321,9 @@ class ManagedLlamaServer:
                 shell=False,
             )
         except OSError as exc:
-            raise LlamaCppProcessError("Failed to launch llama-server") from exc
+            raise LlamaCppProcessError(
+                f"Failed to launch llama-server: {exc}"
+            ) from exc
 
         self._started_at = time.monotonic()
 
@@ -448,12 +480,51 @@ class LlamaCppAdapter:
     def __init__(self, config: LlamaCppAdapterConfig | None = None) -> None:
         self._config = config or _build_config_from_env()
         self._managed_process: ManagedLlamaServer | None = None
+        self._external_model_path_var: ContextVar[Path | None] = ContextVar(
+            f"llama_cpp_external_model_path_{id(self)}", default=None
+        )
 
         # Per-runtime concurrency guard.
         from whooshd.config import get_llama_cpp_max_concurrent_requests
         import asyncio as _asyncio
         self._max_concurrent = get_llama_cpp_max_concurrent_requests()
         self._concurrency_semaphore = _asyncio.Semaphore(self._max_concurrent)
+
+    # ── External path binding (Phase 4B) ─────────────────────────────
+
+    def set_external_model_path(self, path: str) -> None:
+        """Bind an external model path for the next request.
+
+        Called by the router before dispatching an external model request.
+        The path is used exactly as-is — no copying, registration, or
+        normalization.
+        """
+        self._external_model_path_var.set(Path(path))
+
+    @property
+    def _external_model_path(self) -> Path | None:
+        """Return the external binding for this async request context."""
+        return self._external_model_path_var.get()
+
+    def _clear_external_model_path(self) -> None:
+        """Clear external path state after a request completes."""
+        self._external_model_path_var.set(None)
+
+    @property
+    def _effective_model_path(self) -> str | None:
+        """Return the active model path: external if set, otherwise config."""
+        if self._external_model_path is not None:
+            return str(self._external_model_path)
+        return self._config.model_path
+
+    def _reject_managed_external_binding(self) -> None:
+        """Avoid forwarding to a managed server loaded with another model."""
+        if self._config.auto_start and self._external_model_path is not None:
+            from whooshd.http_forwarding import RuntimeUnavailable
+
+            raise RuntimeUnavailable(
+                "External models cannot use a managed llama.cpp runtime."
+            )
 
     # ── Protocol properties ────────────────────────────────────────────
 
@@ -505,7 +576,8 @@ class LlamaCppAdapter:
             parsed = urlparse(url)
             if not parsed.scheme or not parsed.netloc:
                 raise ValueError(
-                    "Invalid llama.cpp server_url; must include scheme and host"
+                    f"Invalid llama.cpp server_url: '{url}' — "
+                    "must include scheme and host (e.g. http://127.0.0.1:8080)"
                 )
 
     # ── Health probing ──────────────────────────────────────────────────
@@ -636,8 +708,8 @@ class LlamaCppAdapter:
         return False
 
     def model_id(self) -> Optional[str]:
-        """Return the configured model path, or None."""
-        return self._config.model_path
+        """Return the active model path (external if set, otherwise config)."""
+        return self._effective_model_path
 
     async def warmup(self) -> None:
         """Start the managed process (if auto_start) or probe external server.
@@ -716,13 +788,13 @@ class LlamaCppAdapter:
             kind=self.kind,
             enabled=enabled,
             state=state,
-            active_model=self._config.model_path if self.is_loaded() else None,
+            active_model=self._effective_model_path if self.is_loaded() else None,
             detail=status.detail,
         )
 
     async def list_models(self) -> list[RuntimeModel]:
         """Return models managed by this llama.cpp runtime."""
-        if not self._config.model_path:
+        if not self._effective_model_path:
             return []
 
         loaded = self.is_loaded()
@@ -736,7 +808,7 @@ class LlamaCppAdapter:
         }
         model_state = state_map.get(status.model_lifecycle, RuntimeHealthState.OFFLINE.value)
 
-        model_id = self._config.model_path
+        model_id = self._effective_model_path
         display_name = os.path.basename(model_id) if model_id else model_id
 
         return [
@@ -758,6 +830,14 @@ class LlamaCppAdapter:
     # ── Inference ────────────────────────────────────────────────────
 
     async def generate(self, request: GenerateRequest) -> GenerateResponse:
+        """Generate with request-scoped external binding cleanup."""
+        try:
+            self._reject_managed_external_binding()
+            return await self._generate_bound(request)
+        finally:
+            self._clear_external_model_path()
+
+    async def _generate_bound(self, request: GenerateRequest) -> GenerateResponse:
         """Codexify-style generate — forwarded to llama.cpp server.
 
         Converts the prompt to a single-message chat completion,
@@ -784,13 +864,15 @@ class LlamaCppAdapter:
                 raise RuntimeWarming(
                     "llama.cpp server is reachable but model is still warming."
                 )
-            raise RuntimeUnavailable("llama.cpp server is not ready")
+            raise RuntimeUnavailable(
+                f"llama.cpp server is not ready: {health.detail}"
+            )
 
         import time, uuid
 
         # Convert generate request to chat completion.
         chat_req = ChatCompletionRequest(
-            model=request.model_id or (self._config.model_path or "gguf-model"),
+            model=request.model_id or (self._effective_model_path or "gguf-model"),
             messages=[ChatMessage(role="user", content=request.prompt)],
             temperature=request.temperature,
             max_tokens=request.max_tokens,
@@ -799,7 +881,7 @@ class LlamaCppAdapter:
 
         chat_resp = await forward_non_streaming(
             url, chat_req, timeout=300.0,
-            model_override=self._config.model_path,
+            model_override=self._effective_model_path,
             adapter_kind=self.kind,
         )
 
@@ -863,6 +945,7 @@ class LlamaCppAdapter:
             )
 
         try:
+            self._reject_managed_external_binding()
             # Verify the server is ready for inference before forwarding.
             health = await self.check_health()
             if not health.reachable:
@@ -870,15 +953,18 @@ class LlamaCppAdapter:
                     raise RuntimeWarming(
                         "llama.cpp server is reachable but model is still warming."
                     )
-                raise RuntimeUnavailable("llama.cpp server is not ready")
+                raise RuntimeUnavailable(
+                    f"llama.cpp server is not ready: {health.detail}"
+                )
 
             return await forward_non_streaming(
                 url, request, timeout=300.0,
-                model_override=self._config.model_path,
+                model_override=self._effective_model_path,
                 adapter_kind=self.kind,
             )
         finally:
             self._concurrency_semaphore.release()
+            self._clear_external_model_path()
 
     async def chat_completion_stream(
         self,
@@ -913,6 +999,7 @@ class LlamaCppAdapter:
             )
 
         try:
+            self._reject_managed_external_binding()
             # Verify the server is ready for inference before forwarding.
             health = await self.check_health()
             if not health.reachable:
@@ -920,18 +1007,21 @@ class LlamaCppAdapter:
                     raise RuntimeWarming(
                         "llama.cpp server is reachable but model is still warming."
                     )
-                raise RuntimeUnavailable("llama.cpp server is not ready")
+                raise RuntimeUnavailable(
+                    f"llama.cpp server is not ready: {health.detail}"
+                )
 
             cancellation_token = context.cancellation_token if context else None
             async for chunk in forward_streaming(
                 url, request, timeout=300.0,
-                model_override=self._config.model_path,
+                model_override=self._effective_model_path,
                 adapter_kind=self.kind,
                 cancellation_token=cancellation_token,
             ):
                 yield chunk
         finally:
             self._concurrency_semaphore.release()
+            self._clear_external_model_path()
 
 
 # ── Request normalization ───────────────────────────────────────────────────
@@ -1020,7 +1110,7 @@ def _classify_health_exception(exc: Exception, timeout: float) -> _LlamaCppHealt
         reachable=False,
         runner_status="degraded",
         model_lifecycle="failed",
-        detail=f"Unexpected health probe failure ({exception_metadata(exc)})",
+        detail=f"Unexpected health probe error: {exc}",
     )
 
 

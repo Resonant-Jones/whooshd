@@ -15,6 +15,7 @@ Covers:
 
 from __future__ import annotations
 
+import json
 import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -288,6 +289,71 @@ class TestModelResolution:
 
             import asyncio
             asyncio.run(_run())
+        finally:
+            rt._registry = original_registry
+
+    def test_explicit_registry_blocks_external_route_bypass(
+        self, clean_router, mock_llama_adapter, monkeypatch, tmp_path
+    ):
+        """An external route cannot authorize a model outside the registry."""
+        from whooshd.models.inventory import list_external_model_inventory
+        from whooshd.models.routes import load_external_weight_routes
+        from whooshd.registry import (
+            EngineType,
+            ModelFormat,
+            ModelModality,
+            ModelRegistryConfig,
+            RegistryModelEntry,
+        )
+
+        route_root = tmp_path / "external-weights"
+        model_dir = route_root / "gguf" / "Acme" / "Bypass"
+        model_dir.mkdir(parents=True)
+        (model_dir / "bypass.Q4_K_M.gguf").write_bytes(b"synthetic")
+        monkeypatch.setenv(
+            "WHOOSHD_EXTERNAL_ROUTES",
+            json.dumps([{"id": "external", "path": str(route_root)}]),
+        )
+
+        # Establish that the route contains a valid externally visible model.
+        external_entries = list_external_model_inventory(load_external_weight_routes())
+        assert [entry.id for entry in external_entries] == ["Acme/Bypass:Q4_K_M"]
+
+        registry = ModelRegistryConfig(
+            models={
+                "allowed-model": RegistryModelEntry(
+                    display_name="Allowed model",
+                    engine=EngineType.LLAMA_CPP,
+                    format=ModelFormat.GGUF,
+                    path="/models/allowed.gguf",
+                    modalities=[ModelModality.TEXT],
+                )
+            }
+        )
+        rt = get_runtime()
+        original_registry = rt._registry
+        rt._registry = registry
+        monkeypatch.setenv("WHOOSHD_MODEL_REGISTRY_PATH", str(tmp_path / "registry.yaml"))
+
+        try:
+            clean_router.register(mock_llama_adapter)
+            external_resolver = AsyncMock()
+            with patch.object(
+                clean_router, "_resolve_external_model", external_resolver
+            ):
+                async def _run():
+                    with pytest.raises(
+                        ModelResolutionError,
+                        match="not allowed by the active runtime registry",
+                    ):
+                        await clean_router._resolve_model_runtime(
+                            "Acme/Bypass:Q4_K_M"
+                        )
+
+                import asyncio
+                asyncio.run(_run())
+
+            external_resolver.assert_not_awaited()
         finally:
             rt._registry = original_registry
 
