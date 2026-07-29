@@ -70,6 +70,24 @@ python3 ops/launchd/render_launchd_plists.py \
 This writes concrete plists into `.local/launchd/` and prints the exact
 install commands without calling `sudo`.
 
+For the Friends & Family guest launch profile, select the pinned guest
+registry explicitly:
+
+```bash
+python3 ops/launchd/render_launchd_plists.py \
+  --profile friends-family-guest \
+  --output-dir .local/launchd \
+  --whooshd-root "/Volumes/Dev_SSD/ResonantConstructs/Whoosh'd" \
+  --user chriscastillo \
+  --dry-run
+```
+
+That profile renders `WHOOSHD_MODEL_REGISTRY_PATH` to
+`configs/models.friends-family-guest.yaml`, binds Whoosh'd and the MLX-VLM
+sidecar to loopback, and keeps the runtime local to the host. It is a model
+allowlist/startup configuration only; it does not establish capacity,
+invite, or guest-readiness claims, and it does not configure Codexify.
+
 ## Validate
 
 ```bash
