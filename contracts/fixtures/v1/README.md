@@ -30,7 +30,13 @@ The fixture corpus is a **target contract artifact**, not proof that every targe
 
 ## Current implementation relationship
 
-Whoosh'd currently advertises the legacy control-plane identifier `whooshd.control.v1` in `X-Whooshd-Contract-Version`. The fixture corpus also records the handoff target header `X-Whoosh-Contract-Version: 1` so migration can be deliberate and compatibility-tested rather than inferred.
+Whoosh'd accepts the fixture target request header
+`X-Whoosh-Contract-Version: 1`, retains the legacy request form
+`X-Whooshd-Contract-Version: whooshd.control.v1`, and continues to accept
+callers that send neither header. Matching target and legacy headers may be
+sent together; unsupported or conflicting values are rejected before
+execution. Responses continue to advertise only the legacy control-plane
+identifier `X-Whooshd-Contract-Version: whooshd.control.v1`.
 
 Likewise, some target error names intentionally differ from current implementation names. Those mappings must be resolved in a separately reviewed contract change. This fixture commit does not silently rename live errors.
 

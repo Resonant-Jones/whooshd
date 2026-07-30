@@ -56,10 +56,12 @@ from whooshd.contracts import (
 from whooshd.control_plane import (
     CONTROL_PLANE_CONTRACT_VERSION,
     CONTROL_PLANE_VERSION_HEADER,
+    LEGACY_CONTROL_PLANE_VERSION_HEADER,
+    TARGET_CONTRACT_VERSION_HEADER,
     ErrorCode as ControlErrorCode,
     code_for_http_status,
     error_fields,
-    safe_contract_version,
+    negotiate_contract_version,
 )
 from whooshd.config import (
     get_adapter_backend,
@@ -163,23 +165,24 @@ async def add_control_plane_version_header(request, call_next):
     request.state.upstream_request_id = normalize_identifier(
         request.headers.get(UPSTREAM_REQUEST_ID_HEADER)
     )
-    incoming_contract_version = request.headers.get(CONTROL_PLANE_VERSION_HEADER)
-    if incoming_contract_version is not None:
-        received_version = safe_contract_version(incoming_contract_version)
-        if received_version != CONTROL_PLANE_CONTRACT_VERSION:
-            response = JSONResponse(
-                status_code=400,
-                content=_error_body(
-                    ControlErrorCode.CONTRACT_VERSION_UNSUPPORTED,
-                    "Unsupported control-plane contract version",
-                    http_status=400,
-                    upstream_request_id=_upstream_request_id(request),
-                    details={"received_version": received_version},
-                ),
-            )
-            response.headers[CONTROL_PLANE_VERSION_HEADER] = CONTROL_PLANE_CONTRACT_VERSION
-            _apply_correlation_headers(response, request)
-            return response
+    negotiation = negotiate_contract_version(
+        target_value=request.headers.get(TARGET_CONTRACT_VERSION_HEADER),
+        legacy_value=request.headers.get(LEGACY_CONTROL_PLANE_VERSION_HEADER),
+    )
+    if not negotiation.compatible:
+        response = JSONResponse(
+            status_code=400,
+            content=_error_body(
+                ControlErrorCode.CONTRACT_VERSION_UNSUPPORTED,
+                "Unsupported control-plane contract version",
+                http_status=400,
+                upstream_request_id=_upstream_request_id(request),
+                details={"received_version": negotiation.incompatibility},
+            ),
+        )
+        response.headers[CONTROL_PLANE_VERSION_HEADER] = CONTROL_PLANE_CONTRACT_VERSION
+        _apply_correlation_headers(response, request)
+        return response
     response = await call_next(request)
     response.headers[CONTROL_PLANE_VERSION_HEADER] = CONTROL_PLANE_CONTRACT_VERSION
     _apply_correlation_headers(response, request)

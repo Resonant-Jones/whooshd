@@ -17,7 +17,14 @@ from whooshd.correlation import normalize_identifier
 
 
 CONTROL_PLANE_CONTRACT_VERSION = "whooshd.control.v1"
-CONTROL_PLANE_VERSION_HEADER = "X-Whooshd-Contract-Version"
+TARGET_CONTRACT_VERSION_HEADER = "X-Whoosh-Contract-Version"
+TARGET_CONTRACT_VERSION_VALUE = "1"
+TARGET_CONTRACT_MAJOR = 1
+LEGACY_CONTROL_PLANE_VERSION_HEADER = "X-Whooshd-Contract-Version"
+LEGACY_CONTROL_PLANE_CONTRACT_VERSION = CONTROL_PLANE_CONTRACT_VERSION
+# Compatibility alias retained for callers importing the established response
+# header constant. The response contract remains legacy-only in v1.
+CONTROL_PLANE_VERSION_HEADER = LEGACY_CONTROL_PLANE_VERSION_HEADER
 DEFAULT_RETRY_AFTER_SECONDS = 2.0
 _SAFE_NAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_.:-]{0,96}$")
 _SAFE_VALUE_RE = re.compile(r"^[A-Za-z0-9_.:/ ()'=-]{1,160}$")
@@ -25,6 +32,7 @@ _SAFE_DIAGNOSTIC_RE = re.compile(
     r"^exception_type=[A-Za-z0-9_.-]{1,80} failure_class=[a-z_]{1,40}$"
 )
 _SAFE_VERSION_RE = re.compile(r"^whooshd\.control\.v[0-9]+$")
+_SAFE_TARGET_VERSION_RE = re.compile(r"^[0-9]{1,3}$")
 
 
 class ErrorCode(str, Enum):
@@ -205,12 +213,94 @@ def bounded_details(details: Mapping[str, Any] | None) -> dict[str, Any] | None:
 
 
 def safe_contract_version(value: Any) -> str:
-    """Return only a bounded, recognizable incoming version identifier."""
+    """Return only a bounded, recognizable legacy version identifier."""
 
     candidate = str(value or "").strip()
     if len(candidate) > 80 or not _SAFE_VERSION_RE.fullmatch(candidate):
         return "invalid"
     return candidate
+
+
+def _safe_target_contract_version(value: Any) -> str:
+    """Return only a bounded target-header version identifier."""
+
+    candidate = str(value or "")
+    if not _SAFE_TARGET_VERSION_RE.fullmatch(candidate):
+        return "invalid"
+    return candidate
+
+
+def _legacy_contract_major(value: Any) -> int | None:
+    candidate = safe_contract_version(value)
+    if candidate == "invalid":
+        return None
+    return int(candidate.rsplit("v", 1)[1])
+
+
+@dataclass(frozen=True)
+class ContractVersionNegotiation:
+    """Normalized request contract result without retaining raw input."""
+
+    major: int | None
+    incompatibility: str | None = None
+
+    @property
+    def compatible(self) -> bool:
+        return self.incompatibility is None
+
+
+def negotiate_contract_version(
+    *,
+    target_value: Any = None,
+    legacy_value: Any = None,
+) -> ContractVersionNegotiation:
+    """Negotiate target and legacy request headers into one contract major.
+
+    Missing headers preserve the legacy-client path. Unsupported and
+    conflicting values return only bounded operational metadata.
+    """
+
+    if target_value is None and legacy_value is None:
+        return ContractVersionNegotiation(major=None)
+
+    target_major = (
+        int(target_value)
+        if isinstance(target_value, str)
+        and _SAFE_TARGET_VERSION_RE.fullmatch(target_value)
+        else None
+    )
+    legacy_major = (
+        _legacy_contract_major(legacy_value) if legacy_value is not None else None
+    )
+
+    if (
+        target_value is not None
+        and legacy_value is not None
+        and target_major is not None
+        and legacy_major is not None
+        and target_major != legacy_major
+    ):
+        return ContractVersionNegotiation(
+            major=None,
+            incompatibility="conflicting",
+        )
+
+    if target_value is not None and target_value != TARGET_CONTRACT_VERSION_VALUE:
+        return ContractVersionNegotiation(
+            major=None,
+            incompatibility=_safe_target_contract_version(target_value),
+        )
+
+    if (
+        legacy_value is not None
+        and legacy_value != LEGACY_CONTROL_PLANE_CONTRACT_VERSION
+    ):
+        return ContractVersionNegotiation(
+            major=None,
+            incompatibility=safe_contract_version(legacy_value),
+        )
+
+    return ContractVersionNegotiation(major=TARGET_CONTRACT_MAJOR)
 
 
 def error_spec(code: ErrorCode | str) -> ErrorSpec:
