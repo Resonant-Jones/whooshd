@@ -83,10 +83,12 @@ reflected. Callers that omit `X-Request-ID` retain the legacy response shape,
 apart from the additive local chat lifecycle header.
 
 If an upstream failure occurs after visible output has begun, Whoosh'd emits a
-canonical SSE error event with `output_started: true` and does not emit a
-successful `[DONE]` sentinel. It does not fabricate terminal success or fall
-back after visible output. Before output begins, the same canonical body is
-returned as an ordinary HTTP error.
+canonical SSE error event with `output_started: true`, then closes the SSE
+response without emitting a successful `[DONE]` sentinel. The error event plus
+stream EOF is the failed terminal signal; clients must not treat EOF without a
+successful stop chunk and `[DONE]` as a completed response. It does not
+fabricate terminal success or fall back after visible output. Before output
+begins, the same canonical body is returned as an ordinary HTTP error.
 
 Canonical errors and streaming error events retain the local lifecycle
 `request_id` and the separate `upstream_request_id` when each exists. An

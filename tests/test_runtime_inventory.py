@@ -111,6 +111,19 @@ def _register_llama_adapter(model: str = "/models/test.gguf"):
 
 class TestV1ModelsInventory:
     @pytest.mark.asyncio
+    async def test_invalid_authoritative_registry_fails_closed(self, tmp_path, monkeypatch):
+        registry_path = tmp_path / "broken-registry.yaml"
+        registry_path.write_text("models: [not-a-mapping]\n", encoding="utf-8")
+        monkeypatch.setenv("WHOOSHD_MODEL_REGISTRY_PATH", str(registry_path))
+
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.get("/v1/models")
+
+        assert resp.status_code == 200
+        assert resp.json()["data"] == []
+
+    @pytest.mark.asyncio
     async def test_mlx_model_appears_in_v1_models(self):
         """When MLX-LM Server adapter is registered, its model appears."""
         _register_mlx_adapter("mlx-community/test-model")

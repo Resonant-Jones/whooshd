@@ -281,7 +281,11 @@ class RuntimeState:
         )
 
     def build_model_snapshot(
-        self, *, adapter_name: str, configured_model: Optional[str]
+        self,
+        *,
+        adapter_name: str,
+        configured_model: Optional[str],
+        adapter_results: dict[str, str] | None = None,
     ) -> ModelRuntimeSnapshot:
         """Build a public-safe model lifecycle snapshot."""
         from whooshd.routing import get_router
@@ -307,6 +311,7 @@ class RuntimeState:
             last_unloaded_at=self._last_unloaded_at,
             last_error_code=self._last_error_code,
             last_error_message=self._last_error_message,
+            adapter_results=adapter_results or {},
         )
 
     # ── Model lifecycle bookkeeping ────────────────────────────────────
@@ -410,12 +415,20 @@ class RuntimeState:
 
             explicit = get_model_registry_path()
             reg = load_model_registry(explicit)
+            if explicit and reg is None:
+                # Explicit-but-missing configuration is still an active
+                # allowlist decision; do not silently widen to adapter
+                # inventory.
+                self._registry = False
+                return False
             self._registry = reg
             return reg
         except Exception:
-            # Swallow — registry is optional; fall back to env-var behaviour.
-            self._registry = False  # sentinel: tried and not found
-            return None
+            # An explicitly configured registry is an authoritative allowlist.
+            # A malformed file must fail closed rather than silently widening
+            # inventory back to adapter heuristics.
+            self._registry = False
+            return False
 
     def _has_registry(self) -> bool:
         """Return True if a model registry file was found and loaded."""
@@ -429,6 +442,8 @@ class RuntimeState:
         model lists can be fetched from live runtimes.
         """
         reg = self._load_registry()
+        if reg is False and get_model_registry_path():
+            return []
         if reg and reg is not False and reg:
             return self._models_from_registry(reg)
         return [self._build_model_info()]
@@ -440,6 +455,8 @@ class RuntimeState:
         Otherwise each non-stub adapter contributes its configured model(s).
         """
         reg = self._load_registry()
+        if reg is False and get_model_registry_path():
+            return []
         if reg and reg is not False and reg:
             return self._models_from_registry(reg)
         return await self._models_from_adapters()

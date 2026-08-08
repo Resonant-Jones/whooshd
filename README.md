@@ -62,6 +62,7 @@ This README is intentionally conservative: supported features are listed separat
 | Tool/function calling | Not implemented | Request fields may be retained without implying provider capability |
 | Production auth hardening | Not implemented | Local-first development posture only |
 | Multi-node routing | Not implemented | Future architecture |
+| Adaptive memory-aware concurrency | Deferred | Current admission uses conservative fixed limits; calibrate from measured host/model behavior before adapting |
 | Live Codexify deployment claim | Not claimed by tests alone | Rehearse against the target runtime and machine |
 | Performance improvement claims | Not automatic | Record hardware, model, runtime, and benchmark conditions |
 | End-to-end correlation propagation | Not claimed | The July correlation propagation change was reverted |

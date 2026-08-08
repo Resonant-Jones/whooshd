@@ -22,7 +22,7 @@ def _make_request(messages=None, thread_id=None):
         "threadwake": {
             "enabled": True,
             "mode": "ephemeral",
-            "scope": "thread",
+            "scope": "thread" if thread_id else "request",
             "min_stable_prefix_tokens": 1,
         },
     }

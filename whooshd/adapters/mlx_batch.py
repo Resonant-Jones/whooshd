@@ -26,11 +26,14 @@ def probe_mlx_batch_generate_capability() -> RealBatchFeasibilityReport:
     # Check import availability.
     try:
         from mlx_lm import batch_generate  # noqa: F401
-    except ImportError:
+    except Exception as exc:
         return RealBatchFeasibilityReport(
             backend=RealBatchBackend.MLX,
             status=RealBatchFeasibilityStatus.UNSUPPORTED,
-            notes=("mlx_lm.batch_generate not importable",),
+            notes=(
+                "mlx_lm.batch_generate unavailable",
+                f"probe_failure={type(exc).__name__}",
+            ),
         )
 
     # Check function signature compatibility.

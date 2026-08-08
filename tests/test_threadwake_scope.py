@@ -46,6 +46,11 @@ class TestThreadScope:
         result = index.get("key-1", ScopeContext())
         assert result is None
 
+    def test_unscoped_thread_entry_never_matches_unscoped_lookup(self):
+        index = ThreadWakeIndex()
+        _put(index, "key-1", scope="thread", scope_context=ScopeContext())
+        assert index.get("key-1", ScopeContext()) is None
+
 
 # ── user scope ─────────────────────────────────────────────────────────────
 

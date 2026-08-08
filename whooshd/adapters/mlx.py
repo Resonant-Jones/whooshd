@@ -89,7 +89,7 @@ class MLXInferenceAdapter:
         try:
             from mlx_lm import batch_generate  # noqa: F401
             return "experimental"
-        except ImportError:
+        except Exception:
             return "unsupported"
 
     async def chat_completion_batch(self, requests, contexts=None):

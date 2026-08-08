@@ -33,7 +33,7 @@ def _make_request(
         threadwake_config = {
             "enabled": True,
             "mode": "ephemeral",
-            "scope": "thread",
+            "scope": "thread" if thread_id else "request",
             "min_stable_prefix_tokens": 1,
         }
     data = {

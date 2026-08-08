@@ -71,9 +71,9 @@ def verify_mlx_cancellation_surface() -> MLXPrimitiveVerification:
     try:
         from mlx_lm import stream_generate  # noqa: F401
         notes.append("stream_generate can be stopped at the caller boundary")
-    except ImportError:
+    except Exception as exc:
         status = MLXPrimitiveVerificationStatus.UNKNOWN
-        notes.append("mlx_lm.stream_generate not importable")
+        notes.append(f"mlx_lm.stream_generate unavailable ({type(exc).__name__})")
     notes.append("backend cancellation during active decode step is not proven")
     return MLXPrimitiveVerification(
         primitive=MLXPrimitiveName.CANCELLATION_HOOK,
@@ -99,9 +99,9 @@ def verify_mlx_sampling_state_surface() -> MLXPrimitiveVerification:
     try:
         from mlx_lm import generate  # noqa: F401
         notes.append("generate() accepts sampling parameters (temperature, top_p, max_tokens)")
-    except ImportError:
+    except Exception as exc:
         status = MLXPrimitiveVerificationStatus.UNKNOWN
-        notes.append("mlx_lm.generate not importable")
+        notes.append(f"mlx_lm.generate unavailable ({type(exc).__name__})")
     notes.append("per-request isolation in continuous decode loop not proven")
     return MLXPrimitiveVerification(
         primitive=MLXPrimitiveName.SAMPLING_STATE,

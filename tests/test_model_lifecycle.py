@@ -7,13 +7,20 @@ and the boundary between process liveness and model readiness.
 from __future__ import annotations
 
 import sys
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from httpx import ASGITransport, AsyncClient
 
 from whooshd.app import app
-from whooshd.contracts import ModelLifecycleState
+from whooshd.adapters.stub import StubInferenceAdapter
+from whooshd.contracts import (
+    ModelLifecycleState,
+    RuntimeHealth,
+    RuntimeHealthState,
+    RuntimeKind,
+)
+from whooshd.routing import RuntimeRouter
 from whooshd.runtime import RuntimeState, get_runtime
 
 
@@ -138,6 +145,106 @@ async def test_warmup_stub_marks_ready(client):
     body = resp.json()
     assert body["lifecycle_state"] == "ready"
     assert body["loaded"] is True
+
+
+def _warmup_adapter(
+    kind: str,
+    *,
+    succeeds: bool,
+) -> MagicMock:
+    adapter = MagicMock()
+    adapter.kind = kind
+    adapter.name = kind
+    adapter.model_id.return_value = f"{kind}-model"
+    adapter.is_loaded.return_value = False
+    adapter.warmup = AsyncMock(
+        side_effect=None if succeeds else RuntimeError("warmup failed")
+    )
+    adapter.unload = AsyncMock()
+    adapter.health = AsyncMock(
+        return_value=RuntimeHealth(
+            kind=kind,
+            enabled=True,
+            state=RuntimeHealthState.READY if succeeds else RuntimeHealthState.ERROR,
+            detail="ready" if succeeds else "warmup failed",
+        )
+    )
+    return adapter
+
+
+@pytest.mark.asyncio
+async def test_warmup_all_real_adapters_fail_leaves_ready_false(client, monkeypatch):
+    """Stub success must not mask total failure of real adapters."""
+    router = RuntimeRouter()
+    router.register(StubInferenceAdapter())
+    router.register(_warmup_adapter(RuntimeKind.LLAMA_CPP.value, succeeds=False))
+    monkeypatch.setattr("whooshd.app.get_router", lambda: router)
+
+    rt = get_runtime()
+    original_lifecycle = rt.model_lifecycle
+    try:
+        warmup = await client.post("/runtime/model/warmup")
+        ready = await client.get("/ready")
+        health = await client.get("/health")
+
+        assert warmup.status_code == 200
+        assert warmup.json()["lifecycle_state"] == "failed"
+        assert warmup.json()["adapter_results"][RuntimeKind.LLAMA_CPP.value].startswith("failed:")
+        assert rt.model_lifecycle == ModelLifecycleState.FAILED
+        assert ready.status_code == 503
+        assert ready.json()["ready"] is False
+        assert ready.json()["reason"] == "model_load_failed"
+        assert health.status_code == 200
+        assert health.json()["ok"] is True
+    finally:
+        rt.model_lifecycle = original_lifecycle
+
+
+@pytest.mark.asyncio
+async def test_warmup_one_real_adapter_succeeds_marks_ready(client, monkeypatch):
+    """A single real adapter is sufficient for partial-success readiness."""
+    router = RuntimeRouter()
+    router.register(StubInferenceAdapter())
+    router.register(_warmup_adapter(RuntimeKind.LLAMA_CPP.value, succeeds=False))
+    router.register(_warmup_adapter(RuntimeKind.MLX_LM_SERVER.value, succeeds=True))
+    monkeypatch.setattr("whooshd.app.get_router", lambda: router)
+
+    rt = get_runtime()
+    original_lifecycle = rt.model_lifecycle
+    try:
+        warmup = await client.post("/runtime/model/warmup")
+        ready = await client.get("/ready")
+
+        assert warmup.status_code == 200
+        assert warmup.json()["lifecycle_state"] == "ready"
+        assert warmup.json()["adapter_results"][RuntimeKind.MLX_LM_SERVER.value] == "ready"
+        assert rt.model_lifecycle == ModelLifecycleState.READY
+        assert ready.status_code == 200
+        assert ready.json()["ready"] is True
+    finally:
+        rt.model_lifecycle = original_lifecycle
+
+
+@pytest.mark.asyncio
+async def test_warmup_stub_only_retains_ready_behavior(client, monkeypatch):
+    """The deterministic stub remains sufficient when no real adapter exists."""
+    router = RuntimeRouter()
+    router.register(StubInferenceAdapter())
+    monkeypatch.setattr("whooshd.app.get_router", lambda: router)
+
+    rt = get_runtime()
+    original_lifecycle = rt.model_lifecycle
+    try:
+        warmup = await client.post("/runtime/model/warmup")
+        ready = await client.get("/ready")
+
+        assert warmup.status_code == 200
+        assert warmup.json()["lifecycle_state"] == "ready"
+        assert rt.model_lifecycle == ModelLifecycleState.READY
+        assert ready.status_code == 200
+        assert ready.json()["ready"] is True
+    finally:
+        rt.model_lifecycle = original_lifecycle
 
 
 # ── HTTP: /runtime/model/unload (stub) ──────────────────────────────────────

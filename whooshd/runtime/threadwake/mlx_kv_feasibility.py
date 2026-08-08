@@ -63,8 +63,8 @@ def probe_mlx_prompt_cache_api() -> dict[str, Any]:
     try:
         import mlx_lm
         result["mlx_lm_version"] = getattr(mlx_lm, "__version__", "unknown")
-    except ImportError:
-        result["blockers"].append("mlx_lm not installed")
+    except Exception as exc:
+        result["blockers"].append(f"mlx_lm unavailable ({type(exc).__name__})")
         return result
 
     try:
@@ -78,8 +78,10 @@ def probe_mlx_prompt_cache_api() -> dict[str, Any]:
         result["save_prompt_cache"] = callable(save_prompt_cache)
         result["load_prompt_cache"] = callable(load_prompt_cache)
         result["trim_prompt_cache"] = callable(trim_prompt_cache)
-    except ImportError:
-        result["blockers"].append("mlx_lm.models.cache not importable")
+    except Exception as exc:
+        result["blockers"].append(
+            f"mlx_lm.models.cache unavailable ({type(exc).__name__})"
+        )
 
     # Check if the generate module contains prompt_cache support.
     # prompt_cache travels through **kwargs in stream_generate, so we

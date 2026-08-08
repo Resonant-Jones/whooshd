@@ -14,6 +14,7 @@ from whooshd import cli
 @pytest.fixture
 def isolated_home(tmp_path, monkeypatch):
     monkeypatch.setattr(cli.Path, "home", lambda: tmp_path)
+    monkeypatch.setattr(cli, "process_matches_launch_nonce", lambda pid, nonce: True)
     return tmp_path
 
 
@@ -142,6 +143,18 @@ def test_stale_pid_file_is_handled_safely(isolated_home, monkeypatch, capsys):
     assert cli.main(["up"]) == 0
     assert "Removing stale Whoosh'd PID file" in capsys.readouterr().out
     assert (isolated_home / ".whooshd" / "whooshd.pid").read_text() == "1010\n"
+
+
+def test_stop_refuses_unverified_live_pid(isolated_home, monkeypatch, capsys):
+    (isolated_home / ".whooshd").mkdir()
+    (isolated_home / ".whooshd" / "whooshd.pid").write_text("4242\n")
+    monkeypatch.setattr(cli, "process_matches_launch_nonce", lambda pid, nonce: False)
+    monkeypatch.setattr(cli, "is_process_alive", lambda pid: True)
+    monkeypatch.setattr(cli, "is_process_group_alive", lambda pid: True)
+
+    assert cli.main(["down"]) == 2
+    assert "refusing to signal" in capsys.readouterr().err
+    assert (isolated_home / ".whooshd" / "whooshd.pid").exists()
 
 
 def test_unknown_process_on_port_is_not_killed(isolated_home, monkeypatch, capsys):

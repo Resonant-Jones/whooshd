@@ -41,6 +41,7 @@ def _obs_request(**overrides):
     data = {
         "model": "stub-model",
         "messages": [{"role": "user", "content": "Hello"}],
+        "thread_id": "test-thread",
         "threadwake": {
             "enabled": True, "mode": "observe", "scope": "thread", "min_stable_prefix_tokens": 1,
         },
@@ -172,7 +173,7 @@ class TestKVEventsAfterExecution:
         req = ChatCompletionRequest.model_validate({
             "model": "test-model",
             "messages": [{"role": "system", "content": "stable " * 8}, {"role": "user", "content": "hello"}],
-            "threadwake": {"enabled": True, "mode": "ephemeral", "scope": "thread", "min_stable_prefix_tokens": 1},
+            "threadwake": {"enabled": True, "mode": "ephemeral", "scope": "request", "min_stable_prefix_tokens": 1},
         })
 
         def _gen(r, p):
@@ -187,7 +188,7 @@ class TestKVEventsAfterExecution:
         req = ChatCompletionRequest.model_validate({
             "model": "test-model",
             "messages": [{"role": "system", "content": "stable " * 8}, {"role": "user", "content": "hello"}],
-            "threadwake": {"enabled": True, "mode": "ephemeral", "scope": "thread", "min_stable_prefix_tokens": 1},
+            "threadwake": {"enabled": True, "mode": "ephemeral", "scope": "request", "min_stable_prefix_tokens": 1},
         })
 
         def _gen(r, p):

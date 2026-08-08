@@ -79,10 +79,13 @@ def probe_mlx_token_loop_feasibility() -> BackendTokenLoopFeasibilityReport:
             "generate_step exposes per-token generation",
             "stream_generate exposes per-chunk GenerationResponse",
         )
-    except ImportError:
+    except Exception as exc:
         token_step = False
         stream_chunk = False
-        notes = ("mlx_lm.generate.generate_step not importable",)
+        notes = (
+            "mlx_lm.generate.generate_step unavailable",
+            f"probe_failure={type(exc).__name__}",
+        )
 
     missing: list[TokenLoopMissingPrimitive] = []
     if not token_step:

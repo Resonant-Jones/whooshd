@@ -191,7 +191,8 @@ class TestBatchHardening:
             ra = await asyncio.wait_for(task_a, timeout=10)
             rb = await asyncio.wait_for(task_b, timeout=10)
 
-            # Both should return 200 (batch error responses).
+            # The selected entry is not batch-claimed after the queue removes
+            # it; this path therefore falls back to ordinary execution.
             assert ra.status_code == 200
             assert rb.status_code == 200
 

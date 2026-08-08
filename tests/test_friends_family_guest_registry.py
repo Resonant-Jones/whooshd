@@ -81,9 +81,9 @@ async def test_guest_profile_inventory_and_allowlist_reject_before_provider(
                 },
             )
 
-        assert rejected.status_code == 400
-        assert rejected.json()["code"] == "MODEL_NOT_FOUND"
-        assert "not allowed by the active runtime registry" in rejected.json()["message"]
+        assert rejected.status_code == 404
+        assert rejected.json()["code"] == "model_not_found"
+        assert rejected.json()["details"]["model_alias"] == "unlisted-guest-model"
         provider.chat_completion.assert_not_awaited()
     finally:
         runtime._registry = original_registry
