@@ -149,12 +149,139 @@ def test_stop_refuses_unverified_live_pid(isolated_home, monkeypatch, capsys):
     (isolated_home / ".whooshd").mkdir()
     (isolated_home / ".whooshd" / "whooshd.pid").write_text("4242\n")
     monkeypatch.setattr(cli, "process_matches_launch_nonce", lambda pid, nonce: False)
+    monkeypatch.setattr(cli, "process_matches_legacy_daemon", lambda pid: False)
     monkeypatch.setattr(cli, "is_process_alive", lambda pid: True)
     monkeypatch.setattr(cli, "is_process_group_alive", lambda pid: True)
 
     assert cli.main(["down"]) == 2
     assert "refusing to signal" in capsys.readouterr().err
     assert (isolated_home / ".whooshd" / "whooshd.pid").exists()
+
+
+def test_process_group_lookup_supplies_portable_match_all_pattern(monkeypatch):
+    captured: dict[str, object] = {}
+
+    def fake_run(command, **kwargs):
+        captured["command"] = command
+        captured["kwargs"] = kwargs
+        return SimpleNamespace(returncode=0, stdout="4242\n4243\n")
+
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+
+    assert cli._process_group_member_pids(4242) == ["4242", "4243"]
+    assert captured["command"] == ["pgrep", "-g", "4242", ".*"]
+    assert captured["kwargs"] == {
+        "capture_output": True,
+        "text": True,
+        "check": False,
+    }
+
+
+def test_nonce_verification_accepts_surviving_group_member(monkeypatch):
+    monkeypatch.setattr(cli, "_process_group_member_pids", lambda pgid: ["4243"])
+    monkeypatch.setattr(
+        cli,
+        "_process_command",
+        lambda pid, *, include_environment=False: (
+            "WHOOSHD_LAUNCH_NONCE=nonce-123 "
+            f"{sys.executable} -m uvicorn whooshd.app:app"
+            if include_environment
+            else f"{sys.executable} -m uvicorn whooshd.app:app"
+        ),
+    )
+
+    assert cli.process_matches_launch_nonce(4242, "nonce-123")
+
+
+def test_nonce_verification_rejects_environment_only_command_spoof(monkeypatch):
+    monkeypatch.setattr(cli, "_process_group_member_pids", lambda pgid: ["4243"])
+    monkeypatch.setattr(
+        cli,
+        "_process_command",
+        lambda pid, *, include_environment=False: (
+            "WHOOSHD_LAUNCH_NONCE=nonce-123 "
+            "python -m uvicorn whooshd.app:app"
+            if include_environment
+            else "python unrelated_service.py"
+        ),
+    )
+
+    assert not cli.process_matches_launch_nonce(4242, "nonce-123")
+
+
+def test_legacy_verification_requires_whooshd_group_member(monkeypatch):
+    monkeypatch.setattr(cli, "_process_group_member_pids", lambda pgid: ["4243", "4244"])
+    monkeypatch.setattr(
+        cli,
+        "_process_command",
+        lambda pid, *, include_environment=False: (
+            f"{sys.executable} -m uvicorn whooshd.app:app"
+            if pid == "4243"
+            else "python unrelated_service.py"
+        ),
+    )
+    assert cli.process_matches_legacy_daemon(4242)
+
+    monkeypatch.setattr(cli, "_process_group_member_pids", lambda pgid: ["4244"])
+    monkeypatch.setattr(
+        cli,
+        "_process_command",
+        lambda pid, *, include_environment=False: "python unrelated_service.py",
+    )
+    assert not cli.process_matches_legacy_daemon(4242)
+
+
+def test_start_preserves_verified_legacy_group_after_leader_exit(
+    isolated_home, monkeypatch, capsys
+):
+    state = isolated_home / ".whooshd"
+    state.mkdir()
+    (state / "whooshd.pid").write_text("4242\n")
+
+    monkeypatch.setattr(cli, "is_process_alive", lambda pid: False)
+    monkeypatch.setattr(cli, "is_process_group_alive", lambda pid: True)
+    monkeypatch.setattr(cli, "process_matches_launch_nonce", lambda pid, nonce: False)
+    monkeypatch.setattr(cli, "process_matches_legacy_daemon", lambda pid: True)
+    monkeypatch.setattr(
+        cli,
+        "launch_server",
+        lambda command, env: pytest.fail("must not start a second daemon"),
+    )
+
+    assert cli.main(["up"]) == 0
+    assert "tracked process group 4242" in capsys.readouterr().out
+
+
+def test_force_stop_recovers_verified_legacy_group_after_leader_exit(
+    isolated_home, monkeypatch
+):
+    pid_file = isolated_home / ".whooshd" / "whooshd.pid"
+    pid_file.parent.mkdir()
+    pid_file.write_text("4242\n")
+    signaled_groups: list[tuple[int, int]] = []
+    wait_results = iter([False, True])
+
+    monkeypatch.setattr(cli, "is_process_alive", lambda pid: False)
+    monkeypatch.setattr(cli, "is_process_group_alive", lambda pid: True)
+    monkeypatch.setattr(cli, "process_matches_launch_nonce", lambda pid, nonce: False)
+    monkeypatch.setattr(cli, "process_matches_legacy_daemon", lambda pid: True)
+    monkeypatch.setattr(
+        cli,
+        "signal_process_group",
+        lambda pid, sig: signaled_groups.append((pid, sig)) or True,
+    )
+    monkeypatch.setattr(
+        cli,
+        "wait_for_process_group_exit",
+        lambda pid, timeout: next(wait_results),
+    )
+
+    assert cli.main(["down", "--force"]) == 0
+    assert signaled_groups == [
+        (4242, cli.signal.SIGTERM),
+        (4242, cli.signal.SIGKILL),
+    ]
+    assert not pid_file.exists()
 
 
 def test_unknown_process_on_port_is_not_killed(isolated_home, monkeypatch, capsys):

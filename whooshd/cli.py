@@ -120,29 +120,89 @@ def clear_tracked_pid() -> None:
         pass
 
 
-def process_matches_launch_nonce(pid: int, nonce: str | None) -> bool:
-    """Verify the tracked PID is still the Whoosh'd process we launched.
+def _process_group_member_pids(pgid: int) -> list[str]:
+    """Return process IDs for members of a tracked process group.
 
-    The nonce is inherited by the daemon and is visible in the process
-    environment through ``ps`` on supported local platforms. Refuse to signal
-    a process when identity cannot be established.
+    ``start_new_session=True`` makes the launched process PID its process-group
+    ID.  The leader can exit while a reloader child remains, so inspecting only
+    the original PID is not sufficient for safe lifecycle control.
     """
-    if not nonce:
-        return False
     try:
-        result = subprocess.run(
-            ["ps", "eww", "-p", str(pid), "-o", "command="],
+        members = subprocess.run(
+            ["pgrep", "-g", str(pgid), ".*"],
             capture_output=True,
             text=True,
             check=False,
         )
     except OSError:
+        return []
+    if members.returncode != 0:
+        return []
+
+    return [raw_pid for raw_pid in members.stdout.split() if raw_pid.isdigit()]
+
+
+def _process_command(pid: str, *, include_environment: bool = False) -> str | None:
+    """Return a process command, optionally including its environment."""
+    command = ["ps"]
+    if include_environment:
+        command.append("eww")
+    command.extend(["-p", pid, "-o", "command="])
+    try:
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError:
+        return None
+    if result.returncode != 0 or not result.stdout.strip():
+        return None
+    return result.stdout.strip()
+
+
+def _is_whooshd_server_command(command: str) -> bool:
+    """Return whether a process command matches the CLI's Uvicorn launch."""
+    return "uvicorn" in command and "whooshd.app:app" in command
+
+
+def process_matches_launch_nonce(pgid: int, nonce: str | None) -> bool:
+    """Verify a tracked process group contains our nonce-bearing daemon."""
+    if not nonce:
         return False
-    command = result.stdout
-    return (
-        result.returncode == 0
-        and "whooshd.app:app" in command
-        and f"WHOOSHD_LAUNCH_NONCE={nonce}" in command
+    for pid in _process_group_member_pids(pgid):
+        command = _process_command(pid)
+        if not command or not _is_whooshd_server_command(command):
+            continue
+        environment_command = _process_command(pid, include_environment=True)
+        if (
+            environment_command
+            and f"WHOOSHD_LAUNCH_NONCE={nonce}" in environment_command
+        ):
+            return True
+    return False
+
+
+def process_matches_legacy_daemon(pgid: int) -> bool:
+    """Verify a pre-nonce Whoosh'd process group for one-time compatibility.
+
+    Legacy control is available only when no nonce file exists.  It still
+    requires an expected Uvicorn Whoosh'd command in the tracked group; an
+    arbitrary live PID or process group remains outside the CLI's authority.
+    """
+    return any(
+        _is_whooshd_server_command(command)
+        for pid in _process_group_member_pids(pgid)
+        if (command := _process_command(pid))
+    )
+
+
+def process_matches_tracked_daemon(pgid: int) -> bool:
+    """Verify a nonce-bearing daemon or a narrowly defined legacy daemon."""
+    nonce = read_launch_nonce()
+    return process_matches_launch_nonce(pgid, nonce) or (
+        nonce is None and process_matches_legacy_daemon(pgid)
     )
 
 
@@ -221,15 +281,18 @@ def wait_until_reachable(host: str, port: int, timeout: float) -> bool:
 def start_server(args: argparse.Namespace) -> int:
     tracked_pid = read_tracked_pid()
     if tracked_pid is not None:
-        if is_process_alive(tracked_pid) and process_matches_launch_nonce(
-            tracked_pid, read_launch_nonce()
-        ):
-            print(f"Whoosh'd is already running with PID {tracked_pid}.")
-            return 0
-        if is_process_alive(tracked_pid):
+        process_alive = is_process_alive(tracked_pid)
+        group_alive = is_process_group_alive(tracked_pid)
+        if process_alive or group_alive:
+            if process_matches_tracked_daemon(tracked_pid):
+                print(
+                    f"Whoosh'd is already running with tracked process group "
+                    f"{tracked_pid}."
+                )
+                return 0
             print(
-                f"Tracked PID {tracked_pid} is alive but is not the recorded "
-                "Whoosh'd process; refusing to control it.",
+                f"Tracked process group {tracked_pid} is alive but is not the "
+                "recorded Whoosh'd process family; refusing to control it.",
                 file=sys.stderr,
             )
             return 2
@@ -284,10 +347,10 @@ def stop_server(args: argparse.Namespace) -> int:
         clear_tracked_pid()
         return 0
 
-    if not process_matches_launch_nonce(tracked_pid, read_launch_nonce()):
+    if not process_matches_tracked_daemon(tracked_pid):
         print(
-            f"Tracked PID {tracked_pid} is not verified as the recorded "
-            "Whoosh'd process; refusing to signal it.",
+            f"Tracked process group {tracked_pid} is not verified as the "
+            "recorded Whoosh'd process family; refusing to signal it.",
             file=sys.stderr,
         )
         return 2
