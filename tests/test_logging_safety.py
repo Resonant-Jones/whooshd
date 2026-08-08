@@ -7,6 +7,7 @@ import logging
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from uvicorn.logging import DefaultFormatter
 
 from whooshd.adapters.llama_cpp import (
     LlamaCppAdapterConfig,
@@ -106,6 +107,25 @@ def test_framework_named_logger_is_also_bounded(caplog):
     text = "\n".join(record.getMessage() for record in caplog.records)
     assert "FRAMEWORK_RESPONSE_BODY_SENTINEL" not in text
     assert "FRAMEWORK_TOKEN_SENTINEL" not in text
+
+
+def test_uvicorn_color_message_keeps_format_placeholders():
+    logger = logging.getLogger("uvicorn.error")
+    record = logger.makeRecord(
+        logger.name,
+        logging.INFO,
+        __file__,
+        1,
+        "Uvicorn running on %s://%s:%d",
+        ("http", "127.0.0.1", 8000),
+        None,
+        extra={"color_message": "Uvicorn running on %s://%s:%d"},
+    )
+    formatter = DefaultFormatter(use_colors=True)
+    rendered = formatter.format(record)
+    assert "TypeError" not in rendered
+    assert "127.0.0.1" not in rendered
+    assert "8000" in rendered
 
 
 class _StreamResponse:
@@ -212,8 +232,8 @@ def test_model_launch_logs_presence_only_and_exception_drops_stderr(caplog):
     text = _captured_text(caplog)
     assert "SECRET_BINARY_PATH_SENTINEL" not in text
     assert "SECRET_MODEL_PATH_SENTINEL" not in text
-    assert "binary_path_present=True" in text
-    assert "model_path_present=True" in text
+    assert "binary=<redacted>" in text
+    assert "model=<redacted>" in text
 
     process = ManagedLlamaServer(config)
     with patch("os.path.isfile", return_value=True), patch(

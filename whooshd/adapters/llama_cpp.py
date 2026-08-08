@@ -322,7 +322,7 @@ class ManagedLlamaServer:
             )
         except OSError as exc:
             raise LlamaCppProcessError(
-                f"Failed to launch llama-server: {exc}"
+                "Failed to launch llama-server: OSError"
             ) from exc
 
         self._started_at = time.monotonic()
@@ -1110,7 +1110,7 @@ def _classify_health_exception(exc: Exception, timeout: float) -> _LlamaCppHealt
         reachable=False,
         runner_status="degraded",
         model_lifecycle="failed",
-        detail=f"Unexpected health probe error: {exc}",
+        detail=f"Unexpected health probe error: {exc_name}",
     )
 
 

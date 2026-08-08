@@ -11,6 +11,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
+import uuid
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -30,6 +31,10 @@ def state_dir() -> Path:
 
 def pid_path() -> Path:
     return state_dir() / "whooshd.pid"
+
+
+def launch_nonce_path() -> Path:
+    return state_dir() / "whooshd.launch-nonce"
 
 
 def log_path() -> Path:
@@ -86,6 +91,19 @@ def read_tracked_pid() -> int | None:
         return None
 
 
+def read_launch_nonce() -> str | None:
+    try:
+        value = launch_nonce_path().read_text(encoding="utf-8").strip()
+    except FileNotFoundError:
+        return None
+    return value or None
+
+
+def write_launch_nonce(nonce: str) -> None:
+    state_dir().mkdir(parents=True, exist_ok=True)
+    launch_nonce_path().write_text(f"{nonce}\n", encoding="utf-8")
+
+
 def write_tracked_pid(pid: int) -> None:
     state_dir().mkdir(parents=True, exist_ok=True)
     pid_path().write_text(f"{pid}\n", encoding="utf-8")
@@ -96,6 +114,36 @@ def clear_tracked_pid() -> None:
         pid_path().unlink()
     except FileNotFoundError:
         pass
+    try:
+        launch_nonce_path().unlink()
+    except FileNotFoundError:
+        pass
+
+
+def process_matches_launch_nonce(pid: int, nonce: str | None) -> bool:
+    """Verify the tracked PID is still the Whoosh'd process we launched.
+
+    The nonce is inherited by the daemon and is visible in the process
+    environment through ``ps`` on supported local platforms. Refuse to signal
+    a process when identity cannot be established.
+    """
+    if not nonce:
+        return False
+    try:
+        result = subprocess.run(
+            ["ps", "eww", "-p", str(pid), "-o", "command="],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError:
+        return False
+    command = result.stdout
+    return (
+        result.returncode == 0
+        and "whooshd.app:app" in command
+        and f"WHOOSHD_LAUNCH_NONCE={nonce}" in command
+    )
 
 
 def is_port_occupied(host: str, port: int) -> bool:
@@ -173,9 +221,18 @@ def wait_until_reachable(host: str, port: int, timeout: float) -> bool:
 def start_server(args: argparse.Namespace) -> int:
     tracked_pid = read_tracked_pid()
     if tracked_pid is not None:
-        if is_process_alive(tracked_pid):
+        if is_process_alive(tracked_pid) and process_matches_launch_nonce(
+            tracked_pid, read_launch_nonce()
+        ):
             print(f"Whoosh'd is already running with PID {tracked_pid}.")
             return 0
+        if is_process_alive(tracked_pid):
+            print(
+                f"Tracked PID {tracked_pid} is alive but is not the recorded "
+                "Whoosh'd process; refusing to control it.",
+                file=sys.stderr,
+            )
+            return 2
         print(f"Removing stale Whoosh'd PID file for PID {tracked_pid}.")
         clear_tracked_pid()
 
@@ -192,8 +249,12 @@ def start_server(args: argparse.Namespace) -> int:
         return 2
 
     command = build_uvicorn_command(args.host, args.port, args.reload)
-    process = launch_server(command, build_server_env(args))
+    launch_nonce = uuid.uuid4().hex
+    env = build_server_env(args)
+    env["WHOOSHD_LAUNCH_NONCE"] = launch_nonce
+    process = launch_server(command, env)
     write_tracked_pid(process.pid)
+    write_launch_nonce(launch_nonce)
     print(f"Started Whoosh'd with PID {process.pid}.")
     print("Logs: available=True")
 
@@ -222,6 +283,14 @@ def stop_server(args: argparse.Namespace) -> int:
         print(f"Tracked Whoosh'd PID {tracked_pid} is stale; removing PID file.")
         clear_tracked_pid()
         return 0
+
+    if not process_matches_launch_nonce(tracked_pid, read_launch_nonce()):
+        print(
+            f"Tracked PID {tracked_pid} is not verified as the recorded "
+            "Whoosh'd process; refusing to signal it.",
+            file=sys.stderr,
+        )
+        return 2
 
     signal_process_group(tracked_pid, signal.SIGTERM)
     if wait_for_process_group_exit(tracked_pid, args.timeout):

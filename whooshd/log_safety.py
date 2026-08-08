@@ -322,6 +322,27 @@ def _sanitize_freeform(message: Any) -> str:
     return f"log_event={REDACTED} chars={len(message)}"
 
 
+def _sanitize_format_template(message: str) -> str:
+    """Bound a framework format template without dropping its placeholders.
+
+    Uvicorn's colored formatter swaps ``record.msg`` for its
+    ``color_message`` extra field while retaining the original positional
+    arguments.  Sanitizing that field as ordinary free-form text would remove
+    the placeholders and make the logging formatter raise a ``TypeError``.
+    """
+    matches = list(_PLACEHOLDER_RE.finditer(message))
+    if not matches:
+        return _sanitize_freeform(message)
+    parts: list[str] = []
+    previous_end = 0
+    for match in matches:
+        parts.append(_sanitize_freeform(message[previous_end:match.start()]))
+        parts.append(match.group(0))
+        previous_end = match.end()
+    parts.append(_sanitize_freeform(message[previous_end:]))
+    return "".join(parts)
+
+
 def sanitize_record(
     record: logging.LogRecord, *, force: bool = False
 ) -> logging.LogRecord:
@@ -350,6 +371,9 @@ def sanitize_record(
         record.stack_info = None
     for key, value in list(record.__dict__.items()):
         if key in _STANDARD_FIELDS or key.startswith("_"):
+            continue
+        if key == "color_message" and isinstance(value, str):
+            setattr(record, key, _sanitize_format_template(value))
             continue
         setattr(record, key, _sanitize_value(value, key))
     setattr(record, _SANITIZED, True)
