@@ -366,7 +366,13 @@ async def models() -> ModelsResponse:
 
 
 def _init_lifecycle():
-    """If any adapter reports loaded, mark the runtime lifecycle as ready."""
+    """Mark ready when a configured adapter can serve.
+
+    The deterministic stub is intentionally considered ready when it is the
+    only configured adapter, because that is the supported no-model test
+    runtime. Deployments with real adapters use the warmup result gate above;
+    stub readiness must not mask a configured real-runtime failure.
+    """
     rt = get_runtime()
     router = get_router()
     for adapter in router._adapters.values():
@@ -955,9 +961,7 @@ async def _try_execute_live_batch(
         get_batch_execution_min_size,
         get_batch_execution_max_size,
     )
-    from whooshd.contracts import ErrorCode, ErrorResponse, ChatCompletionResponse, ChatCompletionChoice, ChatCompletionUsage, ChatMessage
-    import time as _time
-    import uuid as _uuid
+    from whooshd.contracts import ErrorCode
 
     if not get_batch_execution_enabled():
         return None
@@ -1000,27 +1004,24 @@ async def _try_execute_live_batch(
     if not futures:
         return None
 
-    def _batch_error_response(request_id: str, message: str) -> ChatCompletionResponse:
-        """Build a safe error response for a batch peer."""
-        return ChatCompletionResponse(
-            id=f"chatcmpl-batch-err-{_uuid.uuid4().hex[:8]}",
-            object="chat.completion",
-            created=int(_time.time()),
-            model="batch-error",
-            choices=[
-                ChatCompletionChoice(
-                    index=0,
-                    message=ChatMessage(role="assistant", content=f"[batch error: {message}]"),
-                    finish_reason="error",
-                )
-            ],
-            usage=ChatCompletionUsage(prompt_tokens=0, completion_tokens=0, total_tokens=0),
+    def _batch_error_response(entry, message: str) -> JSONResponse:
+        """Build a canonical non-success response for a failed batch."""
+        return JSONResponse(
+            status_code=502,
+            content=_error_body(
+                ErrorCode.UPSTREAM_PROTOCOL_ERROR,
+                "The inference batch failed before producing a valid response.",
+                http_status=502,
+                request_id=entry.request_id,
+                upstream_request_id=entry.upstream_request_id,
+                details={"batch_failure": message},
+            ),
         )
 
     def _resolve_all_with_error(message: str) -> Any | None:
         """Resolve all claimed futures with an error response."""
         error_results = [
-            (e.request_id, _batch_error_response(e.request_id, message))
+            (e.request_id, _batch_error_response(e, message))
             for e in active_group
         ]
         for e in active_group:
@@ -1524,7 +1525,20 @@ async def runtime_model_warmup():
     rt.begin_warmup()
     try:
         results = await router.warmup_all()
-        rt.complete_warmup()
+        real_adapter_ready = any(
+            kind != RuntimeKind.STUB.value and status == "ready"
+            for kind, status in results.items()
+        )
+        has_real_adapters = any(
+            kind != RuntimeKind.STUB.value for kind in results
+        )
+        if has_real_adapters and not real_adapter_ready:
+            rt.fail_warmup(
+                error_code="MODEL_LOAD_FAILED",
+                error_message="All non-stub adapters failed warmup.",
+            )
+        else:
+            rt.complete_warmup()
     except Exception as exc:
         rt.fail_warmup(
             error_code="MODEL_LOAD_FAILED",
@@ -1542,7 +1556,9 @@ async def runtime_model_warmup():
 
     configured = get_advertised_model_id()
     return rt.build_model_snapshot(
-        adapter_name="multi-runtime", configured_model=configured
+        adapter_name="multi-runtime",
+        configured_model=configured,
+        adapter_results=results,
     )
 
 

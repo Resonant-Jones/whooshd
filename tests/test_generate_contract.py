@@ -74,6 +74,12 @@ async def test_generate_request_id_passthrough(client):
     assert body["request_id"] == "my-req-42"
 
 
+def test_generate_request_id_is_correlation_only():
+    req = GenerateRequest(prompt="test", request_id="my-req-42")
+    assert req.client_request_id == "my-req-42"
+    assert req.request_id == "my-req-42"
+
+
 @pytest.mark.asyncio
 async def test_generate_model_id_passthrough(client):
     resp = await client.post(

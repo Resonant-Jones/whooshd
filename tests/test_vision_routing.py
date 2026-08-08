@@ -221,7 +221,7 @@ class TestMlxVlmConcurrency:
 class TestVisionRoutingHTTP:
     @pytest.mark.asyncio
     async def test_image_request_to_text_model_rejected(self):
-        """Image request with a text-only model returns 400."""
+        """Image request with a text-only model returns 422."""
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as client:
             resp = await client.post("/v1/chat/completions", json={
@@ -232,8 +232,8 @@ class TestVisionRoutingHTTP:
                 ]}],
                 "stream": False,
             })
-            assert resp.status_code == 400
-            assert "vision" in resp.json()["message"].lower()
+            assert resp.status_code == 422
+            assert "image input" in resp.json()["message"].lower()
 
     @pytest.mark.asyncio
     async def test_text_request_to_text_model_accepted(self):

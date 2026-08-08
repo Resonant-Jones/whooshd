@@ -205,13 +205,24 @@ class ErrorResponse(BaseModel):
 class GenerateRequest(BaseModel):
     """POST /v1/generate request body."""
 
+    model_config = {"populate_by_name": True}
+
     prompt: str = Field(..., min_length=1, description="Input text prompt")
     model_id: Optional[str] = Field(None, description="Target model ID; uses active model if omitted")
     max_tokens: int = Field(256, ge=1, le=16384, description="Maximum tokens to generate")
     temperature: float = Field(0.7, ge=0.0, le=2.0, description="Sampling temperature")
     top_p: float = Field(0.95, ge=0.0, le=1.0, description="Nucleus sampling threshold")
     stop: Optional[list[str]] = Field(None, description="Stop sequences")
-    request_id: Optional[str] = Field(None, description="Client-supplied idempotency key")
+    client_request_id: Optional[str] = Field(
+        None,
+        alias="request_id",
+        description="Client-supplied correlation identifier; not an idempotency key",
+    )
+
+    @property
+    def request_id(self) -> Optional[str]:
+        """Compatibility accessor for adapters expecting the legacy field name."""
+        return self.client_request_id
 
 
 class TokenUsage(BaseModel):
@@ -238,7 +249,10 @@ class GenerateResponse(BaseModel):
     """POST /v1/generate response body."""
 
     ok: bool = True
-    request_id: str = Field(..., description="Idempotency key for this generation")
+    request_id: str = Field(
+        ...,
+        description="Request correlation identifier; repeated values are not idempotent",
+    )
     model_id: Optional[str] = Field(None, description="Model that served the request")
     text: str = Field(..., description="Generated text")
     finish_reason: str = Field("stop", description="Reason generation stopped")
@@ -510,6 +524,11 @@ class CancellationToken:
     Adapters should check ``is_cancelled()`` between chunks and stop
     yielding when the token is set.  The runtime sets the token when
     the cancellation endpoint is called or the client disconnects.
+
+    Cancellation of a running non-streaming adapter call is best-effort:
+    adapters without an interruptible execution boundary may continue using
+    compute until their in-flight call returns.  The runtime discards the
+    late result and preserves the cancelled terminal lifecycle state.
     """
 
     def __init__(self, request_id: str) -> None:
@@ -571,6 +590,10 @@ class ModelRuntimeSnapshot(BaseModel):
     last_unloaded_at: Optional[float] = Field(None, description="Unix timestamp")
     last_error_code: Optional[str] = Field(None, description="ErrorCode from the most recent failure")
     last_error_message: Optional[str] = Field(None, description="Short error message (no tracebacks)")
+    adapter_results: dict[str, str] = Field(
+        default_factory=dict,
+        description="Per-adapter warmup results, without prompts or tracebacks",
+    )
 
 
 # ── Runtime Backend Metadata ────────────────────────────────────────────────
