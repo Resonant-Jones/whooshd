@@ -14,7 +14,7 @@ def _has_mlx() -> bool:
     try:
         import mlx_lm  # noqa: F401
         return True
-    except ImportError:
+    except Exception:
         return False
 
 

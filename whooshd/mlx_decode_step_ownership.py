@@ -70,7 +70,7 @@ def probe_mlx_decode_step_ownership() -> MLXDecodeStepOwnershipReport:
     try:
         import mlx_lm  # noqa: F401
         mlx_available = True
-    except ImportError:
+    except Exception:
         mlx_available = False
 
     if not mlx_available:
