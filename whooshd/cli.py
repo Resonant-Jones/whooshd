@@ -129,7 +129,7 @@ def _process_group_member_pids(pgid: int) -> list[str]:
     """
     try:
         members = subprocess.run(
-            ["pgrep", "-g", str(pgid)],
+            ["pgrep", "-g", str(pgid), ".*"],
             capture_output=True,
             text=True,
             check=False,

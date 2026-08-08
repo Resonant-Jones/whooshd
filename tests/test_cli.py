@@ -158,6 +158,25 @@ def test_stop_refuses_unverified_live_pid(isolated_home, monkeypatch, capsys):
     assert (isolated_home / ".whooshd" / "whooshd.pid").exists()
 
 
+def test_process_group_lookup_supplies_portable_match_all_pattern(monkeypatch):
+    captured: dict[str, object] = {}
+
+    def fake_run(command, **kwargs):
+        captured["command"] = command
+        captured["kwargs"] = kwargs
+        return SimpleNamespace(returncode=0, stdout="4242\n4243\n")
+
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+
+    assert cli._process_group_member_pids(4242) == ["4242", "4243"]
+    assert captured["command"] == ["pgrep", "-g", "4242", ".*"]
+    assert captured["kwargs"] == {
+        "capture_output": True,
+        "text": True,
+        "check": False,
+    }
+
+
 def test_nonce_verification_accepts_surviving_group_member(monkeypatch):
     monkeypatch.setattr(cli, "_process_group_member_pids", lambda pgid: ["4243"])
     monkeypatch.setattr(
