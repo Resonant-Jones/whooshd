@@ -31,9 +31,17 @@ def _reset_threadwake_manager():
     """Restore the original ThreadWakeManager after tests that inject
     a custom manager for fake KV/tokenizer backends."""
     import whooshd.app as app_mod
+    from whooshd.routing import reset_router as routing_reset
+
+    # Earlier inventory/lifecycle tests can replace the process-global
+    # router.  Route-smoke tests require the deterministic stub baseline.
+    routing_reset()
+    app_mod._init_router()
     original = app_mod._threadwake_manager
     yield
     app_mod._threadwake_manager = original
+    routing_reset()
+    app_mod._init_router()
 
 
 def _obs_request(**overrides):
@@ -405,6 +413,7 @@ class TestFakeBackendMissThenHit:
             payload = {
                 "model": "stub-model",
                 "messages": messages,
+                "thread_id": "thread-a",
                 "threadwake": {
                     "enabled": True,
                     "mode": "ephemeral",
@@ -425,8 +434,8 @@ class TestFakeBackendMissThenHit:
             health = tw_mgr.get_health()
             assert health["entry_count"] >= 1, f"expected cached entry, got {health}"
             assert health["ready_entries"] >= 1, f"expected ready entry, got {health}"
-            # Both requests hit the index (observe creates entry, execute finds it).
-            assert health["total_hits"] >= 2, f"expected index hits, got {health}"
+            # The second request finds the scoped entry created by the first.
+            assert health["total_hits"] >= 1, f"expected index hits, got {health}"
 
         finally:
             app_mod._threadwake_manager = original_mgr
@@ -472,6 +481,7 @@ class TestFakeBackendMissThenHit:
             payload = {
                 "model": "stub-model",
                 "messages": messages,
+                "thread_id": "thread-a",
                 "threadwake": {
                     "enabled": True,
                     "mode": "ephemeral",

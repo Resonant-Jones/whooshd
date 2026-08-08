@@ -5,6 +5,8 @@ from __future__ import annotations
 import pytest
 
 from whooshd.contracts import ChatCompletionRequest
+from whooshd.adapters.stub import StubInferenceAdapter
+from whooshd.runtime import RuntimeState
 from whooshd.runtime.threadwake.backend import BackendKVAdapterRegistry, FakeKVBackend
 from whooshd.runtime.threadwake.handles import KVCapability, KVHandle
 from whooshd.runtime.threadwake.index import ScopeContext, ThreadWakeIndex, EntryStatus
@@ -39,6 +41,40 @@ def _make_request(messages=None, threadwake_config=None, thread_id=None):
 
 def _gen(request, params):
     return [f"gen_{i}" for i in range(params.get("max_tokens", 4))]
+
+
+@pytest.mark.asyncio
+async def test_route_bridge_executes_adapter_once_after_threadwake_miss(monkeypatch):
+    """A ThreadWake miss must fall through without double generation."""
+    import whooshd.app as app_mod
+
+    class MissManager:
+        async def execute_ephemeral_chat_completion(self, *args, **kwargs):
+            return None
+
+    original_manager = app_mod._threadwake_manager
+    app_mod._threadwake_manager = MissManager()
+    try:
+        adapter = StubInferenceAdapter()
+        request = _make_request(thread_id="thread-a")
+        runtime = RuntimeState()
+        request_id = runtime.begin_request(model="test-model", stream=False)
+        runtime.mark_running(request_id)
+
+        result = await app_mod._execute_non_streaming_with_threadwake(
+            adapter,
+            request,
+            None,
+            runtime,
+            request_id,
+            backend="stub",
+            threadwake_request=request,
+        )
+
+        assert result.choices[0].message.content
+        assert adapter._chat_call_count == 1
+    finally:
+        app_mod._threadwake_manager = original_manager
 
 
 # ── Failing backend fallback ───────────────────────────────────────────────

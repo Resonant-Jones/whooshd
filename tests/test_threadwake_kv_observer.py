@@ -42,7 +42,9 @@ def _request(messages=None, thread_id=None, mode="ephemeral"):
         "model": "test-model",
         "messages": messages,
         "threadwake": {
-            "enabled": True, "mode": mode, "scope": "thread", "min_stable_prefix_tokens": 1,
+            "enabled": True, "mode": mode,
+            "scope": "thread" if thread_id else "request",
+            "min_stable_prefix_tokens": 1,
         },
     }
     if thread_id:

@@ -674,11 +674,11 @@ class ThreadWakeIndex:
         """Compare a hashed lookup id against an entry's hashed scope_id.
 
         Both sides are SHA-256 hashes of the relevant scope field.
-        If both are None, the match succeeds (neither side supplies scope
-        identification).  If only one is None, the match fails.
+        Missing identity fails closed for non-global scopes. A request with
+        no thread/user/project identity must not match another unscoped entry.
         """
         if lookup_id is None and entry_scope_id is None:
-            return True
+            return False
         if lookup_id is None or entry_scope_id is None:
             return False
         return lookup_id == entry_scope_id
