@@ -103,5 +103,20 @@ Whoosh'd-owned ID also returned in `X-Whoosh-Request-ID`; an optional
 values are bounded operational metadata and remain distinct through queues,
 batches, and adapter contexts.
 
+## Runtime qualification attestation
+
+`whooshd.runtime.v1` may additionally carry an optional
+`qualification_attestation` reference. It is target-scoped, additive, and
+bounded to the attestation schema/profile, optional digest metadata, and safe
+target binding fields. Ordinary inference remains valid when the reference is
+absent or its digest is unavailable.
+
+The complete retained `qualification_attestation`, when an exact loaded target
+can measure safe material evidence, is exposed through existing model inventory
+metadata rather than copied into completion responses. Neither form contains a
+raw model path, template or tokenizer content, credentials, prompts, or
+completions. An attestation records execution identity only: it does not grant
+tools or another capability. Codexify owns any future qualification comparison.
+
 For the shared HTTP error, retry, request-ID, and streaming-terminal contract,
 see [Control-Plane v1](control-plane-v1.md).

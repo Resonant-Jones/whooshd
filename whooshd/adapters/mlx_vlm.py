@@ -14,7 +14,9 @@ Whoosh'd owns:
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import shutil
 import subprocess
 import time
 from typing import AsyncIterator, Optional
@@ -48,6 +50,11 @@ from whooshd.contracts import (
     TokenUsage,
 )
 from whooshd.log_safety import exception_metadata
+from whooshd.qualification_attestation import (
+    RuntimeQualificationAttestation,
+    build_attestation,
+    collect_mlx_vlm_target_material,
+)
 
 # Optional httpx import.
 try:
@@ -120,6 +127,7 @@ class ManagedMlxVlmServer:
         self._config = config
         self._process: subprocess.Popen[str] | None = None
         self._started_at: float | None = None
+        self._executable: str | None = None
 
     @property
     def is_running(self) -> bool:
@@ -133,10 +141,16 @@ class ManagedMlxVlmServer:
     def returncode(self) -> int | None:
         return self._process.poll() if self._process else None
 
+    @property
+    def executable(self) -> str | None:
+        """Exact interpreter resolved for the current managed child."""
+        return self._executable
+
     def start(self) -> subprocess.Popen[str]:
         if self.is_running:
             raise MlxVlmProcessError(f"mlx-vlm already running (pid={self.pid})")
         argv = build_mlx_vlm_server_argv(self._config)
+        self._executable = shutil.which(argv[0])
         logger.info(
             "mlx_vlm.process.starting model_path_present=%s port=%s",
             bool(self._config.model), self._config.port,
@@ -156,7 +170,7 @@ class ManagedMlxVlmServer:
         if self._process is None:
             return
         if self._process.poll() is not None:
-            self._process = None; self._started_at = None; return
+            self._process = None; self._started_at = None; self._executable = None; return
         _pid = getattr(self._process, "pid", None)
         logger.info("mlx_vlm.process.stopping pid=%s", _pid)
         self._process.terminate()
@@ -169,7 +183,7 @@ class ManagedMlxVlmServer:
                 self._process.wait(timeout=timeout)
             except subprocess.TimeoutExpired:
                 logger.error("mlx_vlm.process.kill_failed pid=%s", _pid)
-        self._process = None; self._started_at = None
+        self._process = None; self._started_at = None; self._executable = None
 
     def restart(self) -> subprocess.Popen[str]:
         self.stop(); return self.start()
@@ -195,7 +209,7 @@ class ManagedMlxVlmServer:
         if self._process.poll() is not None:
             logger.warning("mlx_vlm.process.exited pid=%s returncode=%s",
                            self._process.pid, self._process.returncode)
-            self._process = None; self._started_at = None
+            self._process = None; self._started_at = None; self._executable = None
             return True
         return False
 
@@ -243,6 +257,13 @@ class MlxVlmAdapter:
     def __init__(self, config: MlxVlmConfig | None = None) -> None:
         self._config = config or _build_config_from_env()
         self._managed_process: ManagedMlxVlmServer | None = None
+        self._observed_upstream_model_id: str | None = None
+        # This cache is keyed by the selected public target plus the configured
+        # source locator.  The locator is never serialized; it prevents a
+        # replacement target from inheriting evidence for the previous target.
+        self._qualification_attestations: dict[
+            tuple[str, str, str], RuntimeQualificationAttestation
+        ] = {}
 
         from whooshd.config import get_mlx_vlm_max_concurrent_requests
         self._max_concurrent = get_mlx_vlm_max_concurrent_requests()
@@ -261,6 +282,11 @@ class MlxVlmAdapter:
     @property
     def supports_streaming(self) -> bool:
         return True
+
+    @property
+    def supports_tools(self) -> bool:
+        """MLX-VLM identity attestation does not grant tool capability."""
+        return False
 
     # ── Configuration ──────────────────────────────────────────────────
 
@@ -285,7 +311,8 @@ class MlxVlmAdapter:
                                         detail="No model configured for MLX-VLM.")
         proc = self._managed_process
         if proc is not None:
-            proc.check_exited()
+            if proc.check_exited():
+                self._invalidate_qualification_attestations()
             if not proc.is_running:
                 return _MlxVlmHealthStatus(reachable=False, runner_status="degraded",
                                             model_lifecycle="failed",
@@ -303,6 +330,10 @@ class MlxVlmAdapter:
             async with httpx.AsyncClient(timeout=timeout) as client:
                 resp = await client.get(f"{url}/v1/models")
                 if resp.status_code == 200:
+                    try:
+                        self._observe_upstream_model(resp.json())
+                    except ValueError:
+                        pass
                     return _MlxVlmHealthStatus(reachable=True, runner_status="ready",
                                                 model_lifecycle="ready",
                                                 detail="mlx-vlm /v1/models returned 200.",
@@ -314,11 +345,25 @@ class MlxVlmAdapter:
         except Exception as exc:
             return _classify_health_exception(exc, timeout)
 
+    def _observe_upstream_model(self, payload: object) -> None:
+        """Invalidate retained evidence when the upstream reports a new target."""
+        model_id = None
+        if isinstance(payload, dict):
+            models = payload.get("data")
+            if isinstance(models, list) and models and isinstance(models[0], dict):
+                candidate = models[0].get("id")
+                if isinstance(candidate, str) and candidate:
+                    model_id = candidate
+        if model_id != self._observed_upstream_model_id:
+            self._observed_upstream_model_id = model_id
+            self._invalidate_qualification_attestations()
+
     # ── Lifecycle ──────────────────────────────────────────────────────
 
     def is_loaded(self) -> bool:
         if self._managed_process is not None:
-            self._managed_process.check_exited()
+            if self._managed_process.check_exited():
+                self._invalidate_qualification_attestations()
             return self._managed_process.is_running
         return False
 
@@ -338,6 +383,7 @@ class MlxVlmAdapter:
         proc = self._managed_process
         proc.check_exited()
         if not proc.is_running:
+            self._invalidate_qualification_attestations()
             proc.start()
             await proc.wait_until_ready(health_fn=self.check_health,
                                          startup_timeout=self._config.startup_timeout_seconds)
@@ -348,6 +394,91 @@ class MlxVlmAdapter:
         if self._managed_process is not None:
             self._managed_process.stop()
             self._managed_process = None
+        self._observed_upstream_model_id = None
+        self._invalidate_qualification_attestations()
+
+    def qualification_attestation_for_target(
+        self,
+        *,
+        invocation_model_id: str,
+        resolved_model_id: str,
+    ) -> RuntimeQualificationAttestation:
+        """Return retained bounded evidence for this exact selected target.
+
+        Collection happens at the first authoritative target resolution and is
+        then reused by requests.  Managed-process restart/exit and unload clear
+        this cache; request lifecycle transitions intentionally do not.
+        """
+        cache_key = (
+            invocation_model_id,
+            self._config.model or resolved_model_id,
+            self._observed_upstream_model_id or "",
+        )
+        cached = self._qualification_attestations.get(cache_key)
+        if cached is not None:
+            return cached
+
+        serving_runtime, structured_decoder = self._managed_package_measurement()
+        attestation = build_attestation(
+            collect_mlx_vlm_target_material(
+                invocation_model_id=invocation_model_id,
+                resolved_model_id=self._observed_upstream_model_id or resolved_model_id,
+                model_source=self._config.model,
+                serving_runtime=serving_runtime,
+                structured_decoder=structured_decoder,
+            )
+        )
+        self._qualification_attestations[cache_key] = attestation
+        return attestation
+
+    def _invalidate_qualification_attestations(self) -> None:
+        self._qualification_attestations.clear()
+
+    def _managed_package_measurement(
+        self,
+    ) -> tuple[dict[str, str] | None, dict[str, str] | None]:
+        """Read package versions only from a live child Whoosh'd launched.
+
+        An external sidecar may use another environment, so it intentionally
+        receives no guessed package evidence and cannot become digest-complete.
+        The probe runs only on an uncached target resolution, never per request.
+        """
+        process = self._managed_process
+        if process is None or not process.is_running:
+            return None, None
+        executable = process.executable
+        if executable is None:
+            return None, None
+        script = (
+            "import importlib.metadata as m, json\n"
+            "def v(name):\n"
+            "    try: return m.version(name)\n"
+            "    except m.PackageNotFoundError: return None\n"
+            "print(json.dumps({'mlx-vlm': v('mlx-vlm'), 'llguidance': v('llguidance')}))\n"
+        )
+        try:
+            completed = subprocess.run(
+                [executable, "-c", script],
+                capture_output=True,
+                check=True,
+                text=True,
+                timeout=2,
+            )
+            versions = json.loads(completed.stdout)
+        except (OSError, subprocess.SubprocessError, ValueError, TypeError):
+            return None, None
+        if not isinstance(versions, dict):
+            return None, None
+        runtime = versions.get("mlx-vlm")
+        decoder = versions.get("llguidance")
+        return (
+            {"package": "mlx-vlm", "version": runtime}
+            if isinstance(runtime, str) and runtime
+            else None,
+            {"package": "llguidance", "version": decoder}
+            if isinstance(decoder, str) and decoder
+            else None,
+        )
 
     # ── Multi-runtime introspection ────────────────────────────────────
 

@@ -471,7 +471,7 @@ class RuntimeState:
         When only the stub adapter is registered, falls back to the
         legacy single-model behaviour driven by WHOOSHD_ADAPTER / WHOOSHD_MLX_MODEL.
         """
-        from whooshd.routing import get_router, inventory_provenance
+        from whooshd.routing import get_router, inventory_provenance, target_attestation
 
         router = get_router()
         results: list[ModelInfo] = []
@@ -492,6 +492,15 @@ class RuntimeState:
 
             for rm in runtime_models:
                 loaded = adapter.is_loaded() if hasattr(adapter, "is_loaded") else False
+                attestation = (
+                    target_attestation(
+                        adapter,
+                        invocation_model_id=rm.id,
+                        resolved_model_id=rm.id,
+                    )
+                    if loaded
+                    else None
+                )
                 capabilities: list[ModelCapability] = list(_DEFAULT_MODEL_CAPABILITIES)
 
                 if rm.supports_vision:
@@ -519,7 +528,11 @@ class RuntimeState:
                         ),
                         loaded=loaded,
                         adapter_name=adapter.name,
+                        qualification_attestation=(
+                            attestation.reference() if attestation is not None else None
+                        ),
                     ),
+                    qualification_attestation=attestation,
                 ))
 
         if not results:
@@ -652,7 +665,20 @@ class RuntimeState:
                         created=_STUB_MODEL_CREATED,
                         owned_by="whooshd",
                         metadata=(
-                            {"runtime_provenance": m.runtime_provenance.model_dump(mode="json")}
+                            {
+                                "runtime_provenance": m.runtime_provenance.model_dump(mode="json"),
+                                **(
+                                    {
+                                        "qualification_attestation": (
+                                            m.qualification_attestation.model_dump(
+                                                mode="json", exclude_none=True
+                                            )
+                                        )
+                                    }
+                                    if m.qualification_attestation is not None
+                                    else {}
+                                ),
+                            }
                             if m.runtime_provenance is not None
                             else None
                         ),

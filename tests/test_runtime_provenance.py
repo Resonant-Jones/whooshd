@@ -18,6 +18,7 @@ from whooshd.contracts import (
 )
 from whooshd.routing import RuntimeRouter, get_router, inventory_provenance, reset_router
 from whooshd.runtime import RuntimeState
+from whooshd.qualification_attestation import RuntimeQualificationAttestation
 
 
 def _chat_request(model: str = "requested-model", *, stream: bool = False):
@@ -61,6 +62,35 @@ def test_stub_resolution_preserves_request_and_selected_runtime_evidence(monkeyp
         assert provenance.execution_mode == "stub"
 
     asyncio.run(_run())
+
+
+def test_provenance_reference_is_optional_additive_and_path_free(monkeypatch):
+    monkeypatch.setattr("whooshd.config.get_adapter_backend", lambda: "stub")
+    router = RuntimeRouter()
+    router.register(StubInferenceAdapter())
+    attestation = RuntimeQualificationAttestation(
+        invocation_model_id="gemma-4-12b-it-qat-4bit",
+        resolved_model_id="mlx-community/gemma-4-12B-it-qat-4bit",
+        runtime_kind="mlx_vlm",
+        adapter={"name": "mlx-vlm"},
+    )
+
+    resolution = router._resolution(StubInferenceAdapter(), "requested-model", "configured_stub")
+    resolution = resolution.__class__(
+        **{
+            **resolution.__dict__,
+            "qualification_attestation": attestation.reference(),
+        }
+    )
+    provenance = resolution.provenance(request_id="request-7")
+
+    assert provenance.schema_version == "whooshd.runtime.v1"
+    assert provenance.qualification_attestation is not None
+    assert provenance.qualification_attestation.attestation_digest is None
+    assert "/private/" not in provenance.model_dump_json()
+
+    streaming = resolution.provenance(request_id="request-7", streaming=True)
+    assert streaming.qualification_attestation == provenance.qualification_attestation
 
 
 def test_chat_and_generate_results_carry_actual_adapter_provenance(monkeypatch):
