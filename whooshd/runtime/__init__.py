@@ -355,6 +355,7 @@ class RuntimeState:
 
     def build_admission_config(self) -> dict:
         """Return current admission limits + counters."""
+        from whooshd.admission import build_capacity_snapshot
         from whooshd.config import (
             get_enable_queue,
             get_max_active_requests,
@@ -365,6 +366,7 @@ class RuntimeState:
             get_queue_timeout_seconds,
         )
 
+        max_q = get_max_queue_depth()
         return {
             "max_active_requests": get_max_active_requests(),
             "active_jobs": self.active_jobs,
@@ -373,8 +375,9 @@ class RuntimeState:
             "max_request_max_tokens": get_max_request_max_tokens(),
             "queue_enabled": get_enable_queue(),
             "queue_depth": self.queue_depth,
-            "max_queue_depth": get_max_queue_depth(),
+            "max_queue_depth": max_q,
             "queue_timeout_seconds": get_queue_timeout_seconds(),
+            "capacity": build_capacity_snapshot(self, max_queue_depth=max_q),
             "counters": {
                 "accepted": self.total_requests_accepted,
                 "rejected": self.total_requests_rejected,
