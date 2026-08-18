@@ -1,0 +1,45 @@
+{
+  "schema_version": "1.0",
+  "name": "coding-harness-queue-4",
+  "description": "Canonical profile: 4 concurrent coding-harness clients, 2 active MLX slots, queue depth 8, streaming. Validates that queueing alone can satisfy 4-client harness workloads without increasing backend execution pressure.",
+  "model_id": "mlx-community/gemma-4-12b-it-qat-4bit",
+  "runtime": "mlx_lm_server",
+  "expected_hardware": "Apple Silicon, 32GB+ unified memory",
+  "client_concurrency": 4,
+  "active_inference_concurrency": 2,
+  "queue_depth": 8,
+  "queue_timeout_seconds": 300,
+  "streaming": true,
+  "workload_class": "mixed_coding_tasks",
+  "environment": {
+    "WHOOSHD_ENABLE_QUEUE": "true",
+    "WHOOSHD_MAX_QUEUE_DEPTH": "8",
+    "WHOOSHD_QUEUE_TIMEOUT_SECONDS": "300",
+    "WHOOSHD_MAX_ACTIVE_REQUESTS": "2",
+    "WHOOSHD_MLX_MAX_CONCURRENT_REQUESTS": "2",
+    "WHOOSHD_MLX_ENABLED": "true"
+  },
+  "invocation": {
+    "start_server": ".venv/bin/python -m uvicorn whooshd.app:app --host 127.0.0.1 --port 8000",
+    "bench": "python -m whooshd.bench.runner --base-url http://127.0.0.1:8000 --model mlx-community/gemma-4-12b-it-qat-4bit --concurrency 4 --requests 4 --stream --max-tokens 256"
+  },
+  "expected_outcome": {
+    "completed": 4,
+    "queued": ">=2",
+    "rejected": 0,
+    "failed": 0,
+    "stuck": 0,
+    "active_jobs_returns_to": 0,
+    "queue_depth_returns_to": 0
+  },
+  "pass_criteria": [
+    "All 4 requests complete with status 200",
+    "No spurious 429 responses",
+    "No cross-request output contamination",
+    "No stuck requests",
+    "active_jobs returns to 0",
+    "queue_depth returns to 0",
+    "TTFT p95 within 2x of single-request baseline",
+    "Latency p95 within 3x of single-request baseline"
+  ]
+}

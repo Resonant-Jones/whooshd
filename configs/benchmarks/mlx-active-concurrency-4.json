@@ -1,0 +1,39 @@
+{
+  "schema_version": "1.0",
+  "name": "mlx-active-concurrency-4",
+  "description": "Active MLX concurrency = 4 for Gemma 4 12B IT QAT. Pushes the practical limit; expect diminishing returns and memory pressure on 32GB.",
+  "model_id": "mlx-community/gemma-4-12b-it-qat-4bit",
+  "runtime": "mlx_lm_server",
+  "expected_hardware": "Apple Silicon, 64GB+ unified memory recommended",
+  "client_concurrency": 8,
+  "active_inference_concurrency": 4,
+  "queue_depth": 8,
+  "queue_timeout_seconds": 300,
+  "streaming": true,
+  "workload_class": "mixed_coding_tasks",
+  "environment": {
+    "WHOOSHD_ENABLE_QUEUE": "true",
+    "WHOOSHD_MAX_QUEUE_DEPTH": "8",
+    "WHOOSHD_QUEUE_TIMEOUT_SECONDS": "300",
+    "WHOOSHD_MAX_ACTIVE_REQUESTS": "4",
+    "WHOOSHD_MLX_MAX_CONCURRENT_REQUESTS": "4",
+    "WHOOSHD_MLX_ENABLED": "true"
+  },
+  "invocation": {
+    "start_server": ".venv/bin/python -m uvicorn whooshd.app:app --host 127.0.0.1 --port 8000",
+    "bench": "python -m whooshd.bench.runner --base-url http://127.0.0.1:8000 --model mlx-community/gemma-4-12b-it-qat-4bit --concurrency 8 --requests 32 --stream --max-tokens 256"
+  },
+  "expected_outcome": {
+    "completed": 32,
+    "queued": ">=24",
+    "rejected": 0,
+    "failed": 0,
+    "stuck": 0
+  },
+  "pass_criteria": [
+    "All 32 requests complete with status 200",
+    "Aggregate throughput > x3 OR throughput plateau with TTFT < 4x x1 baseline",
+    "Memory pressure remains normal/elevated (not high/critical)",
+    "If throughput regresses vs x3, recommended = x3"
+  ]
+}
