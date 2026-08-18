@@ -210,6 +210,55 @@ class RequestQueue:
             return entry
         return None
 
+    def select_and_dequeue(
+        self,
+        *,
+        capacity_available,  # zero-arg callable returning bool
+    ) -> Optional[QueueEntry]:
+        """Scheduler-authoritative selection and atomic dequeue.
+
+        This is the **only** method that should drive queued-request
+        execution.  It:
+
+        1. Builds the candidate list from the live queue.
+        2. Asks the scheduler which request should run next.
+        3. Atomically removes the selected entry **by request_id** so
+           no position-based race can execute a request twice.
+
+        Returns the selected :class:`QueueEntry`, or ``None`` if no
+        request is eligible (capacity unavailable, queue empty, or the
+        scheduler selected nothing).
+
+        Race safety:
+            * If the selected entry was cancelled between scheduling
+              and dequeue, ``remove()`` returns ``None`` and we treat
+              it as "no eligible request" (the caller should retry).
+            * If two callers race to ``select_and_dequeue``, each
+              removes a different request_id so no request executes
+              twice.
+            * ``build_candidates()`` is O(N) but read-only; the atomic
+              removal is the synchronisation point.
+        """
+        candidates = self.build_candidates()
+        if not candidates:
+            return None
+        if not capacity_available():
+            # Record the no-op decision so observers see CAPACITY_UNAVAILABLE.
+            self._scheduler.choose_next(
+                candidates, capacity_available=False
+            )
+            return None
+
+        decision = self._scheduler.choose_next(
+            candidates, capacity_available=True
+        )
+        if decision.request_id is None:
+            return None
+
+        # Atomic removal by request_id.  remove() also calls
+        # scheduler.remove_request so bypass counts do not leak.
+        return self.remove(decision.request_id)
+
     def remove(self, request_id: str) -> Optional[QueueEntry]:
         """Remove a specific request by ID (for cancellation).
 
@@ -263,8 +312,15 @@ class RequestQueue:
         ``capacity_available`` is a zero-arg callable that returns True when
         an active execution slot is free (e.g. ``runtime.active_jobs < max``).
 
+        When the entry is at the front and capacity is available, the
+        scheduler is consulted for the final selection (which under FIFO
+        returns the front entry).  The selection is then committed
+        atomically via :meth:`select_and_dequeue` — never via positional
+        ``dequeue()`` — so position-based races cannot execute a request
+        twice.
+
         Returns:
-            True  — caller should dequeue and execute the request.
+            True  — caller should execute the request (already removed).
             False — the request timed out or was cancelled; do not call adapter.
         """
         deadline = time.monotonic() + self.timeout_seconds
@@ -286,16 +342,25 @@ class RequestQueue:
             if front is not None and front.request_id == entry.request_id:
                 # We are next — check capacity.
                 if capacity_available is None or capacity_available():
-                    # Dequeue ourselves and return success.
-                    dequeued = self.dequeue()
-                    if dequeued is not None and dequeued.request_id == entry.request_id:
+                    # Scheduler-authoritative selection + atomic dequeue.
+                    # Under FIFO (the production default) the scheduler
+                    # returns this same entry, so the remove() below
+                    # commits the claim by request_id (not position).
+                    selected = self.select_and_dequeue(
+                        capacity_available=capacity_available or (lambda: True)
+                    )
+                    if (
+                        selected is not None
+                        and selected.request_id == entry.request_id
+                    ):
                         return True
-                    # Unexpected: someone else dequeued us?  Treat as timeout.
-                    logger.warning(
-                        "queue.dequeue_mismatch expected_request_id=%s "
-                        "actual_request_id=%s",
+                    # Race: the entry was removed between peek() and
+                    # select_and_dequeue (e.g. cancellation).  Treat as
+                    # "no longer eligible" — caller should not execute.
+                    logger.debug(
+                        "queue.select_lost request_id=%s selected=%s",
                         entry.request_id,
-                        dequeued.request_id if dequeued else None,
+                        getattr(selected, "request_id", None),
                     )
                     return False
                 # At front but no capacity — wait for capacity signal.
