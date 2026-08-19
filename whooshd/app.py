@@ -30,7 +30,11 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from whooshd import __version__
-from whooshd.admission import AdmissionDecision, evaluate_chat_request
+from whooshd.admission import (
+    AdmissionDecision,
+    active_capacity_available,
+    evaluate_chat_request,
+)
 from whooshd.adapters.base import StreamingNotSupportedError
 from whooshd.backend_request_policy import (
     BackendRequestPolicyError,
@@ -1258,12 +1262,10 @@ async def chat_completions(request: Request, req: ChatCompletionRequest):
         )
         queue.enqueue(entry)
 
-        from whooshd.config import get_max_active_requests
-
         ready = await queue.wait_for_execution(
             entry,
             cancel_token=token,
-            capacity_available=lambda: rt.active_jobs < get_max_active_requests(),
+            capacity_available=lambda: active_capacity_available(rt),
         )
 
         if not ready:
@@ -1619,7 +1621,7 @@ async def runtime_capacity():
     ever exposed.
     """
     from whooshd.admission import build_capacity_snapshot
-    from whooshd.config import get_max_queue_depth
+    from whooshd.config import get_capacity_runtime, get_max_queue_depth
     from whooshd.routing import get_router
 
     rt = get_runtime()
@@ -1632,7 +1634,14 @@ async def runtime_capacity():
     # id so dashboards can correlate capacity with the active runtime.
     try:
         router = get_router()
+        configured_capacity_runtime = get_capacity_runtime()
         for adapter in router._adapters.values():
+            if (
+                configured_capacity_runtime
+                and configured_capacity_runtime != "stub"
+                and getattr(adapter, "kind", None) == "stub"
+            ):
+                continue
             if adapter.is_loaded():
                 snapshot["runtime"] = getattr(adapter, "kind", snapshot.get("runtime"))
                 snapshot["model"] = adapter.model_id()

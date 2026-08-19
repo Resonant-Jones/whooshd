@@ -277,6 +277,29 @@ def get_capacity_profile_path() -> str | None:
     return val if val else None
 
 
+def get_capacity_model_id() -> str | None:
+    """Exact configured model identity eligible for a capacity profile.
+
+    Operators should set this to the immutable HF revision or local snapshot
+    path used when calibrating.  Keeping it explicit prevents a public alias
+    from silently reusing evidence after the backing model changes.
+    """
+    val = _env("WHOOSHD_CAPACITY_MODEL_ID", "")
+    return val if val else None
+
+
+def get_capacity_runtime() -> str | None:
+    """Exact runtime/backend identity eligible for a capacity profile."""
+    val = _env("WHOOSHD_CAPACITY_RUNTIME", "")
+    return val if val else None
+
+
+def get_capacity_machine_class() -> str | None:
+    """Stable operator-declared host class used for profile isolation."""
+    val = _env("WHOOSHD_CAPACITY_MACHINE_CLASS", "")
+    return val if val else None
+
+
 def get_capacity_memory_pressure_deny() -> bool:
     """Whether ``high`` memory pressure should force ``QUEUE`` even when
     an active slot is technically free.

@@ -47,9 +47,12 @@ from whooshd.capacity_profile import (
     safe_load_profile,
 )
 from whooshd.config import (
+    get_capacity_machine_class,
     get_capacity_memory_pressure_deny,
+    get_capacity_model_id,
     get_capacity_mode,
     get_capacity_profile_path,
+    get_capacity_runtime,
     get_max_active_requests,
 )
 
@@ -74,6 +77,8 @@ class CapacityEvaluation:
     calibrated_concurrency: Optional[int] = None
     memory_pressure: MemoryPressureClass = MemoryPressureClass.UNKNOWN
     profile_loaded: bool = False
+    profile_eligible: bool = False
+    profile_rejection_reason: Optional[str] = None
 
     def snapshot(self) -> dict:
         """Safe observability snapshot.  No prompt or runtime content."""
@@ -86,6 +91,8 @@ class CapacityEvaluation:
             "calibrated_concurrency": self.calibrated_concurrency,
             "memory_pressure": self.memory_pressure.value,
             "profile_loaded": self.profile_loaded,
+            "profile_eligible": self.profile_eligible,
+            "profile_rejection_reason": self.profile_rejection_reason,
         }
 
 
@@ -163,6 +170,49 @@ class CapacityController:
         self._cached_profile_signature = None
         self._cached_profile = None
 
+    @staticmethod
+    def _host_memory_bytes() -> Optional[int]:
+        """Best-effort physical-memory identity for profile isolation."""
+        import os
+
+        try:
+            page_size = os.sysconf("SC_PAGE_SIZE")
+            pages = os.sysconf("SC_PHYS_PAGES")
+            if page_size and pages:
+                return int(page_size) * int(pages)
+        except (OSError, ValueError):
+            pass
+        return None
+
+    def _profile_status(self) -> tuple[Optional[CapacityProfile], bool, Optional[str]]:
+        """Return the loaded profile and its exact-target eligibility."""
+        profile = self._get_profile()
+        if profile is None:
+            return None, False, "missing_profile"
+
+        model_id = get_capacity_model_id()
+        runtime = get_capacity_runtime()
+        machine_class = get_capacity_machine_class()
+        if not model_id or not runtime or not machine_class:
+            return profile, False, "identity_unavailable"
+        if profile.model_id != model_id:
+            return profile, False, "model_mismatch"
+        if profile.runtime != runtime:
+            return profile, False, "runtime_mismatch"
+        if profile.machine_class != machine_class:
+            return profile, False, "machine_mismatch"
+
+        current_memory = self._host_memory_bytes()
+        if (
+            profile.host_memory_bytes is not None
+            and current_memory is not None
+            and profile.host_memory_bytes != current_memory
+        ):
+            return profile, False, "host_memory_mismatch"
+        if profile.host_memory_bytes is not None and current_memory is None:
+            return profile, False, "host_memory_unavailable"
+        return profile, True, None
+
     # ── Mode / ceiling ──────────────────────────────────────────────
 
     @property
@@ -190,8 +240,8 @@ class CapacityController:
         if self.mode == CapacityMode.FIXED:
             return ceiling
 
-        profile = self._get_profile()
-        if profile is None:
+        profile, eligible, _ = self._profile_status()
+        if profile is None or not eligible:
             return ceiling
 
         calibrated = profile.recommended_active_concurrency
@@ -221,6 +271,22 @@ class CapacityController:
         """
         operator_ceiling = self.operator_ceiling
         mode = self.mode
+        profile: Optional[CapacityProfile] = None
+        profile_loaded = False
+        profile_eligible = False
+        profile_rejection_reason: Optional[str] = None
+        calibrated: Optional[int] = None
+        if mode == CapacityMode.ADAPTIVE:
+            profile, profile_eligible, profile_rejection_reason = self._profile_status()
+            profile_loaded = profile is not None
+            if profile_eligible and profile is not None:
+                calibrated = profile.recommended_active_concurrency
+        profile_fields = {
+            "calibrated_concurrency": calibrated,
+            "profile_loaded": profile_loaded,
+            "profile_eligible": profile_eligible,
+            "profile_rejection_reason": profile_rejection_reason,
+        }
 
         if not ctx.runtime_ready:
             return CapacityEvaluation(
@@ -232,6 +298,7 @@ class CapacityController:
                 mode=mode,
                 reason=CapacityDecisionReason.RUNTIME_NOT_READY,
                 memory_pressure=ctx.memory_pressure,
+                **profile_fields,
             )
 
         if ctx.queue_depth >= ctx.max_queue_depth:
@@ -244,17 +311,10 @@ class CapacityController:
                 mode=mode,
                 reason=CapacityDecisionReason.QUEUE_FULL,
                 memory_pressure=ctx.memory_pressure,
+                **profile_fields,
             )
 
         limit = self.effective_active_limit(memory_pressure=ctx.memory_pressure)
-        calibrated: Optional[int] = None
-        profile_loaded = False
-
-        if mode == CapacityMode.ADAPTIVE:
-            profile = self._get_profile()
-            profile_loaded = profile is not None
-            if profile is not None:
-                calibrated = profile.recommended_active_concurrency
 
         # Decide: can we run?
         if ctx.active_jobs < limit:
@@ -273,9 +333,8 @@ class CapacityController:
                     operator_ceiling=operator_ceiling,
                     mode=mode,
                     reason=CapacityDecisionReason.MEMORY_PRESSURE_HIGH,
-                    calibrated_concurrency=calibrated,
                     memory_pressure=ctx.memory_pressure,
-                    profile_loaded=profile_loaded,
+                    **profile_fields,
                 )
 
             if mode == CapacityMode.ADAPTIVE and calibrated is not None:
@@ -292,9 +351,8 @@ class CapacityController:
                 operator_ceiling=operator_ceiling,
                 mode=mode,
                 reason=reason,
-                calibrated_concurrency=calibrated,
                 memory_pressure=ctx.memory_pressure,
-                profile_loaded=profile_loaded,
+                **profile_fields,
             )
 
         # No slot free — admit to queue.
@@ -306,9 +364,8 @@ class CapacityController:
             reason=CapacityDecisionReason.CALIBRATED_LIMIT
             if mode == CapacityMode.ADAPTIVE and calibrated is not None
             else CapacityDecisionReason.OPERATOR_CEILING,
-            calibrated_concurrency=calibrated,
             memory_pressure=ctx.memory_pressure,
-            profile_loaded=profile_loaded,
+            **profile_fields,
         )
 
     # ── Snapshot ─────────────────────────────────────────────────────
@@ -339,4 +396,11 @@ class CapacityController:
         snap["queue_depth"] = queue_depth
         snap["max_queue_depth"] = max_queue_depth
         snap["runtime_ready"] = runtime_ready
+        profile, _, _ = self._profile_status() if self.mode == CapacityMode.ADAPTIVE else (None, False, None)
+        snap["profile_model_id"] = profile.model_id if profile is not None else None
+        snap["profile_runtime"] = profile.runtime if profile is not None else None
+        snap["profile_machine_class"] = profile.machine_class if profile is not None else None
+        snap["configured_capacity_model_id"] = get_capacity_model_id()
+        snap["configured_capacity_runtime"] = get_capacity_runtime()
+        snap["configured_capacity_machine_class"] = get_capacity_machine_class()
         return snap

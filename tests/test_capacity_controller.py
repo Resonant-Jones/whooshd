@@ -39,6 +39,9 @@ def _reset(monkeypatch):
     monkeypatch.delenv("WHOOSHD_CAPACITY_PROFILE_PATH", raising=False)
     monkeypatch.delenv("WHOOSHD_CAPACITY_MEMORY_PRESSURE_DENY", raising=False)
     monkeypatch.delenv("WHOOSHD_MAX_ACTIVE_REQUESTS", raising=False)
+    monkeypatch.setenv("WHOOSHD_CAPACITY_MODEL_ID", "m")
+    monkeypatch.setenv("WHOOSHD_CAPACITY_RUNTIME", "mlx")
+    monkeypatch.setenv("WHOOSHD_CAPACITY_MACHINE_CLASS", "darwin-arm64")
     reset_controller_for_tests()
     yield
     reset_controller_for_tests()
@@ -227,6 +230,64 @@ class TestProfileFallback:
         cc = Control()
         # Falls back silently.
         assert cc.effective_active_limit() == 3
+
+    @pytest.mark.parametrize(
+        ("env_name", "env_value", "reason"),
+        [
+            ("WHOOSHD_CAPACITY_MODEL_ID", "other-model", "model_mismatch"),
+            ("WHOOSHD_CAPACITY_RUNTIME", "other-runtime", "runtime_mismatch"),
+            ("WHOOSHD_CAPACITY_MACHINE_CLASS", "other-machine", "machine_mismatch"),
+        ],
+    )
+    def test_identity_mismatch_ignores_profile_and_uses_operator_ceiling(
+        self, monkeypatch, env_name, env_value, reason
+    ):
+        monkeypatch.setenv("WHOOSHD_CAPACITY_MODE", "adaptive")
+        monkeypatch.setenv("WHOOSHD_MAX_ACTIVE_REQUESTS", "6")
+        profile = CapacityProfile.model_validate({
+            "model_id": "m",
+            "runtime": "mlx",
+            "machine_class": "darwin-arm64",
+            "prompt_size_chars": 64,
+            "configured_max_tokens": 128,
+            "recommended_active_concurrency": 2,
+        })
+        path = _save_profile(profile)
+        monkeypatch.setenv("WHOOSHD_CAPACITY_PROFILE_PATH", path)
+        monkeypatch.setenv(env_name, env_value)
+
+        cc = Control()
+        evaluation = cc.evaluate(_ctx())
+
+        assert evaluation.effective_active_limit == 6
+        assert evaluation.profile_loaded is True
+        assert evaluation.profile_eligible is False
+        assert evaluation.profile_rejection_reason == reason
+
+    def test_host_memory_mismatch_ignores_profile(self, monkeypatch):
+        monkeypatch.setenv("WHOOSHD_CAPACITY_MODE", "adaptive")
+        monkeypatch.setenv("WHOOSHD_MAX_ACTIVE_REQUESTS", "6")
+        profile = CapacityProfile.model_validate({
+            "model_id": "m",
+            "runtime": "mlx",
+            "machine_class": "darwin-arm64",
+            "host_memory_bytes": 1,
+            "prompt_size_chars": 64,
+            "configured_max_tokens": 128,
+            "recommended_active_concurrency": 2,
+        })
+        monkeypatch.setenv("WHOOSHD_CAPACITY_PROFILE_PATH", _save_profile(profile))
+        monkeypatch.setattr(
+            CapacityController,
+            "_host_memory_bytes",
+            staticmethod(lambda: 2),
+        )
+
+        evaluation = CapacityController().evaluate(_ctx())
+
+        assert evaluation.effective_active_limit == 6
+        assert evaluation.profile_eligible is False
+        assert evaluation.profile_rejection_reason == "host_memory_mismatch"
 
 
 # ── Memory pressure ────────────────────────────────────────────────────────

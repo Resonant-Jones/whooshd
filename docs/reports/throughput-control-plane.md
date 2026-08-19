@@ -1,480 +1,327 @@
-# Whoosh'd Throughput Control Plane — Final Engineering Report
-
-**Task:** Evolve Whoosh'd from fixed, conservative request concurrency
-into a measured, queue-aware execution system suitable for coding
-harnesses that issue 3–4+ parallel requests.
+# CWC-007 Throughput Control Plane — Final Engineering Report
 
 **Branch:** `codex/cwc-007-throughput-control-plane`
-**Base:** `codex/cwc-007-control-error-contract` (pre-existing modifications
-preserved via git stash / stash pop)
-**Commit count:** 8 logical commits
-**Tests added:** 51 (47 + 4 batch interaction)
-**Test suite delta:** 2238 → 2263 passing (+25 new); same 17 pre-existing
-failures (all ThreadWake / vision-routing unrelated to this task)
 
----
+**Validation host:** Mac mini `Mac16,10`, Apple M4 (10 cores), 32 GB RAM,
+macOS 26.5.2
 
-## 1. Implementation
+**Validation date:** 2026-08-19
 
-### Files changed
-
-```
-whooshd/capacity_profile.py          (new) — structured CapacityProfile artifact
-whooshd/capacity_controller.py       (new) — CapacityController abstraction
-whooshd/bench/capacity_bench.py      (new) — capacity-bench CLI
-whooshd/admission.py                 (modified) — delegate capacity decisions
-whooshd/queue.py                     (modified) — scheduler-authoritative select_and_dequeue
-whooshd/runtime/__init__.py          (modified) — embed capacity snapshot in admission config
-whooshd/app.py                       (modified) — /runtime/capacity endpoint
-whooshd/config.py                    (modified) — 3 new env vars
-
-tests/test_capacity_profile.py                  (new) — 9 tests
-tests/test_capacity_controller.py               (new) — 17 tests
-tests/test_queue_scheduler_authoritative.py     (new) — 13 tests
-tests/test_coding_harness_queue_4.py            (new) — 8 tests (Phase A)
-tests/test_batch_capacity_interaction.py        (new) — 4 tests
-
-configs/benchmarks/                              (new) — 6 canonical JSON recipes
-docs/capacity-controller.md                     (new) — full controller spec
-docs/glossary.md                                 (modified) — disambiguating terminology
-docs/benchmark-profiles.md                       (modified) — high-throughput profiles
-docs/queue-and-admission.md                      (modified) — current-status section
+```text
+Automated implementation validation: COMPLETE
+Live stub validation: COMPLETE
+Live real-MLX plumbing validation: COMPLETE
+Target Gemma 4 12B capacity calibration: PENDING
 ```
 
-### Components added
+The throughput control plane has been validated against a real MLX runtime
+using Gemma 4 E2B. Gemma 4 12B IT QAT capacity certification remains a
+model-specific target-host benchmark and does not block validation of the
+control-plane mechanics.
 
-1. **`CapacityProfile` artifact** (`whooshd/capacity_profile.py`)
-   — Pydantic model + JSON persistence. No prompt content, no token IDs,
-   no KV handles. Per-band evidence per (model, runtime, machine) triple.
+This is infrastructure validation, not model-quality evaluation.
 
-2. **`CapacityController`** (`whooshd/capacity_controller.py`)
-   — `evaluate(CapacityContext) → CapacityEvaluation`.
-   Outputs `RUN`/`QUEUE`/`REJECT` with structured `CapacityDecisionReason`.
-   Modes: `fixed` (default, byte-identical to pre-throughput) and
-   `adaptive` (opt-in via `WHOOSHD_CAPACITY_MODE=adaptive`).
+## 1. Certification boundary
 
-3. **`RequestQueue.select_and_dequeue`** (`whooshd/queue.py`)
-   — Scheduler-authoritative selection + atomic dequeue by request_id.
-   `wait_for_execution` now uses it when the entry is at the front of
-   the queue and capacity is available.
+| Layer | Fixture | Judgment |
+|---|---|---|
+| Control-plane / real-MLX plumbing | Gemma 4 E2B IT 4-bit | Complete |
+| Cross-model portability smoke | Gemma 4 E4B IT 4-bit | Blocked by installed checkpoint/runtime incompatibility |
+| Production-capacity calibration | Gemma 4 12B IT QAT 4-bit | Pending |
 
-4. **`/runtime/capacity` endpoint** (`whooshd/app.py`)
-   — Safe observability surface for the throughput control plane.
+The E2B result certifies request transport, admission, queueing, scheduler
+selection, capacity gating, runtime concurrency, MLX generation, streaming,
+cancellation, response isolation, and lifecycle cleanup. It is not a 12B
+throughput recommendation.
 
-5. **`capacity-bench` CLI** (`whooshd/bench/capacity_bench.py`)
-   — Per-band calibration. Bands: configurable (default `1 2 3 4 6 8`).
-   Writes structured `CapacityProfile` JSON.
+## 2. Branch hygiene
 
-6. **6 canonical benchmark profile JSON recipes**
-   (`configs/benchmarks/*.json`)
-   — coding-harness-queue-4, mlx-active-concurrency-{1,2,3,4}, mlx-batch-comparison.
+Before live validation, the four unrelated backend-request-policy changes were
+removed from this branch and committed independently:
 
-### Configuration added
-
-| Variable | Default | Purpose |
-|----------|---------|---------|
-| `WHOOSHD_CAPACITY_MODE` | `fixed` | `fixed` (no change) or `adaptive` (use profile) |
-| `WHOOSHD_CAPACITY_PROFILE_PATH` | unset | Path to a `CapacityProfile` JSON |
-| `WHOOSHD_CAPACITY_MEMORY_PRESSURE_DENY` | `true` | High-pressure → QUEUE instead of RUN |
-
-### Migration / backward compatibility
-
-* **Zero-config migration.** All existing installations see byte-identical
-  behaviour. The default mode is `fixed` and the controller's effective
-  limit in fixed mode is `WHOOSHD_MAX_ACTIVE_REQUESTS` exactly.
-* **No breaking changes** to env vars. The three new vars are opt-in.
-* **Existing 429 / QUEUED / structural rejection contracts preserved.**
-  Verified by all 105 pre-existing admission + queue + chat tests still
-  passing unmodified.
-* **No new I/O at admission time.** The controller's `evaluate()` is
-  pure; the profile is loaded lazily and cached by `(path, mtime)`.
-* **Adaptive mode never exceeds the operator ceiling.**
-  Verified live: profile recommending 8 + operator ceiling 4 → effective 4.
-
----
-
-## 2. Baseline (before this task)
-
-* `WHOOSHD_MAX_ACTIVE_REQUESTS` default = 2
-* `WHOOSHD_MLX_MAX_CONCURRENT_REQUESTS` default = 2
-* Queue: FIFO, positional `peek()` + `dequeue()` for selection
-* Scheduler: structural (never actually drove execution)
-* No capacity profile artifact; no controller abstraction
-* No safe observability surface for capacity decisions
-* Test suite: **2238 passing**, 17 pre-existing failures (ThreadWake,
-  vision routing — all unrelated)
-
----
-
-## 3. Automated Validation
-
-### Targeted tests (all passing)
-
-```
-tests/test_capacity_profile.py                  9 tests  ✅
-tests/test_capacity_controller.py              17 tests  ✅
-tests/test_queue_scheduler_authoritative.py    13 tests  ✅
-tests/test_coding_harness_queue_4.py            8 tests  ✅  (Phase A)
-tests/test_batch_capacity_interaction.py        4 tests  ✅
-tests/test_queue.py                            66 tests  ✅  (unchanged)
-tests/test_admission_control.py                20 tests  ✅  (unchanged)
-tests/test_chat_completions_admission.py       20 tests  ✅  (unchanged)
+```text
+unrelated-work branch: codex/backend-request-policy-work
+commit: 81fe385
+files moved:
+  configs/models.friends-family-guest.yaml
+  tests/test_backend_request_policy.py
+  whooshd/app.py
+  whooshd/backend_request_policy.py
+throughput branch clean before MLX validation: yes
 ```
 
-### Full-suite result
+The path `.venv311/` is excluded only through the repository-local
+`.git/info/exclude`. The environment was not modified or deleted, and the
+tracked `.gitignore` was not changed.
 
-```
-2263 passed, 17 failed (pre-existing ThreadWake / vision-routing)
-```
+## 3. Runtime identity
 
-The 17 pre-existing failures are not touched by this task — they
-exist on the base branch and exercise unrelated subsystems (ThreadWake
-observe-mode, friends-family-guest registry, vision routing).
+The E2B fixture was absent locally, so the existing MLX-compatible instruct
+variant was downloaded once and pinned to an immutable Hugging Face revision.
+No alternative model was downloaded.
 
-### Failures encountered and resolved
-
-1. **`ChatCompletionRequest` argument count mismatch on the Pyright LSP.**
-   Resolved by inspecting the actual pydantic model and using only the
-   required fields in test fixtures.
-2. **`asyncio.get_event_loop()` requires a running loop in batch tests.**
-   Resolved by wrapping `claim_batch_entries` calls in `asyncio.run`.
-3. **`Memory pressure` mapping initially excluded `critical`.** Fixed.
-4. **`name = "Scheduler"` import scoping typo.** Fixed.
-5. **`select_lost` log message level was WARNING** — too noisy for a
-   benign race (caller cancelled mid-select). Demoted to DEBUG.
-6. **Stale `_queue` / `_runtime` singletons across test boundaries.**
-   Added explicit fixture-time resets to all new test files (the same
-   pattern used in `tests/test_queue.py`).
-7. **`safe_load_profile` returned the cached profile when the file was
-   modified.** Fixed by caching on `(path, mtime)` and invalidating
-   when the path or mtime changes.
-
----
-
-## 4. Live Validation (stub runtime)
-
-**No MLX model is loaded on this machine.** Live validation was
-performed against the stub adapter, which is what the spec calls the
-"validate first with the stub runtime and then manually against MLX"
-phase.
-
-### Phase A profile — coding-harness-queue-4
-
-`WHOOSHD_MAX_ACTIVE_REQUESTS=2`,
-`WHOOSHD_ENABLE_QUEUE=true`,
-`WHOOSHD_MAX_QUEUE_DEPTH=8`,
-`WHOOSHD_QUEUE_TIMEOUT_SECONDS=30`,
-`WHOOSHD_STUB_RESPONSE_DELAY_SECONDS=0.05`
-
-```
-=== concurrency=4 requests=4 (stream=true) ===
-succeeded: 4
-failed:    0
-rejected:  0
-mean latency: 121.2 ms   p50: 91.1   p95: 157.0
-mean TTFT:    120.9 ms   p50: 90.7   p95: 156.6
-result: pass
-
-=== concurrency=8 requests=8 (stream=true) ===
-succeeded: 8
-failed:    0
-rejected:  0
-mean latency: 170.5 ms   p50: 131.8  p95: 270.7
-mean TTFT:    170.1 ms   p50: 131.5  p95: 270.4
-result: pass
+```text
+public/registry model ID: mlx-community/gemma-4-e2b-it-4bit
+runtime: mlx_vlm
+local snapshot:
+  /Volumes/Dev_SSD/whooshd/model-weights/hub/
+  models--mlx-community--gemma-4-e2b-it-4bit/snapshots/
+  238767527555cb75a05732a84dff5d6ba0dd6809
+quantization: affine 4-bit, group size 64
+advertised text context window: 131072 tokens
+checkpoint verification: 10 files verified
 ```
 
-After both runs:
+The model was served by an isolated `mlx_vlm` sidecar on port 18082 and the
+current branch by an isolated Whoosh'd process on port 18000. The existing
+launchd-managed Whoosh'd and Qwen runtime were not changed.
 
-```
-counters.accepted       = 12
-counters.queued         = 8
-counters.dequeued       = 8
-counters.queue_rejected = 0
-counters.queue_timeout  = 0
-counters.queue_cancelled = 0
-active_jobs             = 0
-queue_depth             = 0
-scheduler.last_decision_reason = "fifo_oldest"
-```
+## 4. Implementation corrections found by real-runtime validation
 
-### Adaptive mode round-trip
+Real execution exposed two control-plane defects that stub validation did not:
 
-Server started with `WHOOSHD_CAPACITY_MODE=adaptive`,
-`WHOOSHD_MAX_ACTIVE_REQUESTS=4`,
-`WHOOSHD_CAPACITY_PROFILE_PATH` pointing at a profile whose
-`recommended_active_concurrency=2`:
+1. **CANCELLATION:** a late streaming completion could overwrite an already
+   cancelled lifecycle record with `completed`. Completion now preserves the
+   terminal `cancelled`, `failed`, and `timed_out` states. A focused
+   regression test covers the race.
+2. **PROFILE_IDENTITY / CAPACITY:** profiles were structurally round-tripped but
+   were not strictly bound to the selected model/runtime/host. Adaptive mode now
+   requires exact model ID, runtime, machine class, and host-memory identity.
+   A mismatch rejects the calibration and falls back to the operator ceiling.
 
-```
-GET /runtime/capacity →
-{
-  "effective_active_limit": 2,   ← profile lowered below ceiling
-  "operator_ceiling":       4,
-  "mode":                   "adaptive",
-  "reason":                 "calibrated_limit",
-  "calibrated_concurrency": 2,
-  "profile_loaded":         true
-}
-```
+Supporting changes also make the configured real runtime/model authoritative in
+capacity observability and make `capacity-bench` measure SSE TTFT at the first
+received data chunk instead of after buffering the whole response. The profile
+format remains the existing `CapacityProfile`; no second calibration format was
+introduced.
 
-Switching the profile to `recommended_active_concurrency=8`:
+New capacity identity inputs are:
 
-```
-GET /runtime/capacity →
-{
-  "effective_active_limit": 4,   ← capped at operator ceiling
-  "operator_ceiling":       4,
-  "reason":                 "operator_ceiling",
-  "calibrated_concurrency": 8,
-  "profile_loaded":         true
-}
-```
+| Variable | Purpose |
+|---|---|
+| `WHOOSHD_CAPACITY_MODEL_ID` | Immutable model identity or local snapshot |
+| `WHOOSHD_CAPACITY_RUNTIME` | Exact runtime/backend identity |
+| `WHOOSHD_CAPACITY_MACHINE_CLASS` | Stable operator-declared host class |
 
-Both modes run the 4-client burst cleanly:
+Fixed mode remains the backward-compatible default. Adaptive mode never raises
+the limit above `WHOOSHD_MAX_ACTIVE_REQUESTS`.
 
-```
-=== concurrency=4 requests=4 (adaptive mode, recommended=4) ===
-succeeded: 4
-failed:    0
-rejected:  0
-result: pass
+## 5. Single-request baseline
+
+### Non-streaming
+
+```text
+submitted/completed: 1 / 1
+rejected/failed/stuck: 0 / 0 / 0
+latency: 1372.319 ms
+response contract: valid
+usage: prompt 17, completion 4, total 21 tokens
+active_jobs after completion: 0
+queue_depth after completion: 0
 ```
 
-### Corrupt-profile fallback safety
+### Streaming
 
-Server started with a profile file containing `{ corrupt json`:
-
-```
-GET /runtime/capacity →
-{
-  "effective_active_limit": 3,   ← fell back to operator ceiling
-  "operator_ceiling":       3,
-  "mode":                   "adaptive",
-  "reason":                 "below_operator_ceiling",
-  "calibrated_concurrency": null,
-  "profile_loaded":         false      ← safe fallback
-}
+```text
+submitted/completed: 1 / 1
+rejected/failed/stuck: 0 / 0 / 0
+TTFT: 187.971 ms
+latency: 267.433 ms
+framing: valid SSE chunks, terminal finish_reason, then [DONE]
+completion truncated: no
+active_jobs after completion: 0
+queue_depth after completion: 0
 ```
 
-No crash. No exception. Server kept serving requests.
+## 6. Active concurrency matrix
 
-### capacity-bench CLI round-trip
+The primary matrix used short, constant prompts. TTFT and latency below are
+from the streaming run. Token throughput is from a companion non-streaming run,
+where actual completion token counts were available; character throughput was
+not substituted.
 
+| Active band | Submitted | Completed | Queued | Rejected | Failed | Stuck | TTFT p50 / p95 ms | Latency p50 / p95 ms | Aggregate token throughput | Mean request token throughput | Active / queue peak | Memory |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|
+| x1 | 1 | 1 | 0 | 0 | 0 | 0 | 205.695 / 205.695 | 825.741 / 825.741 | 31.562 tok/s | 31.575 tok/s | 1 / 0 | normal, about 4.2 GB reported |
+| x2 | 2 | 2 | 0 | 0 | 0 | 0 | 244.348 / 264.440 | 537.901 / 703.336 | 77.802 tok/s | 38.914 tok/s | 2 / 0 | normal |
+| x3 | 3 | 3 | 0 | 0 | 0 | 0 | 327.866 / 328.374 | 673.030 / 1016.504 | 80.241 tok/s | 29.221 tok/s | 3 / 0 | normal |
+| x4 | 4 | 4 | 0 | 0 | 0 | 0 | 388.306 / 389.000 | 844.476 / 1038.745 | 76.109 tok/s | 23.713 tok/s | 4 / 0 | normal |
+
+All bands returned their own deterministic marker, ended with
+`active_jobs=0` and `queue_depth=0`, and left the runtime semaphore usable.
+x4 is operationally correct, but x3 delivered the best measured aggregate
+token throughput. Therefore maximum functioning concurrency and recommended
+concurrency are intentionally different.
+
+## 7. Coding-harness bursts and request isolation
+
+| Workload | Completed | Queued / dequeued | Rejected / failed / stuck | TTFT p50 / p95 ms | Latency p50 / p95 ms | Active / queue peak |
+|---|---:|---:|---:|---:|---:|---:|
+| 4 clients / 2 active / queue 8 | 4 / 4 | 2 / 2 | 0 / 0 / 0 | 365.739 / 1497.143 | 1315.262 / 2229.231 | 2 / 2 |
+| 8 clients / 2 active / queue 8 | 8 / 8 | 6 / 6 | 0 / 0 / 0 | 1275.185 / 3320.510 | 2051.438 / 4070.497 | 2 / 6 |
+| 8 clients / 4 active / queue 8 | 8 / 8 | 4 / 4 | 0 / 0 / 0 | 473.831 / 2060.872 | 1853.024 / 3081.979 | 4 / 4 |
+
+Every burst completed without unexplained 429 responses, duplicate execution,
+lost requests, or stuck lifecycle state. `REQUEST_A` through `REQUEST_D` and
+the extended burst markers were checked in both streaming and non-streaming
+paths: each response contained its own marker and no foreign marker. All burst
+runs ended with active and queue counters at zero.
+
+## 8. Cancellation under real MLX
+
+Queued and active cancellation were both exercised with real work:
+
+```text
+queued cancellation signalled: true
+queued client result: HTTP 409
+queued marker reached MLX/output: no
+queued final lifecycle: cancelled
+
+active cancellation signalled: true
+active stream: HTTP 200, 0 content chunks, terminal [DONE]
+active final lifecycle: cancelled
+
+follow-up request: HTTP 200, correct marker
+final active_jobs / queue_depth: 0 / 0
 ```
-$ python -m whooshd.bench.capacity_bench \
-    --base-url http://127.0.0.1:8765 \
-    --model stub-model \
-    --runtime stub \
-    --band 1 2 4 \
-    --requests 4 \
-    --stream \
-    --output /tmp/whooshd_task/live_capacity.json
 
-=== band: concurrency=1 requests=4 ===
-  ok=4 fail=0 rej=0 stuck=0 p50=53.6 p95=76.4
-=== band: concurrency=2 requests=4 ===
-  ok=4 fail=0 rej=0 stuck=0 p50=56.5 p95=63.6
-=== band: concurrency=4 requests=4 ===
-  ok=4 fail=0 rej=0 stuck=0 p50=63.7 p95=76.3
+The runtime path supports cooperative interruption of active streaming
+generation. Queue selection remained valid, the queue continued draining, and
+there was no semaphore leak or orphaned queue entry.
 
-recommended_active_concurrency = 4
-wrote /tmp/whooshd_task/live_capacity.json
+## 9. Context pressure
+
+Prompt sizes were measured with the E2B tokenizer rather than inferred from
+characters.
+
+| Context band | Measured prompt tokens | Active concurrency | Result | Latency / TTFT observation | Memory observation |
+|---|---:|---:|---|---|---|
+| ~2K | 2,001 | x1 | complete | 4.220 s non-streaming | normal |
+| ~8K | 8,001 | x1 | complete | 7.579 s non-streaming | normal |
+| ~16K | 16,001 | x1 | complete | 12.334 s non-streaming | normal |
+| ~32K | 32,001 | x1 | complete | 24.501 s non-streaming | normal; about 47% free |
+| ~64K | 64,001 | x1 | complete | 56.961 s non-streaming | normal; about 41% free |
+| ~2K | 2,001 | x2 | complete | TTFT p95 7.264 s | normal |
+| ~2K | 2,001 | x4 | complete | TTFT p95 14.318 s | normal |
+| ~16K | 16,001 | x2 | complete | TTFT p95 23.719 s | normal |
+| ~16K | 16,001 | x4 | complete | TTFT p95 47.233 s | swap activity observed |
+| ~32K | 32,001 | x2 | complete | TTFT p95 47.691 s | normal at finish; about 46% free |
+
+All executed combinations completed without rejection, failure, or lifecycle
+leak. The campaign stopped before `32K x4` and `64K x2/x4`: tail TTFT had
+already become severe and swapouts increased by about 2.35 GiB during the
+matrix. That is a safety stop and useful capacity evidence, not a control-plane
+failure. The nominal 128K limit was not attempted.
+
+## 10. CapacityProfile, isolation, and restart
+
+The existing CLI produced:
+
+```text
+profile path:
+  /Volumes/Dev_SSD/whooshd/validation/cwc-007-e2b/
+  capacity-profile.gemma-4-e2b-it-4bit.json
+profile model identity:
+  /Volumes/Dev_SSD/whooshd/model-weights/hub/
+  models--mlx-community--gemma-4-e2b-it-4bit/snapshots/
+  238767527555cb75a05732a84dff5d6ba0dd6809
+runtime: mlx_vlm
+machine class: darwin-arm64-mac16-10-m4-32gb
+host memory: 34359738368 bytes
+quantization: affine-4bit-group64
+recommended active concurrency: 3
+operator ceiling: 4
+effective concurrency after restart: 3
+reason: calibrated_limit
+restart consumption verified: yes
 ```
 
-The resulting JSON conformed to the `CapacityProfile` schema and was
-re-loaded by the controller in a subsequent server start, proving
-end-to-end round-trip.
+The four-request-per-band profile run completed x1/x2/x3/x4 with no failures,
+rejections, or stuck requests. Because it was streaming and the runtime did not
+return usage counts, its throughput fields remain `null`; the separate
+non-streaming matrix with real token counts is the basis for choosing x3.
 
----
+Operator-ceiling proof after a clean restart:
 
-## 5. MLX Active Concurrency Validation — Gemma 4 12B IT QAT
-
-**Not performed.** The target Mac does not have the Gemma 4 12B IT QAT
-4-bit MLX weights installed. The `model-weights/` directory contains
-a Qwen3.8-27B-4bit directory and a hub directory, but not the
-specified target model.
-
-Per spec section 13: this validation must be performed against the
-target Mac. The integration seam, CLI, and structured profile format
-are in place; running the calibration requires the model to be
-present.
-
----
-
-## 6. Result
-
-```
-Recommended active inference concurrency: 2
+```text
+profile recommendation: 8
+operator ceiling: 4
+effective concurrency: 4
+reason: operator_ceiling
 ```
 
-The basis:
+The canonical artifact was then restored to the evidence-based recommendation
+of 3. Corrupt and invalid profiles continue to use the conservative fallback.
 
-* Phase A profile (live, stub runtime): all 4 concurrent clients
-  completed at `WHOOSHD_MAX_ACTIVE_REQUESTS=2` with queue depth up
-  to 2 and 0 spurious rejections. Active concurrency 2 is sufficient
-  for the immediate coding-harness workload.
+Strict profile-isolation proof:
 
-```
+| Selected runtime identity | Profile eligible | Effective result |
+|---|---|---|
+| Exact E2B snapshot + `mlx_vlm` + matching host | yes | calibrated limit 3 |
+| Installed E4B snapshot + `mlx_vlm` | no | `model_mismatch`; operator fallback |
+| Installed 12B snapshot + `mlx_vlm` | no | `model_mismatch`; operator fallback |
+
+An E2B calibration therefore cannot silently become the active limit for E4B
+or 12B.
+
+## 11. Optional E4B portability smoke
+
+The locally installed E4B checkpoint was attempted but did not reach readiness.
+`mlx_vlm` rejected 126 checkpoint parameters because the runtime-instantiated
+model lacked the checkpoint's layers 24–41. Classification:
+`MLX_RUNTIME` / `MODEL` compatibility. No request was sent, no model files were
+changed, and this optional smoke does not weaken the completed E2B plumbing
+proof. It remains an explicit portability follow-up rather than being reported
+as a passing result.
+
+## 12. Recommendation
+
+These values are specific to Gemma 4 E2B on the measured Mac mini:
+
+```text
+Recommended E2B active inference concurrency: 3
 Recommended coding-harness client concurrency: 4
-```
-
-The basis:
-
-* Phase A live validation: 4 concurrent clients succeed end-to-end.
-* Queue depth 8 leaves comfortable headroom for the harness to spike
-  beyond 4 (verified with 8-concurrent burst).
-
-```
 Recommended queue depth: 8
 ```
 
-The basis:
+x4 is mechanically sound for short prompts, and eight clients queue and drain
+correctly. x3 is the recommended active limit because aggregate token
+throughput peaked there while x4 reduced per-request throughput and long-context
+x4 materially worsened TTFT and induced swap activity.
 
-* Queue depth 8 + active 2 = 10 outstanding requests tolerated.
-* This matches the canonical coding-harness profile and provides
-  enough headroom for spikes without exhausting memory.
-* Live adaptive ceiling enforcement: 4 concurrent clients + queue
-  depth 8 = no rejection, no timeout, no cross-talk.
+Production roles remain distinct:
 
----
-
-## 7. Definition of Done
-
-| Item | Status |
-|------|--------|
-| 4 concurrent coding-harness requests succeed with queueing | ✅ Phase A |
-| Excess requests wait (not 429) when queue capacity remains | ✅ |
-| Active inference limit independently controlled | ✅ via `WHOOSHD_MAX_ACTIVE_REQUESTS` |
-| Scheduler is authoritative for queued request selection | ✅ `select_and_dequeue` |
-| No queued request executes twice | ✅ atomic by-id removal |
-| Cancellation and timeout semantics preserved | ✅ 4 queue tests |
-| Model/runtime capacity benchmark measures concurrency bands | ✅ `capacity-bench` |
-| Capacity results as structured metadata | ✅ `CapacityProfile` |
-| Adaptive capacity has conservative implementation + clean seam | ✅ opt-in via env |
-| Adaptive never exceeds operator ceiling | ✅ live-validated |
-| Gemma 4 12B IT QAT x1/x2/x3/x4 live validation | ⚠️ model not installed on this host |
-| Recommended active concurrency is evidence-based | ✅ from live validation |
-| Existing MLX batch execution remains functional + measured | ⚠️ not exercised live (no model) |
-| No production ThreadWake KV reuse accidentally enabled | ✅ gate unchanged |
-| OpenAI / Codexify compatibility contracts remain green | ✅ all relevant tests pass |
-| Queue and active lifecycle counters return to zero | ✅ live-confirmed |
-| Documentation distinguishes client/active/batch/queue concurrency | ✅ glossary + capacity-controller |
-| Full automated test suite passes | ✅ 2263 / same 17 pre-existing failures |
-
-**16 of 18 items ✅. 2 items require live MLX model availability** —
-the spec's Phase E and Phase F runbook is complete and ready to
-execute when the model is loaded.
-
----
-
-## 8. Remaining Work
-
-### Required follow-ups
-
-* **Phase E live validation on target Mac.** Run `capacity-bench`
-  against the actual Gemma 4 12B IT QAT 4-bit MLX model. Record
-  `ttft_p50`, `ttft_p95`, `latency_p50`, `latency_p95`, aggregate
-  throughput (token-based, not char-based — requires runtime
-  cooperation), and memory pressure for each band. Compare to the
-  the recommended concurrency.
-
-* **Phase F live batch comparison.** With the MLX model loaded, run
-  `mlx-batch-comparison` to compare independent execution vs
-  queued batch_generate under identical workload. Use the canonical
-  recipe in `configs/benchmarks/mlx-batch-comparison.json`.
-
-### Optional optimizations
-
-* Add per-band `aggregate_tokens_per_second` measurement. The current
-  implementation honestly reports `None` because character counts do
-  not equal tokens. A small extension to the adapter contract could
-  expose token counts when the runtime produces them.
-* Per-request cost estimation. The controller already accepts
-  `requested_estimated_tokens` in `CapacityContext`; filling it from
-  the prompt-size estimator (`admission._estimade_prompt_chars`) would
-  activate the seam exposed for future cost-aware controllers.
-* Auto-calibration job: run `capacity-bench` periodically (e.g.
-  nightly) and overwrite the profile JSON. Out of scope for this
-  task; the artifacts it would consume are ready.
-
-### Continuous batching
-
-**Not implemented.** Per spec section 16:
-
-> Do **not** implement a custom token-step scheduler in this task
-> unless repository/runtime inspection demonstrates a safe existing
-> primitive that can be integrated cleanly.
-
-The clean seam is exposed:
-
-```
-queue
-  → scheduler
-  → capacity controller
-  → backend execution policy
-      ├── single          (current)
-      ├── batch           (existing experimental path)
-      └── continuous batch (future milestone)
+```text
+Gemma 4 E2B = control-plane / MLX validation fixture
+Gemma 4 E4B = optional portability fixture
+Gemma 4 12B IT QAT 4-bit = production-capacity calibration target
 ```
 
-Whoosh'd owns policy. The underlying inference engine should own
-low-level token-generation mechanics when continuous batching arrives.
+## 13. Validation status
 
-### ThreadWake KV reuse
+Automated tests cover profile schema/round-trip, strict identity matching,
+operator ceilings, queue/scheduler authority, runtime lifecycle, cancellation,
+SSE benchmark timing, admission, and batch interaction.
 
-**Not enabled.** Per spec section 17:
+```text
+focused changed-scope suite: 175 passed
+final focused regression slice: 58 passed
+full suite: 2271 passed, 17 failed
+```
 
-> The existing hard-disabled production KV-reuse gate must remain
-> respected.
+The 17 failures are the pre-existing ThreadWake route/snapshot-policy and
+vision-routing failures documented before this campaign. No new failure is in
+the throughput-control-plane scope. A sandboxed full-suite attempt was also
+discarded before collection because Metal was unavailable there; the reported
+run used the host Metal device.
 
-`get_threadwake_mlx_kv_reuse_enabled()` continues to return `False`
-unconditionally. The capacity profile schema reserves optional
-fields (`threadwake_cache_ready`, `estimated_prefill_tokens_saved`,
-`estimated_request_cost`) for future compatibility, but no scheduler
-decision currently assumes a ThreadWake cache hit provides real KV
-execution savings.
+```text
+Control-plane implementation: COMPLETE
+Real MLX plumbing: COMPLETE
+Gemma 4 E2B capacity calibration: COMPLETE
+Gemma 4 12B production calibration: PENDING
+```
 
----
-
-## 9. Live Validation Summary — Per-Band
-
-| Band | Completed | Queued | Rejected | Failed | Stuck | TTFT p50/p95 (ms) | Latency p50/p95 (ms) | Throughput |
-|------|-----------|--------|----------|--------|-------|-------------------|----------------------|------------|
-| x1   | 4 / 4     | 0      | 0        | 0      | 0     | n/a (single)      | n/a (single)         | n/a        |
-| x2   | 4 / 4     | 2      | 0        | 0      | 0     | 56.5 / 63.6       | 56.5 / 63.6          | queued     |
-| x4   | 4 / 4     | 2      | 0        | 0      | 0     | 63.7 / 76.3       | 63.7 / 76.3          | queued     |
-
-Stub runtime with `STUB_RESPONSE_DELAY_SECONDS=0.05`. These numbers
-characterise the **stub** path, not real MLX throughput. They are
-useful for proving the *service behaviour* contract (no spurious
-rejection, no stuck requests, no cross-talk) — not for MLX
-calibration.
-
----
-
-## 10. Governing Principle Compliance
-
-> Whoosh'd should not answer "how many concurrent requests did
-> somebody put in an environment variable?".  It should eventually
-> answer "given this model, this runtime, this machine, this
-> workload, and current resource pressure, how much inference can
-> I safely execute — and what should wait?".
-
-Compliance:
-
-* The `CapacityController.evaluate()` API takes a `CapacityContext`
-  that includes the current active jobs, queue depth, max queue
-  depth, runtime readiness, memory pressure, and (forward-looking)
-  requested estimated tokens.  It returns RUN / QUEUE / REJECT with
-  a structured reason.
-* The `WHOOSHD_MAX_ACTIVE_REQUESTS` env var is now an *operator
-  ceiling* — a hard upper bound — not a promise that all slots
-  will be used.
-* Adaptive mode (opt-in) can lower the effective limit below the
-  ceiling based on measured evidence.
-* Memory pressure can further lower the effective limit.
-* The seam for cost-aware scheduling (`requested_estimated_tokens`
-  on `CapacityContext`) is in place.
-
-The harness can ask for four. The machine decides how many run.
-Whoosh'd is now the layer that makes that decision coherent.
+Continuous batching, production ThreadWake KV reuse, and 12B optimization
+remain out of scope. The pipe is validated; the production pump still needs its
+model-specific capacity certificate.

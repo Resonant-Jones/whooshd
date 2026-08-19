@@ -74,40 +74,69 @@ async def _run_one(
 ) -> RequestBenchmarkResult:
     t0 = time.time()
     try:
-        resp = await client.post(
-            f"{base_url}/v1/chat/completions",
-            json={
-                "model": model,
-                "messages": [{"role": "user", "content": prompt}],
-                "stream": stream,
-                "max_tokens": max_tokens,
-            },
-            timeout=timeout,
-        )
-        t1 = time.time()
-        ok = 200 <= resp.status_code < 300
+        payload = {
+            "model": model,
+            "messages": [{"role": "user", "content": prompt}],
+            "stream": stream,
+            "max_tokens": max_tokens,
+        }
         chars = 0
+        chunks = 0
         ttft_ms: Optional[float] = None
-        if stream and ok:
-            ttft_ms = (t1 - t0) * 1000  # approximate
+        if stream:
+            async with client.stream(
+                "POST",
+                f"{base_url}/v1/chat/completions",
+                json=payload,
+                timeout=timeout,
+            ) as resp:
+                status_code = resp.status_code
+                async for line in resp.aiter_lines():
+                    if not line.startswith("data: "):
+                        continue
+                    data = line[6:]
+                    if data == "[DONE]":
+                        break
+                    chunks += 1
+                    try:
+                        chunk = json.loads(data)
+                        content = (
+                            chunk.get("choices", [{}])[0]
+                            .get("delta", {})
+                            .get("content")
+                            or ""
+                        )
+                        if content and ttft_ms is None:
+                            ttft_ms = (time.time() - t0) * 1000
+                        chars += len(content)
+                    except (json.JSONDecodeError, IndexError, AttributeError):
+                        continue
         else:
+            resp = await client.post(
+                f"{base_url}/v1/chat/completions",
+                json=payload,
+                timeout=timeout,
+            )
+            status_code = resp.status_code
             try:
                 body = resp.json()
                 chars = len(body.get("choices", [{}])[0].get("message", {}).get("content", ""))
             except Exception:
                 pass
+        t1 = time.time()
+        ok = 200 <= status_code < 300
         return RequestBenchmarkResult(
             request_index=index,
             ok=ok,
-            status_code=resp.status_code,
+            status_code=status_code,
             stream=stream,
             started_at=t0,
             ended_at=t1,
             total_ms=(t1 - t0) * 1000,
             ttft_ms=ttft_ms,
-            chunks=0,
+            chunks=chunks if stream else None,
             visible_chars=chars,
-            error_code=None if ok else f"http_{resp.status_code}",
+            error_code=None if ok else f"http_{status_code}",
             error_message=None,
         )
     except Exception as exc:
@@ -191,7 +220,12 @@ def _summarise_band(
 
     return CapacityBand(
         concurrency=band_concurrency,
-        successful=(stuck_count == 0 and failure_count == 0),
+        successful=(
+            stuck_count == 0
+            and failure_count == 0
+            and overload_count == 0
+            and success_count == total
+        ),
         request_count=total,
         ttft_p50_ms=_percentile(ttfts, 50) if ttfts else None,
         ttft_p95_ms=_percentile(ttfts, 95) if ttfts else None,
@@ -263,20 +297,35 @@ async def _main_async(args: argparse.Namespace) -> int:
             print("  band failed — stopping further bands")
             break
 
-    recommended = _recommend_concurrency(profile_bands)
+    recommended = (
+        args.recommended_active_concurrency
+        if args.recommended_active_concurrency is not None
+        else _recommend_concurrency(profile_bands)
+    )
+    selected_band = next(
+        (band for band in profile_bands if band.concurrency == recommended),
+        None,
+    )
+    if selected_band is None or not selected_band.successful:
+        print(
+            "ERROR: recommended active concurrency must name a successful tested band",
+            flush=True,
+        )
+        return 2
     print(f"\nrecommended_active_concurrency = {recommended}")
 
     profile = CapacityProfile(
-        model_id=args.model,
+        model_id=args.profile_model_id or args.model,
         runtime=args.runtime,
-        machine_class=_machine_class(),
+        machine_class=args.machine_class or _machine_class(),
         host_memory_bytes=_host_memory_bytes(),
+        quantization=args.quantization,
         prompt_size_chars=len(args.prompt),
         configured_max_tokens=args.max_tokens,
         streaming=args.stream,
         bands=tuple(profile_bands),
         recommended_active_concurrency=recommended,
-        benchmark_version="1.0",
+        benchmark_version="1.1",
     )
 
     saved = safe_save_profile(profile, args.output)
@@ -314,12 +363,29 @@ def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Whoosh'd capacity benchmark")
     p.add_argument("--base-url", default="http://127.0.0.1:8000")
     p.add_argument("--model", default="stub-model")
+    p.add_argument(
+        "--profile-model-id",
+        default=None,
+        help="Immutable model identity stored in the profile; defaults to --model.",
+    )
     p.add_argument("--runtime", default="stub")
+    p.add_argument(
+        "--machine-class",
+        default=None,
+        help="Stable target-host identity stored in the profile.",
+    )
+    p.add_argument("--quantization", default=None)
     p.add_argument("--prompt", default=DEFAULT_PROMPT)
     p.add_argument("--max-tokens", type=int, default=DEFAULT_MAX_TOKENS)
     p.add_argument("--stream", action="store_true", default=False)
     p.add_argument("--requests", type=int, default=DEFAULT_REQUESTS_PER_BAND)
     p.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT_SECONDS)
+    p.add_argument(
+        "--recommended-active-concurrency",
+        type=int,
+        default=None,
+        help="Evidence-reviewed recommendation; must be a successful tested band.",
+    )
     p.add_argument(
         "--band",
         type=int,

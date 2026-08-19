@@ -279,6 +279,14 @@ def reset_controller_for_tests() -> None:
     _controller = None
 
 
+def active_capacity_available(runtime: RuntimeState) -> bool:
+    """Whether the shared controller currently permits another active job."""
+    limit = _get_controller().effective_active_limit(
+        memory_pressure=_memory_pressure_from_runtime(runtime),
+    )
+    return runtime.active_jobs < limit
+
+
 # ── Snapshot helper ────────────────────────────────────────────────────────
 
 
@@ -295,6 +303,7 @@ def build_capacity_snapshot(
     KV handles — safe for dashboards.
     """
     from whooshd.capacity_controller import CapacityController
+    from whooshd.config import get_capacity_model_id, get_capacity_runtime
 
     controller = _get_controller()
     snapshot = controller.snapshot(
@@ -306,7 +315,7 @@ def build_capacity_snapshot(
     )
     # Inject the runtime model id when available — useful for dashboards
     # but never a leak (model ids are public).
-    model_id = getattr(runtime, "active_model", None) or ""
+    model_id = getattr(runtime, "active_model", None) or get_capacity_model_id() or ""
     snapshot["model"] = model_id
-    snapshot["runtime"] = "stub"  # updated by callers that know the adapter
+    snapshot["runtime"] = get_capacity_runtime() or "stub"
     return snapshot

@@ -815,7 +815,11 @@ class RuntimeState:
     def complete_request(self, request_id: str) -> None:
         """Mark a request as successfully completed."""
         rec = self._requests.get(request_id)
-        if rec:
+        if rec and rec.status not in (
+            RequestLifecycleState.CANCELLED,
+            RequestLifecycleState.FAILED,
+            RequestLifecycleState.TIMED_OUT,
+        ):
             rec.status = RequestLifecycleState.COMPLETED
             rec.ended_at = time.time()
 

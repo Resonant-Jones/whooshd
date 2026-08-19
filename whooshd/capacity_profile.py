@@ -126,6 +126,10 @@ class CapacityProfile(BaseModel):
     runtime: str = Field(..., description="Runtime adapter name (mlx, mlx_lm_server, llama_cpp, stub)")
     machine_class: str = Field(..., description="Stable machine identifier, e.g. apple-silicon-m4-32gb")
     host_memory_bytes: Optional[int] = Field(None, ge=0)
+    quantization: Optional[str] = Field(
+        None,
+        description="Quantization identity when it is not unambiguous from model_id",
+    )
 
     # ── Benchmark config ────────────────────────────────────────────
     prompt_size_chars: int = Field(..., ge=0, description="Approximate prompt size in characters")

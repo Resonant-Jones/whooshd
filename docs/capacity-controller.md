@@ -23,6 +23,13 @@ When `WHOOSHD_CAPACITY_MODE=adaptive` and `WHOOSHD_CAPACITY_PROFILE_PATH`
 points to a structured `CapacityProfile` JSON, the controller may
 **lower** the effective active limit below the operator ceiling.
 
+The profile is eligible only when its model ID, runtime, machine class, and
+host-memory identity exactly match the configured runtime identity. Set that
+identity with `WHOOSHD_CAPACITY_MODEL_ID`, `WHOOSHD_CAPACITY_RUNTIME`, and
+`WHOOSHD_CAPACITY_MACHINE_CLASS`. A missing or mismatched identity rejects the
+calibration and falls back to the operator ceiling; evidence from a different
+model or host is never applied.
+
 Adaptive mode **never exceeds** the operator ceiling.  The operator
 ceiling is a hard upper bound.
 
@@ -38,6 +45,9 @@ ceiling is a hard upper bound.
 | `queue_depth` | `RuntimeState.queue_depth` |
 | `max_queue_depth` | `WHOOSHD_MAX_QUEUE_DEPTH` |
 | `runtime_ready` | `RuntimeState.model_lifecycle` |
+| configured model identity | `WHOOSHD_CAPACITY_MODEL_ID` |
+| configured runtime identity | `WHOOSHD_CAPACITY_RUNTIME` |
+| configured machine class | `WHOOSHD_CAPACITY_MACHINE_CLASS` |
 
 ## Outputs
 
@@ -53,6 +63,8 @@ ceiling is a hard upper bound.
 | `calibrated_concurrency` | from profile (if loaded) |
 | `memory_pressure` | observed value |
 | `profile_loaded` | whether a profile was found |
+| `profile_eligible` | whether the profile identity matches this runtime |
+| `profile_rejection_reason` | mismatch reason when the profile is ineligible |
 
 ### Decision reasons
 
@@ -85,6 +97,8 @@ content, generated text, KV handles, or token IDs are exposed.
   "memory_pressure": "normal",
   "calibrated_concurrency": null,
   "profile_loaded": false,
+  "profile_eligible": false,
+  "profile_rejection_reason": null,
   "runtime_ready": true,
   "model": "stub-model",
   "runtime": "stub",
@@ -110,6 +124,7 @@ A `CapacityProfile` is a JSON document with this shape (see
   "runtime": "mlx_lm_server",
   "machine_class": "darwin-arm64",
   "host_memory_bytes": 34359738368,
+  "quantization": "affine-4bit-group64",
   "prompt_size_chars": 1024,
   "configured_max_tokens": 256,
   "streaming": true,
@@ -123,9 +138,11 @@ A `CapacityProfile` is a JSON document with this shape (see
 }
 ```
 
-The profile is produced by `python -m whooshd.bench.capacity_bench`
-or by hand-editing a JSON file.  Failure to load the profile is
-non-fatal — the controller falls back to the operator ceiling.
+The profile is produced by `python -m whooshd.bench.capacity_bench`.
+The CLI accepts an immutable `--profile-model-id`, `--machine-class`, and
+optional `--quantization` so the artifact cannot be confused with a public
+alias or another host. Failure to load or match the profile is non-fatal — the
+controller falls back to the operator ceiling.
 
 ## What is **not** in this controller
 
