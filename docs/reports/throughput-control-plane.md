@@ -7,6 +7,8 @@ macOS 26.5.2
 
 **Validation date:** 2026-08-19
 
+**Last requalification:** 2026-09-11
+
 ```text
 Automated implementation validation: COMPLETE
 Live stub validation: COMPLETE
@@ -297,7 +299,71 @@ Gemma 4 E4B = optional portability fixture
 Gemma 4 12B IT QAT 4-bit = production-capacity calibration target
 ```
 
-## 13. Validation status
+## 13. Rebase requalification — 2026-09-11
+
+The branch was rebased from `968ea35` onto current shared main
+`6d02b3f` (`origin/main`). Local `main` was not rewritten. The only manual
+integration resolution retained both newer request-ID provenance and the
+qualification-attestation section in `docs/request-contract.md`; no source
+conflict required a hand merge.
+
+The existing exact E2B fixture and profile were reused without modification:
+
+```text
+model: mlx-community/gemma-4-e2b-it-4bit
+revision: 238767527555cb75a05732a84dff5d6ba0dd6809
+runtime: mlx_vlm
+profile recommendation: 3
+operator ceiling: 4
+```
+
+Fresh-process profile consumption passed before inference:
+
+```text
+profile_loaded: true
+profile_eligible: true
+profile_rejection_reason: null
+effective_active_limit: 3
+capacity_reason: calibrated_limit
+```
+
+A bounded four-client streaming burst exercised streaming, queue lifecycle,
+and request isolation together:
+
+```text
+submitted / completed: 4 / 4
+queued / dequeued: 1 / 1
+rejected / failed / stuck: 0 / 0 / 0
+active concurrency peak / queue peak: 3 / 1
+TTFT p50 / p95: 1898.518 / 2578.759 ms
+latency p50 / p95: 2399.199 / 3484.284 ms
+all streams received terminal reason and [DONE]: yes
+all expected request markers present: yes
+cross-talk: no
+active_jobs / queue_depth after completion: 0 / 0
+```
+
+The same E2B profile was then checked after a separate restart with the
+installed 12B path as the configured capacity identity. The 12B model was not
+loaded and no 12B inference was attempted; this was an identity-rejection
+check only.
+
+```text
+profile_loaded: true
+profile_eligible: false
+profile_rejection_reason: model_mismatch
+calibrated_concurrency: null
+effective_active_limit: 4
+fallback boundary: operator ceiling
+```
+
+The rebased changed-scope automated suite passed `229` tests. Both isolated
+qualification processes were stopped afterward, and the pre-existing Whoosh'd
+service remained healthy. These results requalify the E2B control-plane
+mechanics after integration; they do not widen the original model-specific
+capacity claim.
+
+## 14. Validation status
 
 Automated tests cover profile schema/round-trip, strict identity matching,
 operator ceilings, queue/scheduler authority, runtime lifecycle, cancellation,
