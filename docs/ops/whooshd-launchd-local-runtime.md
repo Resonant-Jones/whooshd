@@ -18,8 +18,8 @@ The working Gemma 4 12B path depends on two cooperating local daemons:
 Launchd process presence is not proof. Required proof is:
 
 - upstream `mlx_vlm` inventory reachable
-- Whoosh'd `/v1/models` contains `gemma-4-12b-it-qat-4bit`
-- real `POST /v1/chat/completions` through the alias returns the expected text
+- Whoosh'd `/v1/models` contains the stable `local-chat` route
+- real `POST /v1/chat/completions` through `local-chat` returns the expected text
 
 ## Files
 
