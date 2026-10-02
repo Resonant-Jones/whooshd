@@ -31,10 +31,18 @@ workflows like personas, tools, project context, and thread continuation.
 |---|---|---|---|
 | `off` | No | No | Default. Zero overhead. |
 | `observe` | No | Yes | Measure potential benefit before enabling reuse. |
-| `ephemeral` | Yes | Yes | Full KV reuse for exact prefix matches. |
-| `session` | Yes | Yes | Ephemeral + monotonic conversation continuation. |
+| `ephemeral` | Backend-gated | Yes | Targets full KV reuse for exact prefix matches. |
+| `session` | Backend-gated | Yes | Ephemeral + monotonic conversation continuation. |
 
 Configure via `WHOOSHD_THREADWAKE_MODE` or per-request `threadwake.mode`.
+
+**`Backend-gated` means reuse also requires backend support.** Every shipped
+backend reports `unsupported` KV capability by default, so selecting
+`ephemeral` or `session` does not by itself produce KV reuse. The in-process
+MLX adapter reports `experimental` only when
+`WHOOSHD_THREADWAKE_MLX_KV_EXPERIMENTAL=true` and the MLX-LM prompt-cache API
+is available. Check the reported capability before assuming reuse is active;
+production KV reuse is not enabled and durable KV snapshots are deferred.
 
 ---
 

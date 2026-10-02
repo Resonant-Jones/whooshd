@@ -2,6 +2,6 @@
 
 from .log_safety import install_safe_logging
 
-__version__ = "0.1.0rc3"
+__version__ = "0.1.0"
 
 install_safe_logging()

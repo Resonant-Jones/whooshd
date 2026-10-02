@@ -1,6 +1,121 @@
 # Changelog
 
-## v0.1.0rc3 (Unreleased)
+## v0.1.0 (Unreleased)
+
+First GA release. Delta from `v0.1.0rc3` (222 commits), grouped by subsystem.
+
+> The `(Unreleased)` marker follows the repository's release convention
+> established in `1e3f480`: the top section carries the version being prepared
+> and stays marked unreleased until the tag is cut.
+
+### Capacity control plane
+
+New bounded throughput control plane. The `CapacityController` answers one
+question — how many requests may execute right now — and delegates admission,
+queue, and scheduler decisions to it.
+
+- `CapacityController` abstraction and `CapacityProfile` artifact
+- `fixed` (default) and `adaptive` modes; adaptive may only **lower** the
+  effective active limit, never above the `WHOOSHD_MAX_ACTIVE_REQUESTS` ceiling
+- Six `WHOOSHD_CAPACITY_*` configuration variables
+- Strict model/host identity binding — a profile is eligible only on exact
+  match of model id, runtime, machine class, and host memory
+- Non-fatal conservative fallback: `missing_profile`, `invalid_profile`,
+  `model_mismatch` all degrade to the operator ceiling
+- `GET /runtime/capacity` metadata-only snapshot
+- `python -m whooshd.bench.capacity_bench` per-band calibration CLI
+- Scheduler-authoritative `select_and_dequeue`; admission delegates capacity
+  decisions to the controller
+
+### Request correlation
+
+- Bounded v1 correlation: upstream `X-Request-ID` and Whoosh'd
+  `X-Whoosh-Request-ID` stored and propagated as distinct identities
+- Preserved through immediate, streaming, queued, cancelled, pre-stream
+  failure, and mid-stream error paths
+- Cancellation by the Whoosh'd ID returns the associated correlation pair
+- Unsafe or oversized identifiers omitted, never reflected
+- Note: an earlier **unbounded** propagation design was reverted; the shipped
+  implementation is this bounded contract
+
+### Control-plane v1 contract
+
+- `whooshd.control.v1` versioned request/response negotiation
+- Structured error envelopes with stable codes, retryability, and bounded
+  retry timing
+- Streaming terminal integrity: post-output failures emit a canonical SSE error
+  event and never fabricate a successful `[DONE]`
+- Shared repository-neutral v1 contract fixture corpus
+
+### Runtime provenance and qualification
+
+- Bounded `whooshd.runtime.v1` provenance on model inventory and successful
+  responses; streaming via `X-Whooshd-Runtime-Provenance`
+- Target-scoped, additive `qualification_attestation` reference
+- External adapter model paths bound explicitly; external routes kept behind a
+  registry allowlist
+
+### Model registry
+
+- Explicit authoritative runtime registry — an operator-owned, fail-closed model
+  allowlist
+- Unknown and disabled model IDs no longer fall through to adapter heuristics
+- Guest/friends-family launch profiles
+
+### Logging and safety
+
+- Bounded Whoosh'd-owned log records under a documented safety contract
+- Daemon ownership verification and log sanitization
+- Unavailable runtime probes handled; readiness and batch errors fail closed
+- Historical files, platform logs, and external collectors are not claimed to
+  be retroactively scrubbed
+
+### Daemon and runtime recovery
+
+- Verified legacy daemon group recovery, including BSD process-group lookup
+- Warmup/readiness stabilization and runtime failure boundary clarification
+- launchd runtime bundle as the operator path
+
+### Documentation
+
+- `docs/capacity-controller.md` and `docs/reports/throughput-control-plane.md`
+- Rebuilt `docs/README.md` spine, `docs/operator-guide.md`, and
+  `docs/api-reference.md`
+- `docs/validation-index.md` reconciled with the recorded evidence, preserving
+  PASSED / FAILED / INCONCLUSIVE / BLOCKED / PENDING distinctions
+- `docs/security/whooshd-logging-safety.md`
+
+### Verified
+
+- 2360 passed, 3 skipped (full suite)
+- 37 capacity control plane tests passing
+- Real MLX control-plane plumbing validated against Gemma 4 E2B on Apple M4 /
+  32 GB, including admission, queueing, scheduler selection, capacity gating,
+  streaming, cancellation, request isolation, and lifecycle cleanup
+
+### Pending
+
+- **Gemma 4 12B production capacity calibration** — target host
+  (`Mac16,10` M4 / 32 GB) and a complete local checkpoint are present, but the
+  benchmark run was not performed. Not a GA blocker.
+- **Gemma 4 E4B cross-model portability smoke** — blocked by an
+  `mlx_vlm` / checkpoint parameter incompatibility.
+
+### Known Limitations
+
+- No production-ready continuous batching or token-step shared decode for MLX
+  (Cave Thunder decision)
+- No throughput or latency improvement claim beyond the recorded validation
+  packets
+- Production ThreadWake KV reuse not enabled; backends report `unsupported`
+  capability by default
+- Durable KV snapshots deferred
+- No embeddings, tool calling, multi-node routing, or production auth hardening
+- Capacity profiles are model/host-bound and are not portable recommendations
+
+---
+
+## v0.1.0rc3
 
 ### Changed
 

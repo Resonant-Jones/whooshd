@@ -67,13 +67,36 @@ Step 5 — Scope enforcement: Every lookup validates the scope context
 
 ## Modes
 
-| Mode | Behavior | Cache Reuse | Metrics |
+Modes control ThreadWake's **orchestration**. Whether KV reuse actually happens
+in a given mode additionally depends on the selected backend's reported KV
+capability — see [Backend capability](#backend-capability-gates-reuse).
+
+| Mode | Behavior | Reuse if backend supports it | Metrics |
 |---|---|---|---|
 | `off` | ThreadWake disabled | None | No |
 | `observe` | Hash, segment, report — no KV reuse | No | Yes |
-| `ephemeral` | Full KV reuse for exact prefix matches | Yes | Yes |
-| `session` | Ephemeral + monotonic conversation continuation | Yes | Yes |
+| `ephemeral` | Full KV reuse for exact prefix matches | Backend-gated | Yes |
+| `session` | Ephemeral + monotonic conversation continuation | Backend-gated | Yes |
 | `advanced` | Reserved for future use | — | — |
+
+### Backend capability gates reuse
+
+`ephemeral` and `session` are orchestration modes, not a promise of production
+KV reuse. Reuse is additionally gated on what the backend reports:
+
+| Capability level | Meaning |
+|---|---|
+| `unsupported` | No KV reuse. This is the default for every shipped backend |
+| `experimental` | Prefill/generate via a gated path, opt-in by flag |
+| `prefill_only` / `resumable` / `cloneable` / `serializable` | Increasing capability; **no shipped backend reports these** |
+
+The in-process MLX adapter reports `experimental` only when
+`WHOOSHD_THREADWAKE_MLX_KV_EXPERIMENTAL=true` and the MLX-LM prompt-cache API is
+available. The MLX-LM Server, MLX-VLM, and llama.cpp lanes report no KV
+serialization capability at all.
+
+**Production KV reuse is not enabled.** Durable KV snapshots remain deferred.
+See [ThreadWake README](README.md) for the current milestone status.
 
 ### `off`
 Default.  No ThreadWake processing occurs.  Zero overhead.
@@ -84,9 +107,9 @@ and records metrics — but does **not** store or reuse KV cache state.
 Useful for measuring potential benefit before enabling reuse.
 
 ### `ephemeral`
-Full KV reuse for **exact** stable-prefix matches.  The first request with
-a given prefix computes and caches the prefill.  Subsequent identical
-prefixes skip the prefill phase entirely.
+Targets full KV reuse for **exact** stable-prefix matches. The first request
+with a given prefix computes and caches the prefill; subsequent identical
+prefixes skip the prefill phase — where the backend supports it.
 
 ### `session`
 Extends ephemeral mode with **monotonic conversation continuation**.  If a

@@ -1,5 +1,22 @@
 # Runtime/API Baseline Triage
 
+> **Status: HISTORICAL — resolved. Retained as evidence, not current state.**
+>
+> **Resolution note (2026-10-02).** The baseline captured below is **no longer
+> current**. The 45 failures recorded here, including the 11 streaming
+> chat-completion failures, have been resolved. The suite at the time of the
+> `v0.1.0` release branch verified as:
+>
+> ```text
+> 2360 passed, 3 skipped
+> ```
+>
+> The 3 skips are Metal-gated and pre-existing. `tests/test_chat_completions_streaming.py`
+> now passes 21/21, resolving the largest cluster below.
+>
+> The original triage record is preserved unchanged so the failure history
+> remains auditable. For current status see [Validation Index](validation-index.md).
+
 Triage document, not a repair patch. Captures the current test
 baseline after the queue, batching, token-step research,
 documentation, and release-facing closure arcs.
@@ -15,11 +32,13 @@ full suite. Excludes unrelated pre-existing backend-gated failures.
 .venv/bin/python -m pytest -v
 ```
 
-## Current Result
+## Result Observed at the Time of Triage
 
 ```
 2071 passed, 45 failed, 2 warnings
 ```
+
+> Historical figure. See the resolution note at the top of this document.
 
 ## Failure Clusters
 

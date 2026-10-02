@@ -16,6 +16,11 @@ Live real-MLX plumbing validation: COMPLETE
 Target Gemma 4 12B capacity calibration: PENDING
 ```
 
+> **Current status (2026-10-02):** the full suite is green at 2360 passed /
+> 3 skipped — the campaign-era "17 failed" figure in §14 is resolved. The 12B
+> calibration is still PENDING; its prerequisites are present but the run was
+> not performed. See [§15 Amendment](#15-amendment--2026-10-02).
+
 The throughput control plane has been validated against a real MLX runtime
 using Gemma 4 E2B. Gemma 4 12B IT QAT capacity certification remains a
 model-specific target-host benchmark and does not block validation of the
@@ -391,3 +396,53 @@ Gemma 4 12B production calibration: PENDING
 Continuous batching, production ThreadWake KV reuse, and 12B optimization
 remain out of scope. The pipe is validated; the production pump still needs its
 model-specific capacity certificate.
+
+---
+
+## 15. Amendment — 2026-10-02
+
+This section amends the record above without altering the campaign history.
+
+### Full-suite baseline resolved
+
+§14 records `2271 passed, 17 failed`. Those ThreadWake route/snapshot-policy
+and vision-routing failures have since been fixed. The current verified result
+on the release branch is:
+
+```text
+full suite:   2360 passed, 3 skipped
+capacity set:  37 passed
+```
+
+The 3 skips are Metal-gated and pre-existing; they are not new. The
+campaign-era observation above was accurate for its date and is retained as
+historical evidence of that campaign.
+
+### Gemma 4 12B production calibration — PENDING, cause stated
+
+§1 and §12 record the 12B calibration as pending. As of 2026-10-02 the
+prerequisites have been checked:
+
+| Prerequisite | Status |
+|---|---|
+| Target host is the campaign host | Present — Mac mini `Mac16,10`, Apple M4, 32 GB |
+| 12B checkpoint | Present and complete — `models--mlx-community--gemma-4-12B-it-qat-4bit`, ~10 GB, 3 safetensors shards plus config, index, tokenizer, chat template |
+| Metal device usable during the release session | Not available |
+| `mlx_lm` / `mlx_vlm` installed | Not installed |
+
+The calibration was **not performed** because no MLX inference could execute
+in the release session. No 12B concurrency band, aggregate token throughput, or
+TTFT figure is claimed. E2B results are not presented as 12B results.
+
+This remains **PENDING** and is not a GA blocker: the control-plane mechanics
+are already validated against a real MLX runtime by the E2B campaign above.
+The outstanding work is to run `whooshd.bench.capacity_bench` on a
+Metal-capable session with the MLX runtime installed, pointed at the existing
+local checkpoint.
+
+### E4B portability — still BLOCKED
+
+Unchanged from §11. `mlx_vlm` rejected 126 checkpoint parameters
+(`MLX_RUNTIME` / `MODEL` incompatibility). Still an explicit follow-up, not a
+passing result.
+
