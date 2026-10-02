@@ -15,7 +15,8 @@ from whooshd.registry import (
 
 ROOT = Path(__file__).resolve().parents[1]
 PROFILE = ROOT / "configs" / "models.friends-family-guest.yaml"
-MODEL_ID = "gemma-4-12b-it-qat-4bit"
+MODEL_ID = "local-chat"
+PHYSICAL_MODEL_ID = "gemma-4-12b-it-qat-4bit"
 
 
 def test_friends_family_registry_pins_one_keep_warm_mlx_vlm() -> None:
@@ -59,7 +60,7 @@ async def test_guest_profile_inventory_and_allowlist_reject_before_provider(
     provider.kind = "mlx_vlm"
     provider.name = "recording-mlx-vlm"
     provider.supports_streaming = True
-    provider.model_id.return_value = MODEL_ID
+    provider.model_id.return_value = PHYSICAL_MODEL_ID
     provider.is_loaded.return_value = False
     provider.chat_completion = AsyncMock()
     provider.chat_completion_stream = MagicMock()
@@ -72,6 +73,11 @@ async def test_guest_profile_inventory_and_allowlist_reject_before_provider(
             inventory = await client.get("/v1/models")
             assert inventory.status_code == 200
             assert [entry["id"] for entry in inventory.json()["data"]] == [MODEL_ID]
+
+            resolution = await router.resolve_model_runtime(MODEL_ID)
+            assert resolution.requested_model_id == MODEL_ID
+            assert resolution.resolved_model_id == PHYSICAL_MODEL_ID
+            assert resolution.adapter is provider
 
             rejected = await client.post(
                 "/v1/chat/completions",

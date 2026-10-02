@@ -30,7 +30,11 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from whooshd import __version__
-from whooshd.admission import AdmissionDecision, evaluate_chat_request
+from whooshd.admission import (
+    AdmissionDecision,
+    active_capacity_available,
+    evaluate_chat_request,
+)
 from whooshd.adapters.base import StreamingNotSupportedError
 from whooshd.backend_request_policy import (
     BackendRequestPolicyError,
@@ -1258,12 +1262,10 @@ async def chat_completions(request: Request, req: ChatCompletionRequest):
         )
         queue.enqueue(entry)
 
-        from whooshd.config import get_max_active_requests
-
         ready = await queue.wait_for_execution(
             entry,
             cancel_token=token,
-            capacity_available=lambda: rt.active_jobs < get_max_active_requests(),
+            capacity_available=lambda: active_capacity_available(rt),
         )
 
         if not ready:
@@ -1599,6 +1601,58 @@ async def runtime_admission():
     """Current admission limits and counters."""
     rt = get_runtime()
     return rt.build_admission_config()
+
+
+@app.get("/runtime/capacity")
+async def runtime_capacity():
+    """Capacity controller snapshot.
+
+    Safe observability surface for the throughput control plane:
+
+    * ``capacity_mode`` — ``fixed`` or ``adaptive``.
+    * ``effective_active_limit`` — controller's current active limit.
+    * ``operator_max_active`` — hard ceiling from ``WHOOSHD_MAX_ACTIVE_REQUESTS``.
+    * ``active_requests`` / ``queued_requests`` — current counts.
+    * ``capacity_reason`` — structured reason for the current verdict.
+    * ``profile_loaded`` / ``calibrated_concurrency`` — adaptive evidence.
+    * ``runtime`` / ``model`` — current routing.
+
+    No prompt content, generated text, KV handles, or token IDs are
+    ever exposed.
+    """
+    from whooshd.admission import build_capacity_snapshot
+    from whooshd.config import get_capacity_runtime, get_max_queue_depth
+    from whooshd.routing import get_router
+
+    rt = get_runtime()
+    snapshot = build_capacity_snapshot(
+        rt,
+        max_queue_depth=get_max_queue_depth(),
+    )
+
+    # Surface the current adapter kind (mlx, llama_cpp, stub) and model
+    # id so dashboards can correlate capacity with the active runtime.
+    try:
+        router = get_router()
+        configured_capacity_runtime = get_capacity_runtime()
+        for adapter in router._adapters.values():
+            if (
+                configured_capacity_runtime
+                and configured_capacity_runtime != "stub"
+                and getattr(adapter, "kind", None) == "stub"
+            ):
+                continue
+            if adapter.is_loaded():
+                snapshot["runtime"] = getattr(adapter, "kind", snapshot.get("runtime"))
+                snapshot["model"] = adapter.model_id()
+                break
+    except Exception:
+        pass
+
+    # Snapshot the queue scheduler state — same shape as admission.snapshot.
+    from whooshd.queue import get_queue
+    snapshot["scheduler"] = get_queue().scheduler.build_snapshot()
+    return snapshot
 
 
 # ── ThreadWake health ──────────────────────────────────────────────────────

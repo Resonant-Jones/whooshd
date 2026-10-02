@@ -7,6 +7,120 @@ how to interpret results, and what not to conclude.
 
 ---
 
+## High-Throughput Coding Harness Profiles (Phase 5+)
+
+The profiles below are the canonical calibration recipes for the throughput
+control plane.  They distinguish:
+
+* **Client concurrency** — outstanding HTTP requests accepted by Whoosh'd.
+* **Active inference concurrency** — requests simultaneously executing against
+  a runtime.
+* **Batch size** — compatible requests executed in one backend batch.
+* **Queue depth** — requests accepted but waiting for execution capacity.
+
+These terms are **not interchangeable**.  See `docs/glossary.md` and
+`docs/capacity-controller.md` for the authoritative definitions.
+
+### `coding-harness-queue-4`
+
+Validate that a 4-client harness workload succeeds with active=2 + queue=8.
+
+```bash
+# 1. Start Whoosh'd with the canonical profile.
+WHOOSHD_ENABLE_QUEUE=true \
+WHOOSHD_MAX_QUEUE_DEPTH=8 \
+WHOOSHD_QUEUE_TIMEOUT_SECONDS=300 \
+WHOOSHD_MAX_ACTIVE_REQUESTS=2 \
+WHOOSHD_MLX_MAX_CONCURRENT_REQUESTS=2 \
+WHOOSHD_STUB_RESPONSE_DELAY_SECONDS=0.05 \
+.venv/bin/python -m uvicorn whooshd.app:app \
+  --host 127.0.0.1 \
+  --port 8000
+
+# 2. Submit 4 concurrent streaming chat completions.
+python -m whooshd.bench.runner \
+  --base-url http://127.0.0.1:8000 \
+  --model stub-model \
+  --concurrency 4 \
+  --requests 4 \
+  --stream \
+  --max-tokens 32
+```
+
+**Expected:** 4 succeeded, 0 failed, 0 rejected.  `active_jobs` returns to 0.
+
+**Does not** raise the active MLX limit — Phase A proves queueing alone can
+satisfy 4-client harness workloads without increasing backend pressure.
+
+---
+
+### `mlx-active-concurrency-1` (and 2, 3, 4)
+
+Validate that the configured `WHOOSHD_MLX_MAX_CONCURRENT_REQUESTS=N` is
+honoured, and capture TTFT/latency/throughput at each band.
+
+```bash
+# Pre-conditions:
+#   - Gemma 4 12B IT QAT model loaded via mlx_lm.server
+#   - WHOOSHD_MLX_ENABLED=true
+#   - WHOOSHD_MLX_MAX_CONCURRENT_REQUESTS=N (set per band)
+
+WHOOSHD_MLX_MAX_CONCURRENT_REQUESTS=1 \
+.venv/bin/python -m whooshd.bench.runner \
+  --base-url http://127.0.0.1:8000 \
+  --model mlx-community/gemma-4-12b-it-qat-4bit \
+  --concurrency 1 \
+  --requests 8 \
+  --max-tokens 256 \
+  --stream
+
+# Then run the capacity-bench CLI to write a structured profile.
+.venv/bin/python -m whooshd.bench.capacity_bench \
+  --base-url http://127.0.0.1:8000 \
+  --model mlx-community/gemma-4-12b-it-qat-4bit \
+  --runtime mlx_lm_server \
+  --requests 8 \
+  --stream \
+  --band 1 2 3 4 6 8 \
+  --output ./gemma4_12b_qat_profile.json
+```
+
+**Expected:** the structured `CapacityProfile` JSON contains one band per
+`--band` argument with measured success_count, ttft_p50/p95, latency_p50/p95,
+and a `recommended_active_concurrency` derived from the evidence.
+
+---
+
+### `mlx-batch-comparison`
+
+Compare independent execution vs queued batch_generate execution under
+identical workload.
+
+```bash
+# 1. Independent baseline.
+WHOOSHD_MLX_BATCH_EXECUTION_ENABLED=false \
+.venv/bin/python -m whooshd.bench.runner \
+  --base-url http://127.0.0.1:8000 \
+  --model mlx-community/gemma-4-12b-it-qat-4bit \
+  --concurrency 4 \
+  --requests 32
+
+# 2. Queued batch path (capability-gated; non-streaming only).
+WHOOSHD_MLX_BATCH_EXECUTION_ENABLED=true \
+WHOOSHD_BATCH_EXECUTION_ENABLED=true \
+WHOOSHD_BATCH_ANALYSIS_ENABLED=true \
+.venv/bin/python -m whooshd.bench.runner \
+  --base-url http://127.0.0.1:8000 \
+  --model mlx-community/gemma-4-12b-it-qat-4bit \
+  --concurrency 4 \
+  --requests 32
+```
+
+**Expected:** a side-by-side comparison of TTFT p50/p95 and aggregate latency.
+Do not claim improvement unless measured — see `docs/capacity-controller.md`.
+
+---
+
 ## Profile Definitions
 
 ### `stub-smoke`

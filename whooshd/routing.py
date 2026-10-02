@@ -35,6 +35,10 @@ from whooshd.contracts import (
     RuntimeModel,
     RuntimeProvenance,
 )
+from whooshd.qualification_attestation import (
+    RuntimeQualificationAttestation,
+    RuntimeQualificationAttestationReference,
+)
 from whooshd.log_safety import exception_metadata, safe_model_alias
 from whooshd.correlation import normalize_identifier
 
@@ -64,6 +68,7 @@ def inventory_provenance(
     resolution_source: str,
     loaded: bool,
     adapter_name: str | None = None,
+    qualification_attestation: RuntimeQualificationAttestationReference | None = None,
 ) -> RuntimeProvenance:
     """Build safe provenance for a model advertised by inventory."""
     from whooshd import __version__
@@ -78,7 +83,51 @@ def inventory_provenance(
         execution_mode=_EXECUTION_MODES.get(runtime_kind, "external_sidecar"),
         model_lifecycle="ready" if loaded else "unloaded",
         whooshd_version=str(__version__)[:64],
+        qualification_attestation=qualification_attestation,
     )
+
+
+def target_attestation(
+    adapter: InferenceAdapter,
+    *,
+    invocation_model_id: str,
+    resolved_model_id: str,
+) -> RuntimeQualificationAttestation | None:
+    """Ask the selected target owner for retained evidence, if it has any.
+
+    The adapter owns the cache and lifecycle invalidation.  Routers never
+    reconstruct filesystem or package identity per request.
+    """
+    producer = getattr(adapter, "qualification_attestation_for_target", None)
+    if not callable(producer):
+        return None
+    try:
+        result = producer(
+            invocation_model_id=invocation_model_id,
+            resolved_model_id=resolved_model_id,
+        )
+    except Exception as exc:
+        logger.warning(
+            "routing.qualification_attestation_unavailable adapter=%s exception_type=%s",
+            getattr(adapter, "name", "unknown"),
+            type(exc).__name__,
+        )
+        return None
+    return result if isinstance(result, RuntimeQualificationAttestation) else None
+
+
+def target_attestation_reference(
+    adapter: InferenceAdapter,
+    *,
+    invocation_model_id: str,
+    resolved_model_id: str,
+) -> RuntimeQualificationAttestationReference | None:
+    attestation = target_attestation(
+        adapter,
+        invocation_model_id=invocation_model_id,
+        resolved_model_id=resolved_model_id,
+    )
+    return attestation.reference() if attestation is not None else None
 
 
 @dataclass(frozen=True)
@@ -91,6 +140,7 @@ class RuntimeResolution:
     advertised_model_id: str
     resolved_model_id: str
     execution_mode: str
+    qualification_attestation: RuntimeQualificationAttestationReference | None = None
 
     def for_model(self, model_id: str) -> "RuntimeResolution":
         """Retain the selected adapter while describing one batch member."""
@@ -101,6 +151,11 @@ class RuntimeResolution:
             advertised_model_id=model_id,
             resolved_model_id=self.resolved_model_id,
             execution_mode=self.execution_mode,
+            qualification_attestation=target_attestation_reference(
+                self.adapter,
+                invocation_model_id=model_id,
+                resolved_model_id=self.resolved_model_id,
+            ),
         )
 
     def provenance(
@@ -136,6 +191,7 @@ class RuntimeResolution:
             batched=bool(batched),
             model_lifecycle=model_lifecycle,
             whooshd_version=str(__version__)[:64],
+            qualification_attestation=self.qualification_attestation,
         )
 
 
@@ -228,6 +284,11 @@ class RuntimeRouter:
             resolved_model_id=loaded_model_id or model_id,
             execution_mode=_EXECUTION_MODES.get(
                 str(adapter.kind), "external_sidecar"
+            ),
+            qualification_attestation=target_attestation_reference(
+                adapter,
+                invocation_model_id=model_id,
+                resolved_model_id=loaded_model_id or model_id,
             ),
         )
 

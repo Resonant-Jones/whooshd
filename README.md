@@ -33,6 +33,8 @@ This README is intentionally conservative: supported features are listed separat
 | Streaming transport | Supported | Server-Sent Events with `data:` chunks and `data: [DONE]` |
 | Model inventory | Supported | `GET /v1/models` and `GET /api/tags` |
 | Runtime provenance | Supported | Bounded `whooshd.runtime.v1` evidence on inventory and successful responses |
+| Request correlation | Supported | Bounded v1: separate upstream `X-Request-ID` and Whoosh'd `X-Whoosh-Request-ID` |
+| Capacity control plane | Supported | `fixed` default; `adaptive` may only lower the active limit via a validated `CapacityProfile`; `GET /runtime/capacity` |
 | Health and readiness | Supported | `GET /health`, `GET /ready`, `GET /health/runtime` |
 | Runtime lifecycle | Supported | Runtime snapshots, model warmup, unload, request tracking |
 | Request cancellation | Supported | `POST /runtime/requests/{id}/cancel` |
@@ -56,16 +58,15 @@ This README is intentionally conservative: supported features are listed separat
 | Area | Status | Notes |
 |---|---:|---|
 | Continuous/token-step batching | Not claimed as production-ready | Research and guarded batching work exist; no production throughput claim |
-| Production KV reuse | Not enabled | ThreadWake materialization is gated by backend capability |
+| Production KV reuse | Not enabled | ThreadWake materialization is gated by backend capability; backends report `unsupported` by default |
 | Durable KV snapshots | Deferred | Snapshot persistence is outside the current supported surface |
 | Embeddings endpoint | Not implemented | Future surface |
 | Tool/function calling | Not implemented | Request fields may be retained without implying provider capability |
 | Production auth hardening | Not implemented | Local-first development posture only |
 | Multi-node routing | Not implemented | Future architecture |
-| Adaptive memory-aware concurrency | Deferred | Current admission uses conservative fixed limits; calibrate from measured host/model behavior before adapting |
+| Gemma 4 12B capacity calibration | Pending | Target host and a complete local checkpoint are present; the benchmark run has not been performed. See [Throughput Control Plane](docs/reports/throughput-control-plane.md) |
 | Live Codexify deployment claim | Not claimed by tests alone | Rehearse against the target runtime and machine |
 | Performance improvement claims | Not automatic | Record hardware, model, runtime, and benchmark conditions |
-| End-to-end correlation propagation | Not claimed | The July correlation propagation change was reverted |
 
 ## Why not just Ollama or a raw MLX script?
 
@@ -280,6 +281,26 @@ Whoosh'd can attach bounded runtime evidence using schema `whooshd.runtime.v1`:
 
 Provenance identifies the code path used. It contains no prompts, completions, media, URLs, filesystem paths, process identifiers, environment values, or credentials, and it is not proof that a live runtime or model is currently available.
 
+### Request correlation
+
+Whoosh'd keeps two request identities deliberately separate:
+
+- `X-Request-ID` — the upstream caller's identity, accepted only when it contains
+  1–128 characters from `A-Za-z0-9._:-`
+- `X-Whoosh-Request-ID` — Whoosh'd's own lifecycle identity, generated with a
+  `whoosh-` prefix once a chat request enters the local lifecycle
+
+The upstream value never replaces the local one. Both survive queueing, batching,
+cancellation, and adapter context; cancellation is addressed by the Whoosh'd ID and
+returns the associated pair. Unsafe or oversized incoming identifiers are omitted
+rather than reflected, and callers that send no `X-Request-ID` keep the legacy
+response shape apart from the additive local header.
+
+Scope note: an earlier **unbounded** correlation propagation design was reverted. The
+shipped and validated implementation is this bounded v1 contract, not the reverted one.
+
+See [Control-Plane Contract v1](docs/control-plane-v1.md).
+
 ## Endpoint reference
 
 | Method | Path | Description |
@@ -293,6 +314,8 @@ Provenance identifies the code path used. It contains no prompts, completions, m
 | POST | `/runtime/model/unload` | Unload models |
 | GET | `/runtime/requests` | Request lifecycle list |
 | POST | `/runtime/requests/{id}/cancel` | Cancel an active request |
+| GET | `/runtime/admission` | Admission limits and counters |
+| GET | `/runtime/capacity` | Capacity controller snapshot (mode, effective limit, profile status) |
 | GET | `/v1/models` | OpenAI-compatible model inventory |
 | GET | `/api/tags` | Ollama-compatible model inventory |
 | POST | `/v1/chat/completions` | OpenAI-compatible chat |
@@ -380,6 +403,44 @@ Start here:
 | `WHOOSHD_MAX_ACTIVE_REQUESTS` | `2` | Active request admission limit |
 | `WHOOSHD_ENABLE_QUEUE` | `false` | Enable bounded FIFO queue |
 
+### Capacity control plane
+
+The capacity controller answers one question: **how many requests may execute right
+now?** It is `fixed` by default, which is exactly `WHOOSHD_MAX_ACTIVE_REQUESTS` with
+no profile consulted. `adaptive` mode may only **lower** that limit from a validated
+`CapacityProfile`; the operator ceiling is a hard upper bound and adaptive mode never
+raises concurrency above it.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `WHOOSHD_CAPACITY_MODE` | `fixed` | `fixed` or `adaptive` |
+| `WHOOSHD_CAPACITY_PROFILE_PATH` | none | Path to a JSON `CapacityProfile` |
+| `WHOOSHD_CAPACITY_MODEL_ID` | none | Immutable model identity the profile must match |
+| `WHOOSHD_CAPACITY_RUNTIME` | none | Exact runtime/backend identity the profile must match |
+| `WHOOSHD_CAPACITY_MACHINE_CLASS` | none | Stable operator-declared host class |
+| `WHOOSHD_CAPACITY_MEMORY_PRESSURE_DENY` | `true` | Deny new admission under high memory pressure |
+
+A profile is eligible only when its `model_id`, `runtime`, `machine_class`, and
+`host_memory_bytes` exactly match the configured identity. A missing, invalid, or
+mismatched profile is **non-fatal**: the controller falls back to the operator ceiling
+and records `missing_profile`, `invalid_profile`, or `model_mismatch`. Evidence
+calibrated for one model or host is never silently applied to another.
+
+```bash
+# Inspect the live decision
+curl http://127.0.0.1:8000/runtime/capacity
+
+# Roll back to fixed/default behavior
+unset WHOOSHD_CAPACITY_MODE WHOOSHD_CAPACITY_PROFILE_PATH
+```
+
+Generate a profile with `python -m whooshd.bench.capacity_bench` against a running
+Whoosh'd instance, passing an immutable `--profile-model-id` and `--machine-class` so
+the artifact cannot be confused with a public alias or another host. See
+[Capacity Controller](docs/capacity-controller.md) for the profile format and
+[Throughput Control Plane](docs/reports/throughput-control-plane.md) for recorded
+real-runtime results.
+
 ### MLX-LM Server
 
 | Variable | Default | Purpose |
@@ -423,6 +484,9 @@ High-signal links:
 - [API Reference](docs/api-reference.md)
 - [Request and Backend Boundary](docs/request-contract.md)
 - [Control-Plane Contract v1](docs/control-plane-v1.md)
+- [Capacity Controller](docs/capacity-controller.md)
+- [Throughput Control Plane Report](docs/reports/throughput-control-plane.md)
+- [Validation Index](docs/validation-index.md)
 - [Logging Safety Contract](docs/security/whooshd-logging-safety.md)
 - [Codexify Integration Guide](docs/codexify-integration.md)
 - [Codexify Live Rehearsal](docs/codexify-live-rehearsal.md)

@@ -17,6 +17,22 @@ Implemented. FIFO queue with bounded depth, timeout, cancellation,
 admission control, and HTTP grouping validation. Not production-
 ready continuous batching.
 
+The throughput control plane adds:
+
+* **Capacity controller** (`whooshd/capacity_controller.py`) — the
+  single source of truth for active concurrency decisions.  Default
+  mode is `fixed` (preserves pre-throughput behaviour exactly).
+  Adaptive mode is opt-in via `WHOOSHD_CAPACITY_MODE=adaptive`.
+  See `docs/capacity-controller.md`.
+* **Capacity profile artifact** (`whooshd/capacity_profile.py`) — a
+  structured JSON file the controller reads in adaptive mode.
+* **Scheduler-authoritative selection** (`RequestQueue.select_and_dequeue`)
+  — the queue no longer drives execution via positional `peek()` +
+  `dequeue()`.  Instead, the scheduler chooses the next request and
+  the queue commits the removal atomically by request_id.
+* **`/runtime/capacity` endpoint** — safe observability surface for
+  the controller.
+
 ## Admission Responsibilities
 
 - Check active job count against `WHOOSHD_MAX_ACTIVE_REQUESTS`

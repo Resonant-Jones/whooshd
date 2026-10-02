@@ -16,6 +16,10 @@ from whooshd.control_plane import (
     ErrorCategory,
     ErrorCode,
 )
+from whooshd.qualification_attestation import (
+    RuntimeQualificationAttestation,
+    RuntimeQualificationAttestationReference,
+)
 
 
 WHOOSHD_RUNTIME_PROVENANCE_HEADER = "X-Whooshd-Runtime-Provenance"
@@ -146,6 +150,10 @@ class ModelInfo(BaseModel):
     runtime_provenance: Optional["RuntimeProvenance"] = Field(
         None,
         description="Bounded runtime ownership and resolution metadata.",
+    )
+    qualification_attestation: Optional[RuntimeQualificationAttestation] = Field(
+        None,
+        description="Bounded target-scoped attestation exposed only by runtime inventory.",
     )
 
 
@@ -463,6 +471,10 @@ class RuntimeProvenance(BaseModel):
     batched: bool = False
     model_lifecycle: Optional[ModelLifecycleState] = None
     whooshd_version: Optional[str] = Field(None, max_length=64)
+    qualification_attestation: Optional[RuntimeQualificationAttestationReference] = Field(
+        None,
+        description="Optional bounded reference to retained target qualification evidence.",
+    )
 
 
 class OpenAIModelListResponse(BaseModel):

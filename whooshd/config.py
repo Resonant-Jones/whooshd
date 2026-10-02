@@ -245,6 +245,73 @@ def get_mlx_lm_server_extra_args() -> list[str]:
     return []
 
 
+# ── Capacity control plane ─────────────────────────────────────────────────
+
+
+def get_capacity_mode() -> str:
+    """Capacity mode.  Valid values: ``fixed``, ``adaptive``.
+
+    * ``fixed`` (default) — ``WHOOSHD_MAX_ACTIVE_REQUESTS`` is the only
+      input.  Behaviour is identical to the pre-throughput-control-plane
+      release.
+    * ``adaptive`` — a measured :class:`CapacityProfile` may lower the
+      effective active limit below the operator ceiling.  The operator
+      ceiling is preserved as a hard upper bound; adaptive mode can
+      never exceed it.
+    """
+    val = _env("WHOOSHD_CAPACITY_MODE", "fixed").strip().lower()
+    if val in ("fixed", "adaptive"):
+        return val
+    return "fixed"
+
+
+def get_capacity_profile_path() -> str | None:
+    """Path to a JSON capacity profile.
+
+    When unset, adaptive mode falls back to the operator ceiling
+    (effectively behaving like fixed mode).  When set but the file is
+    missing or invalid, adaptive mode also falls back to the operator
+    ceiling.  Failures are recorded in the capacity snapshot.
+    """
+    val = _env("WHOOSHD_CAPACITY_PROFILE_PATH", "")
+    return val if val else None
+
+
+def get_capacity_model_id() -> str | None:
+    """Exact configured model identity eligible for a capacity profile.
+
+    Operators should set this to the immutable HF revision or local snapshot
+    path used when calibrating.  Keeping it explicit prevents a public alias
+    from silently reusing evidence after the backing model changes.
+    """
+    val = _env("WHOOSHD_CAPACITY_MODEL_ID", "")
+    return val if val else None
+
+
+def get_capacity_runtime() -> str | None:
+    """Exact runtime/backend identity eligible for a capacity profile."""
+    val = _env("WHOOSHD_CAPACITY_RUNTIME", "")
+    return val if val else None
+
+
+def get_capacity_machine_class() -> str | None:
+    """Stable operator-declared host class used for profile isolation."""
+    val = _env("WHOOSHD_CAPACITY_MACHINE_CLASS", "")
+    return val if val else None
+
+
+def get_capacity_memory_pressure_deny() -> bool:
+    """Whether ``high`` memory pressure should force ``QUEUE`` even when
+    an active slot is technically free.
+
+    Default ``True`` — conservatively gate admission when the host
+    reports elevated memory pressure.  Set to ``False`` only if the
+    operator has a separate memory-aware controller and wants Whoosh'd
+    to defer to it.
+    """
+    return _env_bool("WHOOSHD_CAPACITY_MEMORY_PRESSURE_DENY", True)
+
+
 def get_mlx_lm_server_startup_timeout_seconds() -> float:
     """Max seconds to wait for mlx_lm.server to start."""
     try:

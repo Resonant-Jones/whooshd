@@ -1,0 +1,35 @@
+{
+  "schema_version": "1.0",
+  "name": "mlx-active-concurrency-1",
+  "description": "Single-request baseline for MLX inference with Gemma 4 12B IT QAT. Captures TTFT and latency at concurrency=1 for normalisation.",
+  "model_id": "mlx-community/gemma-4-12b-it-qat-4bit",
+  "runtime": "mlx_lm_server",
+  "expected_hardware": "Apple Silicon, 32GB+ unified memory",
+  "client_concurrency": 1,
+  "active_inference_concurrency": 1,
+  "queue_depth": 1,
+  "queue_timeout_seconds": 300,
+  "streaming": true,
+  "workload_class": "short",
+  "environment": {
+    "WHOOSHD_MLX_MAX_CONCURRENT_REQUESTS": "1",
+    "WHOOSHD_MLX_ENABLED": "true",
+    "WHOOSHD_MAX_ACTIVE_REQUESTS": "1"
+  },
+  "invocation": {
+    "start_server": ".venv/bin/python -m uvicorn whooshd.app:app --host 127.0.0.1 --port 8000",
+    "bench": "python -m whooshd.bench.runner --base-url http://127.0.0.1:8000 --model mlx-community/gemma-4-12b-it-qat-4bit --concurrency 1 --requests 8 --stream --max-tokens 256"
+  },
+  "expected_outcome": {
+    "completed": 8,
+    "rejected": 0,
+    "failed": 0,
+    "stuck": 0
+  },
+  "pass_criteria": [
+    "All 8 requests complete with status 200",
+    "TTFT p95 < 2.0s",
+    "Latency p95 < 30s for 256-token outputs",
+    "No stuck requests"
+  ]
+}

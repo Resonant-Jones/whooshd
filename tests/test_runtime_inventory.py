@@ -180,6 +180,51 @@ class TestV1ModelsInventory:
             model_ids = [m["id"] for m in data]
             assert "stub-model" in model_ids
 
+    @pytest.mark.asyncio
+    async def test_inventory_exposes_retained_attestation_separately_from_provenance(self):
+        from whooshd.contracts import RuntimeKind, RuntimeModel
+        from whooshd.qualification_attestation import RuntimeQualificationAttestation
+
+        class AttestingAdapter:
+            kind = RuntimeKind.MLX_VLM.value
+            name = "mlx-vlm"
+
+            def is_loaded(self):
+                return True
+
+            def model_id(self):
+                return "gemma-4-12b-it-qat-4bit"
+
+            async def list_models(self):
+                return [RuntimeModel(
+                    id="gemma-4-12b-it-qat-4bit",
+                    runtime=self.kind,
+                    format="mlx",
+                    loaded=True,
+                    state="ready",
+                    supports_tools=False,
+                    supports_vision=True,
+                )]
+
+            def qualification_attestation_for_target(self, **_kwargs):
+                return RuntimeQualificationAttestation(
+                    invocation_model_id="gemma-4-12b-it-qat-4bit",
+                    resolved_model_id="mlx-community/gemma-4-12B-it-qat-4bit",
+                    runtime_kind=self.kind,
+                    adapter={"name": self.name},
+                )
+
+        get_router().register(AttestingAdapter())
+        runtime = RuntimeState()
+        models = await runtime.list_models_async()
+        assert models[0].qualification_attestation is not None
+        assert models[0].runtime_provenance.qualification_attestation is not None
+
+        openai_models = await runtime.build_openai_model_list()
+        metadata = openai_models.data[0].metadata or {}
+        assert "qualification_attestation" in metadata
+        assert "attestation_digest" not in metadata["qualification_attestation"]
+
 
 # ── /api/tags tests ────────────────────────────────────────────────────────
 

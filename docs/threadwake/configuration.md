@@ -21,8 +21,13 @@ conservative defaults.  ThreadWake is **off by default**.
 - **Description**: Operating mode.
   - `off` — disabled
   - `observe` — hash, segment, report metrics; no KV reuse
-  - `ephemeral` — exact prefix reuse with KV cache
+  - `ephemeral` — targets exact prefix reuse with KV cache
   - `session` — ephemeral + monotonic conversation continuation
+
+  Reuse in `ephemeral` and `session` is additionally gated on the selected
+  backend's reported KV capability. Every shipped backend reports
+  `unsupported` by default; production KV reuse is not enabled. See
+  [Overview](overview.md#backend-capability-gates-reuse).
 
 ### `WHOOSHD_THREADWAKE_DEFAULT_SCOPE`
 

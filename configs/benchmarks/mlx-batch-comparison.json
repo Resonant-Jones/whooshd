@@ -1,0 +1,53 @@
+{
+  "schema_version": "1.0",
+  "name": "mlx-batch-comparison",
+  "description": "Compare independent execution vs queued batch_generate execution under identical workload for MLX. Capability-gated; non-streaming only.",
+  "model_id": "mlx-community/gemma-4-12b-it-qat-4bit",
+  "runtime": "mlx_lm_server",
+  "expected_hardware": "Apple Silicon, 32GB+ unified memory",
+  "client_concurrency": 4,
+  "active_inference_concurrency": 2,
+  "queue_depth": 8,
+  "queue_timeout_seconds": 300,
+  "streaming": false,
+  "workload_class": "mixed_coding_tasks",
+  "modes": {
+    "independent": {
+      "WHOOSHD_BATCH_EXECUTION_ENABLED": "false",
+      "WHOOSHD_MLX_BATCH_EXECUTION_ENABLED": "false"
+    },
+    "queued_batch": {
+      "WHOOSHD_BATCH_EXECUTION_ENABLED": "true",
+      "WHOOSHD_MLX_BATCH_EXECUTION_ENABLED": "true",
+      "WHOOSHD_BATCH_ANALYSIS_ENABLED": "true",
+      "WHOOSHD_BATCH_EXECUTION_MIN_SIZE": "2",
+      "WHOOSHD_BATCH_EXECUTION_MAX_SIZE": "4"
+    }
+  },
+  "invocation": {
+    "start_server": ".venv/bin/python -m uvicorn whooshd.app:app --host 127.0.0.1 --port 8000",
+    "bench": "python -m whooshd.bench.runner --base-url http://127.0.0.1:8000 --model mlx-community/gemma-4-12b-it-qat-4bit --concurrency 4 --requests 32 --max-tokens 256"
+  },
+  "expected_outcome": {
+    "independent": {
+      "completed": 32,
+      "queued": ">=24"
+    },
+    "queued_batch": {
+      "completed": 32,
+      "queued": ">=24",
+      "batched_requests": ">=16"
+    }
+  },
+  "pass_criteria": [
+    "Both modes complete all requests successfully",
+    "Report TTFT/latency comparison",
+    "Do NOT claim improvement unless measured",
+    "Preserve current batch limitations: text-only, non-streaming, compatible sampling"
+  ],
+  "non_goals": [
+    "Continuous batching (separate milestone)",
+    "Custom token-step scheduler",
+    "Vision batching"
+  ]
+}

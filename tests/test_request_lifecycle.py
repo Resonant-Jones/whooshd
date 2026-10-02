@@ -74,6 +74,23 @@ class TestRuntimeStateLifecycle:
         assert snap.status == RequestLifecycleState.CANCELLED
         assert snap.ended_at is not None
 
+    def test_late_stream_completion_does_not_overwrite_cancellation(self):
+        """A cooperative stream may return normally after observing its
+        cancellation token.  Its finalizer must preserve the earlier terminal
+        cancellation instead of relabeling the request as completed."""
+        rt = RuntimeState()
+        rid = rt.begin_request(model="test-model", stream=True)
+        rt.mark_streaming(rid)
+
+        rt.cancel_request(rid)
+        rt.complete_request(rid)
+
+        snap = rt.get_request_snapshot(rid)
+        assert snap is not None
+        assert snap.status == RequestLifecycleState.CANCELLED
+        assert rt.active_jobs == 0
+        assert snap.ended_at is not None
+
     def test_fail_request(self):
         rt = RuntimeState()
         rid = rt.begin_request(model="m", stream=False)

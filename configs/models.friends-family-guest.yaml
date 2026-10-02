@@ -6,7 +6,9 @@
 # download behavior.
 
 models:
-  gemma-4-12b-it-qat-4bit:
+  # Stable client route. The operator may change the physical model path and
+  # launch configuration without requiring a Codexify source change.
+  local-chat:
     display_name: "Gemma 4 12B IT QAT 4-bit"
     engine: mlx_vlm
     format: mlx

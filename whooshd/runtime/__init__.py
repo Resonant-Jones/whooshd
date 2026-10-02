@@ -355,6 +355,7 @@ class RuntimeState:
 
     def build_admission_config(self) -> dict:
         """Return current admission limits + counters."""
+        from whooshd.admission import build_capacity_snapshot
         from whooshd.config import (
             get_enable_queue,
             get_max_active_requests,
@@ -365,6 +366,7 @@ class RuntimeState:
             get_queue_timeout_seconds,
         )
 
+        max_q = get_max_queue_depth()
         return {
             "max_active_requests": get_max_active_requests(),
             "active_jobs": self.active_jobs,
@@ -373,8 +375,9 @@ class RuntimeState:
             "max_request_max_tokens": get_max_request_max_tokens(),
             "queue_enabled": get_enable_queue(),
             "queue_depth": self.queue_depth,
-            "max_queue_depth": get_max_queue_depth(),
+            "max_queue_depth": max_q,
             "queue_timeout_seconds": get_queue_timeout_seconds(),
+            "capacity": build_capacity_snapshot(self, max_queue_depth=max_q),
             "counters": {
                 "accepted": self.total_requests_accepted,
                 "rejected": self.total_requests_rejected,
@@ -471,7 +474,7 @@ class RuntimeState:
         When only the stub adapter is registered, falls back to the
         legacy single-model behaviour driven by WHOOSHD_ADAPTER / WHOOSHD_MLX_MODEL.
         """
-        from whooshd.routing import get_router, inventory_provenance
+        from whooshd.routing import get_router, inventory_provenance, target_attestation
 
         router = get_router()
         results: list[ModelInfo] = []
@@ -492,6 +495,15 @@ class RuntimeState:
 
             for rm in runtime_models:
                 loaded = adapter.is_loaded() if hasattr(adapter, "is_loaded") else False
+                attestation = (
+                    target_attestation(
+                        adapter,
+                        invocation_model_id=rm.id,
+                        resolved_model_id=rm.id,
+                    )
+                    if loaded
+                    else None
+                )
                 capabilities: list[ModelCapability] = list(_DEFAULT_MODEL_CAPABILITIES)
 
                 if rm.supports_vision:
@@ -519,7 +531,11 @@ class RuntimeState:
                         ),
                         loaded=loaded,
                         adapter_name=adapter.name,
+                        qualification_attestation=(
+                            attestation.reference() if attestation is not None else None
+                        ),
                     ),
+                    qualification_attestation=attestation,
                 ))
 
         if not results:
@@ -652,7 +668,20 @@ class RuntimeState:
                         created=_STUB_MODEL_CREATED,
                         owned_by="whooshd",
                         metadata=(
-                            {"runtime_provenance": m.runtime_provenance.model_dump(mode="json")}
+                            {
+                                "runtime_provenance": m.runtime_provenance.model_dump(mode="json"),
+                                **(
+                                    {
+                                        "qualification_attestation": (
+                                            m.qualification_attestation.model_dump(
+                                                mode="json", exclude_none=True
+                                            )
+                                        )
+                                    }
+                                    if m.qualification_attestation is not None
+                                    else {}
+                                ),
+                            }
                             if m.runtime_provenance is not None
                             else None
                         ),
@@ -786,7 +815,11 @@ class RuntimeState:
     def complete_request(self, request_id: str) -> None:
         """Mark a request as successfully completed."""
         rec = self._requests.get(request_id)
-        if rec:
+        if rec and rec.status not in (
+            RequestLifecycleState.CANCELLED,
+            RequestLifecycleState.FAILED,
+            RequestLifecycleState.TIMED_OUT,
+        ):
             rec.status = RequestLifecycleState.COMPLETED
             rec.ended_at = time.time()
 
