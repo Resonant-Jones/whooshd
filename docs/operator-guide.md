@@ -104,12 +104,18 @@ admitting, so the lane is known when the decision is made.
 
 The MLX-VLM lane defaults to **one** concurrent request, which was chosen
 without concurrency evidence. [CWC-013](../validation/2026-11-03-cwc013-lane-concurrency-experiment.md)
-measured concurrency 2 on an isolated broker against the 12B: 2/2 success,
-aggregate throughput **+66 %**, per-request latency **+15.2 %**, zero swap-out.
-The run is **attested**: the harness sampled the broker's own admission state
-during the x2 band and observed `peak_active_jobs = 2` with
+measured concurrency 2 on isolated brokers against the 12B: 2/2 success in
+every run, zero swap-out in every warm band, and a verified clean lifecycle.
+Both runs are **attested**: the harness sampled the broker's own admission
+state during the x2 band and observed `peak_active_jobs = 2` with
 `peak_queue_depth = 0`, so the two requests are demonstrably in flight
 together.
+
+Quote the gain as a **range**, not a figure. Across two attested runs the
+aggregate throughput gain was **+66 %** and **+102 %**, with a per-request
+latency cost between **−1.4 %** and **+15.2 %**. The stable conclusion is
+that concurrency 2 *roughly doubles* aggregate throughput on this host and
+checkpoint; the exact percentage is not repeatable run to run.
 Raising the lane limit on the working deployment is now an evidence-backed
 choice rather than a guess.
 

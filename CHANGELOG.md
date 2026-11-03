@@ -248,25 +248,30 @@
 
 ### Measured
 
-- **CWC-013 lane concurrency experiment (isolated, 12B) — attested re-run.**
-  With the MLX-VLM lane limit raised to 2 on an **isolated broker** — the
-  working deployment on port 8000 was not modified — two concurrent 12B
-  requests both succeeded. Aggregate throughput rose from 8.218 to 13.661
-  tokens/sec (**+66 %**) while per-request latency rose **15.2 %**
-  (9 368 ms → 10 785 ms), with **zero** swap-out pages in both warm bands and
-  a verified clean lifecycle (`active_jobs_at_rest = 0`,
-  `queue_depth_at_rest = 0`, reachable).
-  The run is **attested**: the harness sampled the broker's own admission
-  state 191 times during the x2 band and observed `peak_active_jobs = 2` with
+- **CWC-013 lane concurrency experiment (isolated, 12B) — two attested
+  re-runs.** With the MLX-VLM lane limit raised to 2 on **isolated brokers**
+  — the working deployment on port 8000 was not modified — two concurrent 12B
+  requests both succeeded, twice, with **zero** swap-out pages in every warm
+  band and a verified clean lifecycle (`active_jobs_at_rest = 0`,
+  `queue_depth_at_rest = 0`, reachable) in both runs.
+  Both runs are **attested**: the harness sampled the broker's own admission
+  state during the x2 band and observed `peak_active_jobs = 2` with
   `peak_queue_depth = 0`, so the two requests are demonstrably in flight
   together and neither was queued behind the other.
+  **The gain is a range, not a figure.** Aggregate throughput rose **+66 %**
+  in one run (8.218 → 13.661 tok/s, per-request latency +15.2 %) and **+102 %**
+  in the other (7.383 → 14.920 tok/s, per-request latency −1.4 %) — two runs
+  minutes apart on the same host and checkpoint. The honest statement is:
+  **concurrency 2 roughly doubles aggregate throughput, with a per-request
+  latency cost somewhere between −1 % and +15 %.** Any single percentage
+  overstates how repeatable the number is.
   An earlier run of the same experiment reported **+89 %** at **+6.3 %**
   latency, but its harness could neither attest the lane configuration it
   claimed to test nor verify its own cleanup state — a broker whose lane
   limit was still 1 would have produced the same `PASS`. That figure is
-  superseded and is not quoted; the attested re-run's figures are the ones of
-  record. The direction is unchanged: the lane limit of 1 was leaving roughly
-  half the machine's throughput unused.
+  superseded and is not quoted.
+  The direction is unchanged and is the conclusion that survives: the lane
+  limit of 1 was leaving roughly half the machine's throughput unused.
   Packet: `docs/validation/2026-11-03-cwc013-lane-concurrency-experiment.md`
   (§8).
 

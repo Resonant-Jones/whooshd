@@ -38,7 +38,7 @@ model serving.
 
 | Phase | Status |
 |---|---|
-| P0 real-runtime proof | **Passed** — CWC-012 (deployment measurement) and CWC-013 (lane concurrency experiment, attested run: +66 % aggregate throughput at concurrency 2) |
+| P0 real-runtime proof | **Passed** — CWC-012 (deployment measurement) and CWC-013 (lane concurrency experiment, two attested runs: concurrency 2 roughly doubles aggregate throughput) |
 | P1 queue/scheduler execution-ownership defect | **Fixed** — a request is never removed from the queue without an owner |
 | P2 per-model context policy and request costing | **Shipped** — budgets on `CapacityProfile`, costing in `CapacityController` |
 | P2b route-specific capacity reservation | **Shipped** — admission caps the effective limit by the selected lane's own ceiling |

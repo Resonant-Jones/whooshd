@@ -65,7 +65,7 @@ This README is intentionally conservative: supported features are listed separat
 | Tool/function calling | Not implemented | Request fields may be retained without implying provider capability |
 | Production auth hardening | Not implemented | Local-first development posture only |
 | Multi-node routing | Not implemented | Future architecture |
-| Gemma 4 12B capacity calibration | Measured | Concurrency 2 validated on an isolated broker (attested run): 2/2 success, aggregate throughput +66 %, zero swap-out. See [CWC-013 Lane Concurrency Experiment](docs/validation/2026-11-03-cwc013-lane-concurrency-experiment.md) |
+| Gemma 4 12B capacity calibration | Measured | Concurrency 2 validated on an isolated broker (two attested runs): 2/2 success each time, aggregate throughput roughly doubles, zero swap-out. See [CWC-013 Lane Concurrency Experiment](docs/validation/2026-11-03-cwc013-lane-concurrency-experiment.md) |
 | Live Codexify deployment claim | Not claimed by tests alone | Rehearse against the target runtime and machine |
 | Performance improvement claims | Not automatic | Record hardware, model, runtime, and benchmark conditions |
 

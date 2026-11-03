@@ -433,24 +433,33 @@ measured. The figures below are from the **attested re-run** (see the packet's
 §8), in which the harness sampled the broker's own admission state during the
 x2 band and observed `peak_active_jobs = 2` with `peak_queue_depth = 0`:
 
-| Metric | Concurrency 1 | Concurrency 2 |
-|---|---:|---:|
-| Successes | 1/1 | **2/2** |
-| Aggregate tokens/sec | 8.218 | **13.661** (+66 %) |
-| Per-request latency (p50) | 9 368 ms | 10 785 ms (+15.2 %) |
-| Observed peak active jobs | 1 | **2** |
-| Observed peak queue depth | 0 | **0** |
-| Swap pages out | 0 | **0** |
+Two attested re-runs, each on an isolated broker:
 
-Two concurrent requests ran **simultaneously** and aggregate throughput rose
-**66 %**. The lane limit of 1 was leaving roughly half the machine's
-throughput unused, and was the source of the 429s seen under concurrent load.
+| Metric | Run A x1 | Run A x2 | Run B x1 | Run B x2 |
+|---|---:|---:|---:|---:|
+| Successes | 1/1 | **2/2** | 1/1 | **2/2** |
+| Aggregate tokens/sec | 8.218 | **13.661** (+66 %) | 7.383 | **14.920** (+102 %) |
+| Per-request latency (p50) | 9 368 ms | 10 785 ms (+15.2 %) | 9 887 ms | 9 748 ms (−1.4 %) |
+| Observed peak active jobs | 1 | **2** | 1 | **2** |
+| Observed peak queue depth | 0 | **0** | 0 | **0** |
+| Swap pages out | 0 | **0** | 0 | **0** |
+
+Two concurrent requests ran **simultaneously** in both runs. Aggregate
+throughput roughly **doubled**; the lane limit of 1 was leaving roughly half
+the machine's throughput unused, and was the source of the 429s seen under
+concurrent load.
+
+**The gain is a range, not a figure.** Two attested runs minutes apart gave
++66 % and +102 % aggregate throughput, with per-request latency between
+−1.4 % and +15.2 %. The stable conclusion is the qualitative one:
+concurrency 2 roughly doubles aggregate throughput on this host and
+checkpoint. Any single percentage overstates how repeatable the number is.
 
 An earlier run of the same experiment reported +89 % at +6.3 % latency, but
 its harness could neither attest the lane configuration it claimed to test
 nor verify its own cleanup state — a broker whose lane limit was still 1
 would have produced the same `PASS`. That figure is superseded and is not
-quoted; the attested re-run's figures above are the ones of record.
+quoted.
 
 Concurrency 2 is therefore evidence-backed for this host and model.
 Concurrency above 2, sustained load, and behaviour on the fanless MacBook Air

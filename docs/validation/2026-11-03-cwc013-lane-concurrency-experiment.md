@@ -9,8 +9,10 @@ simultaneously and efficiently, with no memory pressure or thrash.
 > harness that could **not** prove the lane configuration it claimed to test
 > and did **not** verify its own cleanup state. Those results are retained
 > below as the historical record, but they are **superseded** by the
-> attested re-run in §8, which carries its own figures. Read §8 before
-> quoting any number from this packet.
+> attested re-runs in §8, which carry their own figures. Read §8 before
+> quoting any number from this packet — in particular, §8.5 gives the
+> throughput gain as a **range across two attested runs**, not a single
+> percentage.
 
 ---
 
@@ -207,15 +209,19 @@ The conclusion of §4 was therefore never established by the §3 run alone.
 The harness aborts before the bands when the target cannot be attested, and
 re-attests afterwards.
 
-### 8.3 The attested re-run
+### 8.4 The attested re-runs
 
 Same model, same upstream runtime, same isolation rule — **the working
-deployment on port 8000 was not modified**. A separate broker instance ran on
-port 18923 with the corrected code.
+deployment on port 8000 was not modified**. Two separate brokers were used
+(ports 18923 and 18921), each running the branch code.
+
+**Run A** — commit `e686771`, broker on port 18923.
+**Run B** — commit `0338f33`, broker on port 18921, with the upstream probe
+validated (a probe now requires a successful status *and* valid usage data).
 
 | Setting | Value |
 |---|---|
-| Isolated broker | `http://127.0.0.1:18923` (port 8000 untouched) |
+| Isolated broker | `http://127.0.0.1:18923` (Run A), `http://127.0.0.1:18921` (Run B) — port 8000 untouched |
 | `WHOOSHD_MLX_VLM_MAX_CONCURRENT_REQUESTS` | `2` |
 | `WHOOSHD_MAX_ACTIVE_REQUESTS` | `2` |
 | `WHOOSHD_ENABLE_QUEUE` | `true`, depth 8 |
@@ -223,63 +229,85 @@ port 18923 with the corrected code.
 | Model | `mlx-community/gemma-4-12B-it-qat-4bit` |
 | Declared expected lane ceiling | `2` |
 
-**Attestation: `ATTESTED`** — broker reachable, global ceilings
+**Attestation: `ATTESTED`** in both runs — broker reachable, global ceilings
 `max_active_requests = 2`, `effective_active_limit = 2`,
-`operator_ceiling = 2`, **191 admission samples** during the x2 band with
-**`peak_active_jobs = 2`** and **`peak_queue_depth = 0`**.
+`operator_ceiling = 2`, and the broker's own admission state was sampled
+during the x2 band.
 
-| Metric | Band x1 | Band x2 |
-|---|---:|---:|
-| Successes | 1/1 | **2/2** |
-| Failures | 0 | **0** |
-| Aggregate tokens/sec | 8.218 | **13.661** |
-| Per-request tokens/sec | 8.218 | 6.830 |
-| Latency (p50) | 9 368.2 ms | 10 785.1 ms |
-| Latency (max) | 9 368.2 ms | 10 979.3 ms |
-| **Observed peak active jobs** | 1 | **2** |
-| **Observed peak queue depth** | 0 | **0** |
-| Swap pages **out** | 0 | **0** |
-| Swap pages in | 12 | 281 |
+| Metric | Run A x1 | Run A x2 | Run B x1 | Run B x2 |
+|---|---:|---:|---:|---:|
+| Successes | 1/1 | **2/2** | 1/1 | **2/2** |
+| Failures | 0 | **0** | 0 | **0** |
+| Aggregate tokens/sec | 8.218 | **13.661** | 7.383 | **14.920** |
+| Per-request tokens/sec | 8.218 | 6.830 | 7.383 | 7.460 |
+| Latency (p50) | 9 368.2 ms | 10 785.1 ms | 9 886.7 ms | 9 747.8 ms |
+| Latency (max) | 9 368.2 ms | 10 979.3 ms | 9 886.7 ms | 9 784.5 ms |
+| **Observed peak active jobs** | 1 | **2** | 1 | **2** |
+| **Observed peak queue depth** | 0 | **0** | 0 | **0** |
+| Admission samples | 191 | 191 | 185 | 185 |
+| Swap pages **out** | 0 | **0** | 0 | **0** |
+| Swap pages in | 12 | 281 | 264 | 1 488 |
 
 Upstream-reported for the same prompt: **349 of 365 prompt tokens cached**
-(prefill 283.5 ms), 74 tokens generated.
+(prefill 283.5 ms in Run A, 261.4 ms in Run B), 74 tokens generated, and an
+upstream decode rate of **7.63 tok/s** in Run B — a figure the pre-fix probe
+could not read, because it looked for a timing key the upstream does not
+publish.
 
-Cold-start observation (discarded warm-up request): 12 519.9 ms, **0**
-swap-out pages, 532 swap-in pages.
+Cold-start observations (discarded warm-up requests): Run A — 12 519.9 ms,
+0 swap-out, 532 swap-in (model already resident). Run B — 30 329.0 ms,
+**58 694 swap-out**, 241 640 swap-in (model faulted back in from disk).
 
-Lifecycle cleanup after the run: **verified** — `reachable = true`,
+Lifecycle cleanup after both runs: **verified** — `reachable = true`,
 `active_jobs_at_rest = 0`, `queue_depth_at_rest = 0`.
 
-**Verdict: PASS** — `failures: []`, `unverified: []`.
+**Verdict: PASS** in both runs — `failures: []`, `unverified: []`.
 
-### 8.4 What the attested run establishes
+### 8.5 What the attested runs establish
 
-**1. Concurrency 2 is real.** Unlike the original run, this one carries
-positive evidence: the broker's own admission state was observed at
-`active_jobs = 2` with `queue_depth = 0` during the x2 band. The two
-requests were demonstrably in flight **together** and neither was queued
-behind the other — which is precisely what the original harness could not
-distinguish from two serial successes.
+**1. Concurrency 2 is real.** Unlike the original run, these carry positive
+evidence: the broker's own admission state was observed at `active_jobs = 2`
+with `queue_depth = 0` during the x2 band, in both runs. The two requests
+were demonstrably in flight **together** and neither was queued behind the
+other — which is precisely what the original harness could not distinguish
+from two serial successes.
 
-**2. The throughput gain is smaller than the original run reported.**
-Aggregate throughput rose from 8.218 to 13.661 tokens/sec — **+66 %** — while
-per-request latency rose **15.2 %** (9 368 ms → 10 785 ms). The original run
-reported **+89 %** at **+6.3 %** latency. The direction and the conclusion are
-unchanged — concurrency 2 leaves roughly half the machine's throughput unused
-at concurrency 1 — but **the magnitude is not reproducible** and the original
-`+89 %` figure should not be quoted. The re-run is the figure of record.
+**2. The direction is stable; the magnitude is not.** Aggregate throughput
+rose **+66 %** in Run A and **+102 %** in Run B, while per-request latency
+moved **+15.2 %** in Run A and **−1.4 %** in Run B. Both runs are attested
+and both show the same shape — roughly double the aggregate throughput at
+the same concurrency — but the *size* of the gain and the latency cost vary
+materially between runs of a few minutes apart.
 
-**3. No thrash, and the lifecycle drains.** Zero swap-out pages in both warm
-bands; cleanup verified with `active_jobs_at_rest = 0` and
-`queue_depth_at_rest = 0`, reachable rather than assumed.
+**The honest statement is a range, not a figure: concurrency 2 roughly
+doubles aggregate throughput on this host and checkpoint, with a per-request
+latency cost somewhere between −1 % and +15 %.** Any single percentage
+quoted from one run — including the original **+89 %**, and including
+either attested run on its own — overstates how repeatable the number is.
+The conclusion that survives is the qualitative one: **the lane limit of 1
+was leaving roughly half the machine's throughput unused.**
 
-### 8.5 What the attested run does not establish
+**3. No thrash, and the lifecycle drains.** Zero swap-out pages in every
+warm band of both runs; cleanup verified in both with `active_jobs_at_rest = 0`
+and `queue_depth_at_rest = 0`, reachable rather than assumed.
 
-Everything in §5 still holds, unchanged. In particular this remains a
-**single short burst**, not a sustained-load result, and it is **not** a
-capacity certificate for concurrency above 2.
+### 8.6 The swap-out observation, revisited
 
-The **341 271 swap-out pages** observed in the original first run remain an
-**unexplained first-run observation**. The re-run's warm-up recorded 0
-swap-out and 532 swap-in pages; that is consistent with a resident model and
-does not retroactively explain the original event.
+The original first run recorded **341 271 swap-out pages** and this packet
+called it unexplained. Run B's cold warm-up recorded **58 694 swap-out
+pages** against **241 640 swap-in** pages, in a request that took 30.3 s —
+the model being faulted back in from disk after it had been evicted.
+
+That is a **second observation of the same shape**: a large fault-in
+accompanied by a large swap-out. It is consistent with the hypothesis that
+paging the weights in evicts other resident pages, which would explain the
+original observation too. It does **not** prove it — the original run's
+mechanism was never instrumented — so the 341 271 figure remains
+**not established**, now with a plausible mechanism and a second example
+rather than an explanation.
+
+### 8.7 What the attested runs do not establish
+
+Everything in §5 still holds, unchanged. In particular these remain a
+**single short burst** per run, not a sustained-load result, and they are
+**not** a capacity certificate for concurrency above 2.
