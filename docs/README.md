@@ -122,4 +122,4 @@ retroactively scrubbed.
 | Token-step shared decode | Researched, fake-proven, MLX-blocked |
 | ThreadWake | Observe-mode, KV skeleton; production KV reuse not enabled |
 | MLX / MLX-VLM / llama.cpp runtimes | Supported, host validation required |
-| Gemma 4 12B capacity calibration | Pending — host and checkpoint present, run not performed |
+| Gemma 4 12B capacity calibration | Blocked — the MLX-VLM lane's concurrency limit defaults to 1, so bands above 1 cannot be exercised. The deployment measurement itself passed |
