@@ -229,20 +229,40 @@ class RuntimeState:
 
     @property
     def queue_depth(self) -> int:
-        """Count of requests currently in the queued state."""
+        """Count of requests currently waiting in the queue.
+
+        A request that has been **granted** execution is no longer in the
+        queue: the scheduler has removed it from :class:`RequestQueue` and
+        reserved its execution slot, even though its lifecycle record has
+        not yet left the ``QUEUED`` state (it changes state when it
+        actually starts running).
+
+        Counting such a request would over-report queue occupancy and
+        could make a new request be refused as *queue full* while the
+        real queue still has room.  Reserved request ids are therefore
+        excluded.
+        """
         return sum(
             1
             for r in self._requests.values()
             if r.status == RequestLifecycleState.QUEUED
+            and r.request_id not in self._reservations
         )
 
     @property
     def oldest_queued_age_ms(self) -> float:
-        """Age in milliseconds of the oldest queued request, or 0."""
+        """Age in milliseconds of the oldest queued request, or 0.
+
+        Granted requests are excluded for the same reason as in
+        :attr:`queue_depth`: they are no longer waiting in the queue.
+        """
         oldest: float | None = None
         now = time.time()
         for r in self._requests.values():
-            if r.status == RequestLifecycleState.QUEUED:
+            if (
+                r.status == RequestLifecycleState.QUEUED
+                and r.request_id not in self._reservations
+            ):
                 age = now - r.started_at
                 if oldest is None or age > oldest:
                     oldest = age

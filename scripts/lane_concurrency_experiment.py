@@ -656,7 +656,14 @@ async def one_request(client: httpx.AsyncClient, index: int) -> dict:
 
 
 async def upstream_probe(client: httpx.AsyncClient) -> dict:
-    """Read upstream-reported prefill and prompt-cache counters."""
+    """Read upstream-reported prefill and prompt-cache counters.
+
+    The probe is *available* only when the upstream answered with a success
+    status **and** the payload carried real usage data.  A 4xx/5xx error
+    envelope, an unparsable body, or a 2xx response without usage is a
+    **failed probe**: it is recorded with its reason and never reported as
+    measured cache evidence.  An absent counter is absent, not zero.
+    """
     payload = {
         "model": UPSTREAM_MODEL,
         "messages": [{"role": "user", "content": PROMPT[:PROMPT_CHARS]}],
@@ -665,20 +672,47 @@ async def upstream_probe(client: httpx.AsyncClient) -> dict:
     out: dict = {"available": False}
     try:
         resp = await client.post(f"{UPSTREAM}/v1/chat/completions", json=payload, timeout=TIMEOUT)
-        body = resp.json()
-        usage = body.get("usage") or {}
-        details = usage.get("prompt_tokens_details") or {}
-        timings = body.get("timings") or {}
-        out = {
-            "available": True,
-            "prompt_tokens": usage.get("prompt_tokens"),
-            "cached_prompt_tokens": details.get("cached_tokens"),
-            "prefill_ms": timings.get("prompt_ms"),
-            "predicted_tokens": timings.get("predicted_n"),
-            "generation_tps": timings.get("generation_per_second"),
-        }
     except Exception as exc:
         out["error"] = f"{type(exc).__name__}"
+        out["failure_reason"] = f"transport_error:{type(exc).__name__}"
+        return out
+
+    if not (200 <= resp.status_code < 300):
+        out["error"] = f"http_status:{resp.status_code}"
+        out["failure_reason"] = f"http_status:{resp.status_code}"
+        return out
+
+    try:
+        body = resp.json()
+    except Exception:
+        out["error"] = "invalid_json"
+        out["failure_reason"] = "invalid_json"
+        return out
+
+    if not isinstance(body, dict):
+        out["error"] = "invalid_payload"
+        out["failure_reason"] = "invalid_payload"
+        return out
+
+    usage = body.get("usage")
+    if not isinstance(usage, dict) or not usage:
+        # A 2xx error envelope, or a payload with no usage, is not
+        # measurement evidence.
+        out["error"] = "missing_usage"
+        out["failure_reason"] = "missing_usage"
+        return out
+
+    details = usage.get("prompt_tokens_details") or {}
+    timings = body.get("timings") or {}
+    out = {
+        "available": True,
+        "prompt_tokens": usage.get("prompt_tokens"),
+        "cached_prompt_tokens": details.get("cached_tokens"),
+        "prefill_ms": timings.get("prompt_ms"),
+        "predicted_tokens": timings.get("predicted_n"),
+        # The upstream reports decode speed as ``predicted_per_second``.
+        "generation_tps": timings.get("predicted_per_second"),
+    }
     return out
 
 

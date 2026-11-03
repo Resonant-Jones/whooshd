@@ -130,6 +130,11 @@ side. A request that asks for more output than the model can generate is
 **refused**, never silently clamped to a smaller limit — clamping would
 rewrite the client's request without telling it.
 
+The **input** ceiling covers the model's whole input: the textual and
+structured prompt **and** the multimodal content that accompanies it. A
+request with 1 000 text tokens and a 5 000-token image exceeds a 4 096-token
+input maximum even though its textual prompt is comfortably under it.
+
 A model with no calibrated budgets is **never silently constrained** — the
 estimate is reported as observability and the request is admitted unchanged.
 

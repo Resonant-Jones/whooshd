@@ -64,6 +64,12 @@ class QueueEntry:
     # to a request bound for a different lane.
     lane: str | None = field(default=None, compare=False)
     lane_max_concurrent: int | None = field(default=None, compare=False)
+    # -- Queue deadline ---------------------------------------------------
+    # Monotonic timestamp after which this request may no longer be
+    # granted execution.  Stamped at enqueue time.  A selection made by
+    # *another* waiter must honour this deadline, not just the deadline
+    # of the waiter doing the selecting.
+    deadline_at: float | None = field(default=None, compare=False)
 
     def __post_init__(self) -> None:
         self.upstream_request_id = normalize_identifier(self.upstream_request_id)
@@ -221,8 +227,28 @@ class RequestQueue:
 
     # ── Queue operations ──────────────────────────────────────────────
 
+    @staticmethod
+    def _is_expired(entry: Optional[QueueEntry]) -> bool:
+        """Whether *entry* has waited past its own queue deadline.
+
+        An entry with no deadline stamped is not expired — the deadline is
+        an upper bound on waiting time, never a lower bound.
+        """
+        if entry is None or entry.deadline_at is None:
+            return False
+        return time.monotonic() >= entry.deadline_at
+
     def enqueue(self, entry: QueueEntry) -> None:
-        """Append a request to the back of the FIFO queue."""
+        """Append a request to the back of the FIFO queue.
+
+        The entry's **queue deadline** is stamped here: the request may
+        wait at most ``timeout_seconds`` from this moment.  Stamping it at
+        enqueue time (rather than when a waiter starts polling) gives every
+        entry the same deadline regardless of which coroutine happens to
+        be selecting on its behalf.
+        """
+        if entry.deadline_at is None:
+            entry.deadline_at = time.monotonic() + self.timeout_seconds
         self._deque.append(entry)
 
     def dequeue(self) -> Optional[QueueEntry]:
@@ -280,6 +306,14 @@ class RequestQueue:
         capacity before the scheduler chooses.  A cache-affinity
         selection may prefer a candidate bound for a different lane, and
         that candidate's lane must have room before it is granted.
+
+        Queue deadline:
+            Candidates whose **own** queue deadline has already passed are
+            excluded before the scheduler chooses.  A selection made on
+            behalf of another waiter must not hand execution to a request
+            that has already waited longer than the queue timeout allows —
+            otherwise that request would execute after its deadline, which
+            the timeout contract forbids.
         """
         candidates = self.build_candidates()
         if not candidates:
@@ -291,8 +325,18 @@ class RequestQueue:
             )
             return None
 
+        by_id = {e.request_id: e for e in self._deque}
+
+        # Expire candidates whose own queue deadline has passed.
+        live = [c for c in candidates if not self._is_expired(by_id.get(c.request_id))]
+        if not live:
+            self._scheduler.choose_next(
+                candidates, capacity_available=False
+            )
+            return None
+        candidates = live
+
         if entry_eligible is not None:
-            by_id = {e.request_id: e for e in self._deque}
             eligible = [
                 c
                 for c in candidates
@@ -434,7 +478,12 @@ class RequestQueue:
             True  — caller should execute the request (already removed).
             False — the request timed out or was cancelled; do not call adapter.
         """
-        deadline = time.monotonic() + self.timeout_seconds
+        # The entry's deadline is stamped at enqueue time, so it is the
+        # same deadline whoever acts on the entry's behalf.  Fall back to
+        # stamping one now for an entry that was never enqueued.
+        if entry.deadline_at is None:
+            entry.deadline_at = time.monotonic() + self.timeout_seconds
+        deadline = entry.deadline_at
 
         while True:
             # ── Check cancellation before anything else ────────────
@@ -449,8 +498,21 @@ class RequestQueue:
                 return False
 
             # ── Check if we are at the front of the queue ──────────
-            # Already granted?  Then this waiter owns the entry.
+            # Already granted?  Then this waiter owns the entry — but only
+            # if the grant was made in time.  A grant that arrives after
+            # this request's own queue deadline has passed must not be
+            # honoured: the request has waited longer than the timeout
+            # allows, so it is treated as timed out.
             if entry.granted:
+                if self._is_expired(entry):
+                    self.remove(entry.request_id)
+                    logger.info(
+                        "queue.grant_expired request_id=%s waited=%.1fs depth_after=%d",
+                        entry.request_id,
+                        self.timeout_seconds,
+                        self.depth,
+                    )
+                    return False
                 return True
 
             front = self.peek()

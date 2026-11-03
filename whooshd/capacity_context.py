@@ -519,7 +519,13 @@ def evaluate_context(
             **common,
         )
 
-    if max_input is not None and cost.input_tokens > max_input:
+    # The input ceiling covers the model's **whole** input: the textual
+    # and structured prompt *and* the multimodal content that accompanies
+    # it.  Comparing only the textual figure would let an image-heavy
+    # request exceed the model's input maximum while its combined total
+    # still sits below the hard ceiling.
+    total_input_tokens = cost.input_tokens + cost.multimodal_tokens
+    if max_input is not None and total_input_tokens > max_input:
         return ContextEvaluation(
             reason=ContextDecisionReason.ABOVE_INPUT_LIMIT,
             budget=ContextBudget.MAX_INPUT,

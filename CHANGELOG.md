@@ -176,6 +176,45 @@
   to fail against the pre-fix harness. **28 of the 30 failed before the
   correction.**
 
+- **Four lifecycle-boundary defects the corrections themselves exposed.**
+  The lane-aware admission and the context-policy work made the guarantees
+  more precise, and the precision gaps that created were found on the
+  resulting commit:
+
+  - **Media tokens bypassed the input-token ceiling.** When a profile
+    declared both `multimodal_token_estimate` and `max_input_tokens`, the
+    ceiling was compared with the textual/structured input only. A request
+    with 1 000 text tokens and a 5 000-token image was admitted against a
+    4 096-token input maximum whenever its combined total stayed below the
+    hard ceiling. The input ceiling now covers the model's **whole** input:
+    text, structured prompt fields, and multimodal content.
+  - **Granted reservations inflated queue depth.** A request removed from
+    the scheduler queue by a cross-waiter grant remained `QUEUED` while
+    holding a reservation, so `RuntimeState.queue_depth` over-reported
+    occupancy — and a new request could be refused as *queue full* while
+    the real queue still had room. Granted request ids are now excluded
+    from `queue_depth` and from the oldest-queued age. The reservation
+    still holds its capacity slot, so excluding it from the queue count
+    does not free capacity.
+  - **The experiment's upstream probe lacked response validation.** A JSON
+    error envelope with a 4xx/5xx status, or a 2xx payload without usage
+    data, was still recorded as an *available* probe with absent counters.
+    The probe now requires a successful status **and** valid usage data,
+    and records a failure reason otherwise. The same function also read the
+    upstream's decode speed from `timings.generation_per_second`, which the
+    upstream does not publish — it reports `predicted_per_second` — so the
+    measured decode rate was always absent. Both are corrected.
+  - **Cross-waiter grants could exceed queue deadlines.** A candidate
+    selected on behalf of another waiter was granted even when its **own**
+    queue deadline had already passed, so it executed after the timeout
+    that was supposed to bound it. Every entry now carries a deadline
+    stamped at enqueue time; expired candidates are excluded before the
+    scheduler chooses, and an owner whose grant arrives after its own
+    deadline treats it as a timeout rather than executing.
+
+  Regression tests: `tests/test_lifecycle_boundary_findings.py` (15 tests) —
+  **10 failed against the pre-fix commit**, all passing after.
+
 - **Queue/scheduler execution-ownership defect.** Under
   `WHOOSHD_SCHEDULER_POLICY=cache_aware_fifo`, `select_and_dequeue()` could
   remove a request that the calling waiter did not own. The removed request

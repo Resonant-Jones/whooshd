@@ -121,6 +121,22 @@ successfully under explicit guarded adapter-batch test conditions.
 - Queue full returns structured 429 with RUNNER_OVERLOADED
 - All error responses are metadata-only
 
+### Deadline and depth semantics
+
+- **Every queued request carries its own deadline**, stamped when it joins
+  the queue. The deadline bounds that request's *own* waiting time, so a
+  selection made on behalf of another waiter cannot grant a request that has
+  already waited past `WHOOSHD_QUEUE_TIMEOUT_SECONDS`. An owner whose grant
+  arrives after its own deadline treats it as a timeout rather than
+  executing.
+- **`queue_depth` counts requests still waiting**, not requests already
+  granted. A request the scheduler has granted has left the queue and holds
+  a capacity reservation, even though its lifecycle record has not yet
+  changed state. Counting it would over-report occupancy and could make a
+  new request be refused as *queue full* while the queue still had room.
+  The reservation still holds its capacity slot, so excluding it from the
+  queue count does not free capacity.
+
 ## Observability and Privacy
 
 All queue/admission surfaces are metadata-only:

@@ -137,7 +137,7 @@ A `CapacityProfile` may carry token ceilings for the model it describes:
 | hard max | Capability ceiling — never exceeded | Request rejected with `context_overflow` (HTTP 422) |
 | recommended max | Default operating target | Request admitted unchanged; `context_reason` records the advisory |
 | interactive max | Latency-sensitive path target | Request admitted; reason recorded |
-| `max_input_tokens` | The model's maximum prompt size | Request rejected with `context_overflow` (HTTP 422) |
+| `max_input_tokens` | The model's maximum prompt size (text **and** media) | Request rejected with `context_overflow` (HTTP 422) |
 | `max_output_tokens` | The model's maximum completion size | Request rejected with `context_overflow` (HTTP 422) |
 
 Every request is costed in **assembled tokens**: input plus reserved output
