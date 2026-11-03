@@ -57,6 +57,13 @@ class QueueEntry:
     grant_event: asyncio.Event = field(
         default_factory=asyncio.Event, compare=False, repr=False
     )
+    # -- Route-specific capacity ----------------------------------------
+    # The inference lane that will execute this entry and that lane's own
+    # concurrency ceiling.  A grant must check the *candidate's* lane, not
+    # the granting waiter's: a cache-affinity selection may hand the slot
+    # to a request bound for a different lane.
+    lane: str | None = field(default=None, compare=False)
+    lane_max_concurrent: int | None = field(default=None, compare=False)
 
     def __post_init__(self) -> None:
         self.upstream_request_id = normalize_identifier(self.upstream_request_id)
@@ -230,6 +237,8 @@ class RequestQueue:
         self,
         *,
         capacity_available,  # zero-arg callable returning bool
+        entry_eligible=None,  # optional callable(QueueEntry) -> bool
+        reserve=None,  # optional callable(QueueEntry) -> None
     ) -> Optional[QueueEntry]:
         """Scheduler-authoritative selection and atomic dequeue.
 
@@ -240,6 +249,8 @@ class RequestQueue:
         2. Asks the scheduler which request should run next.
         3. Atomically removes the selected entry **by request_id** so
            no position-based race can execute a request twice.
+        4. **Reserves the execution slot** for the selected entry before
+           handing it over.
 
         Returns the selected :class:`QueueEntry`, or ``None`` if no
         request is eligible (capacity unavailable, queue empty, or the
@@ -254,6 +265,21 @@ class RequestQueue:
               twice.
             * ``build_candidates()`` is O(N) but read-only; the atomic
               removal is the synchronisation point.
+
+        Capacity reservation:
+            The grant **reserves** capacity rather than only transferring
+            ownership.  Without the reservation there is a scheduling gap
+            between the grant and the granted waiter's resumption, during
+            which ``active_jobs`` does not yet include the granted
+            request — and a newly arriving request can be admitted into
+            the slot that has already been handed out.  ``reserve`` is
+            called synchronously with the removal, so no other coroutine
+            can observe the un-reserved state.
+
+        ``entry_eligible`` filters candidates by their **own** lane's
+        capacity before the scheduler chooses.  A cache-affinity
+        selection may prefer a candidate bound for a different lane, and
+        that candidate's lane must have room before it is granted.
         """
         candidates = self.build_candidates()
         if not candidates:
@@ -264,6 +290,20 @@ class RequestQueue:
                 candidates, capacity_available=False
             )
             return None
+
+        if entry_eligible is not None:
+            by_id = {e.request_id: e for e in self._deque}
+            eligible = [
+                c
+                for c in candidates
+                if entry_eligible(by_id.get(c.request_id))
+            ]
+            if not eligible:
+                self._scheduler.choose_next(
+                    candidates, capacity_available=False
+                )
+                return None
+            candidates = eligible
 
         decision = self._scheduler.choose_next(
             candidates, capacity_available=True
@@ -277,6 +317,12 @@ class RequestQueue:
         if selected is None:
             # Another waiter claimed it first; nothing was removed here.
             return None
+
+        # Reserve the execution slot.  This is synchronous with the
+        # removal above — no await separates them — so the reservation is
+        # atomic with respect to every other coroutine.
+        if reserve is not None:
+            reserve(selected)
 
         # Execution ownership.  The removed entry is marked granted so its
         # own waiting caller knows it may execute.  Without this, a
@@ -357,12 +403,25 @@ class RequestQueue:
         *,
         cancel_token: Optional[CancellationToken] = None,
         capacity_available: Optional[callable] = None,
+        entry_eligible: Optional[callable] = None,
+        reserve: Optional[callable] = None,
     ) -> bool:
         """Poll until this entry is at the front of the queue AND capacity
         is available, or until the timeout expires, or cancellation is requested.
 
         ``capacity_available`` is a zero-arg callable that returns True when
         an active execution slot is free (e.g. ``runtime.active_jobs < max``).
+        It expresses the **global** constraint only; per-lane constraints are
+        expressed through ``entry_eligible``.
+
+        ``entry_eligible`` is an optional callable that takes a
+        :class:`QueueEntry` and returns True when that entry's own lane has
+        room.  The scheduler only chooses among eligible candidates, so a
+        cache-affinity selection can never grant work to a saturated lane.
+
+        ``reserve`` is an optional callable that takes the granted
+        :class:`QueueEntry` and reserves its execution slot.  It is invoked
+        atomically with the grant.
 
         When the entry is at the front and capacity is available, the
         scheduler is consulted for the final selection (which under FIFO
@@ -403,7 +462,9 @@ class RequestQueue:
                     # returns this same entry, so the remove() below
                     # commits the claim by request_id (not position).
                     selected = self.select_and_dequeue(
-                        capacity_available=capacity_available or (lambda: True)
+                        capacity_available=capacity_available or (lambda: True),
+                        entry_eligible=entry_eligible,
+                        reserve=reserve,
                     )
                     if (
                         selected is not None
@@ -411,8 +472,10 @@ class RequestQueue:
                     ):
                         return True
                     # Race: the entry was removed between peek() and
-                    # select_and_dequeue (e.g. cancellation).  Treat as
-                    # "no longer eligible" — caller should not execute.
+                    # select_and_dequeue (e.g. cancellation), or no
+                    # candidate was eligible (e.g. every candidate's lane
+                    # is saturated).  Treat as "not eligible" — the
+                    # caller should not execute.
                     logger.debug(
                         "queue.select_lost request_id=%s selected=%s",
                         entry.request_id,

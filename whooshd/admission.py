@@ -88,6 +88,7 @@ def evaluate_chat_request(
     *,
     lane: Optional[str] = None,
     lane_max_concurrent: Optional[int] = None,
+    model_id: Optional[str] = None,
 ) -> AdmissionResult:
     """Evaluate a chat completion request against configured limits.
 
@@ -104,6 +105,11 @@ def evaluate_chat_request(
     ceiling, the effective limit is capped by it so the broker queues
     rather than admitting work the lane cannot run.  Pass them only after
     the route has been resolved.
+
+    ``model_id`` is the **resolved** model that will execute the request.
+    Context budgets are selected by that model, never by the process-wide
+    controller identity, so a request routed to model B is never measured
+    against model A's hard ceiling.
     """
     # ── Rule 1: message count (structural — always reject) ────────────
     max_msgs = get_max_messages()
@@ -163,7 +169,11 @@ def evaluate_chat_request(
     # Budgets are read first because the profile's per-unit multimodal
     # estimate feeds the costing: without it, image content would be
     # counted as zero tokens rather than as an unknown cost.
-    budgets = controller.context_budgets()
+    #
+    # The budgets are selected by the *request's* resolved model.  Using
+    # the process-wide controller identity here would apply model A's hard
+    # ceiling to a request routed to model B.
+    budgets = controller.context_budgets(model_id=model_id)
     cost = estimate_request_cost(
         request,
         default_max_tokens=get_default_max_tokens(),
@@ -181,6 +191,7 @@ def evaluate_chat_request(
             max_queue_depth=max_queue,
             memory_pressure=memory_pressure,
             requested_estimated_tokens=cost.total_tokens,
+            request_cost=cost,
             context_budgets=budgets,
             lane=lane,
             lane_max_concurrent=lane_max_concurrent,
@@ -198,10 +209,13 @@ def evaluate_chat_request(
                 "estimated_tokens": cost.total_tokens,
                 "context_reason": context_eval.reason.value,
                 "context_cost_is_exact": context_eval.cost_is_exact,
+                "context_cost_status": context_eval.cost_status,
                 "context_cost_has_unknown": cost.has_unknown_cost,
                 "context_budget": (
                     context_eval.budget.value if context_eval.budget else None
                 ),
+                "context_max_input_tokens": context_eval.max_input_tokens,
+                "context_max_output_tokens": context_eval.max_output_tokens,
                 "lane": evaluation.lane,
                 "lane_max_concurrent": evaluation.lane_max_concurrent,
                 "lane_active_jobs": evaluation.lane_active_jobs,
@@ -215,39 +229,7 @@ def evaluate_chat_request(
         # fit the model regardless of available capacity, so it must not be
         # queued behind work it can never fit.
         if evaluation.reason.value == "context_overflow":
-            return AdmissionResult(
-                accepted=False,
-                reason=AdmissionDecision.REJECTED_CONTEXT_OVERFLOW,
-                error_code=ErrorCode.CONTEXT_OVERFLOW,
-                message=(
-                    "Request exceeds the model's hard context budget "
-                    f"({cost.total_tokens} tokens)."
-                ),
-                details={
-                    "estimated_tokens": cost.total_tokens,
-                    "input_tokens": cost.input_tokens,
-                    "output_tokens": cost.output_tokens,
-                    "multimodal_tokens": cost.multimodal_tokens,
-                    "input_is_exact": cost.input_is_exact,
-                    "context_reason": context_eval.reason.value,
-                "context_cost_is_exact": context_eval.cost_is_exact,
-                "context_cost_has_unknown": cost.has_unknown_cost,
-                    "context_cost_is_exact": context_eval.cost_is_exact,
-                    "context_cost_has_unknown": cost.has_unknown_cost,
-                    "context_budget": (
-                        context_eval.budget.value if context_eval.budget else None
-                    ),
-                    "context_breached_budget": (
-                        context_eval.breached_budget.value
-                        if context_eval.breached_budget
-                        else None
-                    ),
-                    "hard_max_tokens": context_eval.hard_max_tokens,
-                    "recommended_max_tokens": context_eval.recommended_max_tokens,
-                    "interactive_max_tokens": context_eval.interactive_max_tokens,
-                },
-                http_status=422,
-            )
+            return context_overflow_result(cost, context_eval)
         # queue_full → REJECTED_QUEUE_FULL.  runtime_not_ready is
         # never reached here (see comment above); if it is, treat as
         # overload for backward compatibility with the pre-throughput
@@ -313,9 +295,14 @@ def evaluate_chat_request(
             "effective_active_limit": evaluation.effective_active_limit,
             "estimated_tokens": cost.total_tokens,
             "context_reason": context_eval.reason.value,
+            "context_cost_is_exact": context_eval.cost_is_exact,
+            "context_cost_status": context_eval.cost_status,
+            "context_cost_has_unknown": cost.has_unknown_cost,
             "context_budget": (
                 context_eval.budget.value if context_eval.budget else None
             ),
+            "context_max_input_tokens": context_eval.max_input_tokens,
+            "context_max_output_tokens": context_eval.max_output_tokens,
             "lane": evaluation.lane,
             "lane_max_concurrent": evaluation.lane_max_concurrent,
             "lane_active_jobs": evaluation.lane_active_jobs,
@@ -325,12 +312,70 @@ def evaluate_chat_request(
     )
 
 
+def resolve_context_budgets(
+    model_id: Optional[str] = None,
+) -> Optional[ContextBudgets]:
+    """Context budgets for the **resolved** model, if any.
+
+    Keyed by the request's model rather than by the process-wide
+    controller identity: a request routed to model B must never be
+    measured against model A's hard ceiling.
+    """
+    return _get_controller().context_budgets(model_id=model_id)
+
+
+def context_overflow_result(
+    cost,
+    context_eval,
+) -> AdmissionResult:
+    """Build the canonical rejection for a request that breaches a hard limit.
+
+    Shared by the chat-completions and generate paths so both endpoints
+    reject a hard-budget breach the same way.
+    """
+    return AdmissionResult(
+        accepted=False,
+        reason=AdmissionDecision.REJECTED_CONTEXT_OVERFLOW,
+        error_code=ErrorCode.CONTEXT_OVERFLOW,
+        message=(
+            "Request exceeds the model's hard context budget "
+            f"({cost.total_tokens} tokens)."
+        ),
+        details={
+            "estimated_tokens": cost.total_tokens,
+            "input_tokens": cost.input_tokens,
+            "output_tokens": cost.output_tokens,
+            "multimodal_tokens": cost.multimodal_tokens,
+            "input_is_exact": cost.input_is_exact,
+            "context_reason": context_eval.reason.value,
+            "context_cost_is_exact": context_eval.cost_is_exact,
+            "context_cost_status": context_eval.cost_status,
+            "context_cost_has_unknown": cost.has_unknown_cost,
+            "context_budget": (
+                context_eval.budget.value if context_eval.budget else None
+            ),
+            "context_breached_budget": (
+                context_eval.breached_budget.value
+                if context_eval.breached_budget
+                else None
+            ),
+            "hard_max_tokens": context_eval.hard_max_tokens,
+            "recommended_max_tokens": context_eval.recommended_max_tokens,
+            "interactive_max_tokens": context_eval.interactive_max_tokens,
+            "context_max_input_tokens": context_eval.max_input_tokens,
+            "context_max_output_tokens": context_eval.max_output_tokens,
+        },
+        http_status=422,
+    )
+
+
 def _capacity_context(
     *,
     runtime: RuntimeState,
     max_queue_depth: int,
     memory_pressure: MemoryPressureClass,
     requested_estimated_tokens: Optional[int] = None,
+    request_cost=None,
     context_budgets: Optional[ContextBudgets] = None,
     lane: Optional[str] = None,
     lane_max_concurrent: Optional[int] = None,
@@ -351,6 +396,7 @@ def _capacity_context(
         runtime_ready=True,
         memory_pressure=memory_pressure,
         requested_estimated_tokens=requested_estimated_tokens,
+        request_cost=request_cost,
         context_budgets=context_budgets,
         lane=lane,
         lane_max_concurrent=lane_max_concurrent,

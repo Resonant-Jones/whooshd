@@ -1,91 +1,131 @@
 {
   "schema_version": "whooshd.lane_experiment.v1",
-  "broker": "http://127.0.0.1:18940",
+  "broker": "http://127.0.0.1:18923",
   "model": "local-chat",
   "admission_at_start": {
+    "reachable": true,
     "max_active_requests": 2,
     "queue_enabled": true,
-    "lane_max_concurrent": null
+    "lane_max_concurrent": null,
+    "lane_max_concurrent_reported": null,
+    "lane_max_concurrent_source": null
+  },
+  "lane_attestation": {
+    "status": "ATTESTED",
+    "reasons": [],
+    "evidence": {
+      "expected_lane_max_concurrent": 2,
+      "expected_lane": "mlx_vlm",
+      "reported_lane_max_concurrent": null,
+      "reported_lane_max_concurrent_source": null,
+      "reported_lane": null,
+      "broker_reachable": true,
+      "global_ceilings": {
+        "max_active_requests": 2,
+        "effective_active_limit": 2,
+        "operator_ceiling": 2
+      },
+      "config_attested_by_broker_report": false,
+      "observation_samples": 191,
+      "observed_peak_active_jobs": 2,
+      "observed_peak_queue_depth": 0,
+      "config_attested_by_observation": true
+    }
   },
   "cold_start_observation": {
     "ok": true,
-    "latency_ms": 11439.8,
+    "latency_ms": 12519.9,
     "status": 200,
     "error": null,
     "swap_out_delta_pages": 0,
-    "swap_in_delta_pages": 216,
+    "swap_in_delta_pages": 532,
+    "lane_evidence": null,
     "note": "Warm-up request, discarded from the concurrency comparison. A large swap delta here is the model being faulted back in from disk, not concurrency thrash."
   },
   "bands": [
     {
       "concurrency": 1,
-      "wall_seconds": 10.44,
+      "wall_seconds": 9.37,
       "success_count": 1,
       "failure_count": 0,
       "records": [
         {
           "index": 0,
           "status": 200,
-          "latency_ms": 10439.9,
-          "completion_tokens": 73,
+          "latency_ms": 9368.2,
+          "completion_tokens": 77,
           "prompt_tokens": 365,
           "ok": true
         }
       ],
-      "aggregate_tokens_per_second": 6.992,
-      "per_request_tokens_per_second": 6.992,
-      "latency_p50_ms": 10439.9,
-      "latency_max_ms": 10439.9,
+      "aggregate_tokens_per_second": 8.218,
+      "per_request_tokens_per_second": 8.218,
+      "latency_p50_ms": 9368.2,
+      "latency_max_ms": 9368.2,
       "swap_out_delta_pages": 0,
-      "swap_in_delta_pages": 296,
-      "memory_pressure_before": "System-wide memory free percentage: 36%",
-      "memory_pressure_after": "System-wide memory free percentage: 36%"
+      "swap_in_delta_pages": 12,
+      "memory_pressure_before": "System-wide memory free percentage: 33%",
+      "memory_pressure_after": "System-wide memory free percentage: 33%",
+      "admission_observation": {
+        "samples": 170,
+        "peak_active_jobs": 1,
+        "peak_queue_depth": 0,
+        "sample_interval_seconds": 0.05
+      }
     },
     {
       "concurrency": 2,
-      "wall_seconds": 11.11,
+      "wall_seconds": 10.98,
       "success_count": 2,
       "failure_count": 0,
       "records": [
         {
           "index": 0,
           "status": 200,
-          "latency_ms": 11104.5,
-          "completion_tokens": 73,
+          "latency_ms": 10979.3,
+          "completion_tokens": 77,
           "prompt_tokens": 365,
           "ok": true
         },
         {
           "index": 1,
           "status": 200,
-          "latency_ms": 11104.1,
-          "completion_tokens": 74,
+          "latency_ms": 10591.0,
+          "completion_tokens": 73,
           "prompt_tokens": 365,
           "ok": true
         }
       ],
-      "aggregate_tokens_per_second": 13.237,
-      "per_request_tokens_per_second": 6.619,
-      "latency_p50_ms": 11104.3,
-      "latency_max_ms": 11104.5,
+      "aggregate_tokens_per_second": 13.661,
+      "per_request_tokens_per_second": 6.83,
+      "latency_p50_ms": 10785.1,
+      "latency_max_ms": 10979.3,
       "swap_out_delta_pages": 0,
-      "swap_in_delta_pages": 418,
-      "memory_pressure_before": "System-wide memory free percentage: 36%",
-      "memory_pressure_after": "System-wide memory free percentage: 35%"
+      "swap_in_delta_pages": 281,
+      "memory_pressure_before": "System-wide memory free percentage: 33%",
+      "memory_pressure_after": "System-wide memory free percentage: 30%",
+      "admission_observation": {
+        "samples": 191,
+        "peak_active_jobs": 2,
+        "peak_queue_depth": 0,
+        "sample_interval_seconds": 0.05
+      }
     }
   ],
   "upstream": {
     "available": true,
     "prompt_tokens": 365,
     "cached_prompt_tokens": 349,
-    "prefill_ms": 296.08566699607763,
+    "prefill_ms": 283.5146660072496,
     "predicted_tokens": 74,
     "generation_tps": null
   },
   "cleanup": {
+    "reachable": true,
     "active_jobs_at_rest": 0,
     "queue_depth_at_rest": 0
   },
   "verdict": "PASS",
-  "failures": []
+  "failures": [],
+  "unverified": []
 }

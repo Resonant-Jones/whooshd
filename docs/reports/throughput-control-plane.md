@@ -428,20 +428,29 @@ the lane limit depends on the capacity evidence being sought. That reasoning
 was too strong: the question is answerable by controlled measurement.
 
 CWC-013 raised `WHOOSHD_MLX_VLM_MAX_CONCURRENT_REQUESTS` to 2 on an **isolated
-broker** — the working deployment on port 8000 was not modified — and measured:
+broker** — the working deployment on port 8000 was not modified — and
+measured. The figures below are from the **attested re-run** (see the packet's
+§8), in which the harness sampled the broker's own admission state during the
+x2 band and observed `peak_active_jobs = 2` with `peak_queue_depth = 0`:
 
 | Metric | Concurrency 1 | Concurrency 2 |
 |---|---:|---:|
 | Successes | 1/1 | **2/2** |
-| Aggregate tokens/sec | 6.99 | **13.24** |
-| Per-request latency | 10 440 ms | 11 104 ms (+6.3 %) |
-| Spread across the 2 requests | — | 0.2 ms |
+| Aggregate tokens/sec | 8.218 | **13.661** (+66 %) |
+| Per-request latency (p50) | 9 368 ms | 10 785 ms (+15.2 %) |
+| Observed peak active jobs | 1 | **2** |
+| Observed peak queue depth | 0 | **0** |
 | Swap pages out | 0 | **0** |
 
-Two concurrent requests ran **simultaneously** (finishing 0.2 ms apart) and
-aggregate throughput rose **89 %**. The lane limit of 1 was leaving roughly
-half the machine's throughput unused, and was the source of the 429s seen
-under concurrent load.
+Two concurrent requests ran **simultaneously** and aggregate throughput rose
+**66 %**. The lane limit of 1 was leaving roughly half the machine's
+throughput unused, and was the source of the 429s seen under concurrent load.
+
+An earlier run of the same experiment reported +89 % at +6.3 % latency, but
+its harness could neither attest the lane configuration it claimed to test
+nor verify its own cleanup state — a broker whose lane limit was still 1
+would have produced the same `PASS`. That figure is superseded and is not
+quoted; the attested re-run's figures above are the ones of record.
 
 Concurrency 2 is therefore evidence-backed for this host and model.
 Concurrency above 2, sustained load, and behaviour on the fanless MacBook Air

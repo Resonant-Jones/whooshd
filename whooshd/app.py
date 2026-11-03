@@ -33,7 +33,9 @@ from whooshd import __version__
 from whooshd.admission import (
     AdmissionDecision,
     active_capacity_available,
+    context_overflow_result,
     evaluate_chat_request,
+    resolve_context_budgets,
 )
 from whooshd.adapters.base import StreamingNotSupportedError
 from whooshd.backend_request_policy import (
@@ -67,9 +69,11 @@ from whooshd.control_plane import (
     error_fields,
     negotiate_contract_version,
 )
+from whooshd.capacity_context import evaluate_context, estimate_prompt_cost
 from whooshd.config import (
     get_adapter_backend,
     get_advertised_model_id,
+    get_default_max_tokens,
     get_mlx_lm_server_enabled,
     get_mlx_vlm_enabled,
 )
@@ -653,6 +657,33 @@ async def generate(request: Request, req: GenerateRequest) -> GenerateResponse:
             ),
         )
 
+    # ── Context policy ─────────────────────────────────────────────────
+    # /v1/generate dispatches to the same adapters as /v1/chat/completions,
+    # so the hard context policy applies here too.  A prompt that cannot
+    # fit the resolved model is refused before a lifecycle record is
+    # created, rather than being forwarded and failing upstream.
+    resolved_model_id = resolution.resolved_model_id or model
+    budgets = resolve_context_budgets(resolved_model_id)
+    cost = estimate_prompt_cost(
+        req.prompt,
+        max_tokens=req.max_tokens,
+        default_max_tokens=get_default_max_tokens(),
+    )
+    context_eval = evaluate_context(cost, budgets)
+    if context_eval.over_limit:
+        overflow = context_overflow_result(cost, context_eval)
+        rt.record_rejected(overflow.reason.value)
+        return JSONResponse(
+            status_code=overflow.http_status,
+            content=_error_body_for_request(
+                request,
+                overflow.error_code or ErrorCode.CONTEXT_OVERFLOW,
+                overflow.message or "Request exceeds the model's context budget.",
+                http_status=overflow.http_status,
+                details=overflow.details,
+            ),
+        )
+
     # ── Admission control ─────────────────────────────────────────────
     # The same lane-aware admission as the chat path: global capacity and
     # the selected lane's own ceiling are independent constraints, and
@@ -1192,6 +1223,10 @@ async def chat_completions(request: Request, req: ChatCompletionRequest):
         rt,
         lane=resolution.lane,
         lane_max_concurrent=resolution.lane_max_concurrent,
+        # Context budgets are selected by the *resolved* model, so a
+        # multi-model broker never applies one model's hard ceiling to a
+        # request routed to another.
+        model_id=resolution.resolved_model_id or req.model,
     )
 
     # Queue-full is a hard rejection — record queue-specific counter too.
@@ -1305,20 +1340,34 @@ async def chat_completions(request: Request, req: ChatCompletionRequest):
             request_id=request_id,
             request=backend_request,
             upstream_request_id=_upstream_request_id(request),
+            # The entry carries its own lane so the queue can check the
+            # *candidate's* capacity when a cache-affinity selection picks
+            # a different entry than the one being waited on.
+            lane=resolution.lane,
+            lane_max_concurrent=resolution.lane_max_concurrent,
         )
         queue.enqueue(entry)
 
         ready = await queue.wait_for_execution(
             entry,
             cancel_token=token,
+            # The global constraint.  The lane constraint is applied to
+            # the candidate that is actually granted, below.
+            capacity_available=lambda: active_capacity_available(rt),
             # The lane must be re-checked at release time, not only at
             # admission: the lane may have saturated while this request
             # waited.  Releasing on global capacity alone would hand the
             # request to an adapter that cannot run it.
-            capacity_available=lambda: active_capacity_available(
+            entry_eligible=lambda candidate: active_capacity_available(
                 rt,
-                lane=resolution.lane,
-                lane_max_concurrent=resolution.lane_max_concurrent,
+                lane=candidate.lane,
+                lane_max_concurrent=candidate.lane_max_concurrent,
+            ),
+            # The grant reserves the execution slot immediately.  Without
+            # the reservation, a request arriving in the gap between the
+            # grant and this waiter resuming could take the same slot.
+            reserve=lambda granted: rt.reserve_capacity(
+                granted.request_id, granted.lane
             ),
         )
 

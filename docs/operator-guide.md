@@ -89,13 +89,27 @@ counters**, and both are checked — at initial admission *and* when a queued
 request is released. A saturated lane does not consume another lane's budget,
 and an idle lane is not starved because a different lane is busy.
 
+**A grant reserves capacity, not just ownership.** When the scheduler grants a
+queued request — including a cache-affinity selection that hands the slot to a
+*different* entry than the one being waited on — the execution slot is
+reserved at the instant of the grant and held until the request actually
+starts running. Without that reservation there is a scheduling gap between the
+grant and the granted waiter resuming, and a request arriving in that gap
+could take the slot that had already been handed out. The reservation is
+taken against the **candidate's** lane as well as against global capacity, and
+a candidate whose own lane is saturated is never granted.
+
 Both `/v1/chat/completions` and `/v1/generate` resolve the route before
 admitting, so the lane is known when the decision is made.
 
 The MLX-VLM lane defaults to **one** concurrent request, which was chosen
 without concurrency evidence. [CWC-013](../validation/2026-11-03-cwc013-lane-concurrency-experiment.md)
 measured concurrency 2 on an isolated broker against the 12B: 2/2 success,
-aggregate throughput **+89 %**, per-request latency **+6.3 %**, zero swap-out.
+aggregate throughput **+66 %**, per-request latency **+15.2 %**, zero swap-out.
+The run is **attested**: the harness sampled the broker's own admission state
+during the x2 band and observed `peak_active_jobs = 2` with
+`peak_queue_depth = 0`, so the two requests are demonstrably in flight
+together.
 Raising the lane limit on the working deployment is now an evidence-backed
 choice rather than a guess.
 
@@ -116,17 +130,37 @@ returns the process to fixed/default behavior.
 
 ### Per-model context policy
 
-A `CapacityProfile` may carry three token ceilings for the model it describes:
+A `CapacityProfile` may carry token ceilings for the model it describes:
 
 | Budget | Meaning | Effect when exceeded |
 |---|---|---|
 | hard max | Capability ceiling — never exceeded | Request rejected with `context_overflow` (HTTP 422) |
-| recommended max | Default operating target | Request admitted unchanged;  records the advisory |
+| recommended max | Default operating target | Request admitted unchanged; `context_reason` records the advisory |
 | interactive max | Latency-sensitive path target | Request admitted; reason recorded |
+| `max_input_tokens` | The model's maximum prompt size | Request rejected with `context_overflow` (HTTP 422) |
+| `max_output_tokens` | The model's maximum completion size | Request rejected with `context_overflow` (HTTP 422) |
 
 Every request is costed in **assembled tokens**: input plus reserved output
 plus multimodal content. A model with no calibrated budgets is never
 constrained — the estimate is still reported as observability.
+
+**Budgets follow the request's model.** The lookup is keyed by the *resolved*
+model that will execute the request, not by the process-wide
+`WHOOSHD_CAPACITY_MODEL_ID`. On a broker that serves several models this
+matters: model A's hard ceiling is never applied to a request routed to model
+B. A request whose model has no measured budgets is admitted unchanged.
+
+**The counted prompt is the assembled prompt.** Tool definitions, assistant
+`tool_calls`, structured-output schemas, tool choice, and stop sequences are
+all forwarded upstream, so all of them are charged. The output reservation
+follows the larger of `max_tokens` and `max_completion_tokens`, because the
+broker forwards both and the upstream's precedence between them is not
+knowable from here.
+
+**Precision is reported, never assumed.** Every evaluation carries
+`context_cost_status` — `exact`, `estimated`, or `unknown`. A request whose
+media has no per-unit estimate is *undercounted*, not free, and its
+hard-limit comparison is explicitly best-effort rather than a guarantee.
 
 The model's maximum context window is a **capability ceiling, not a target
 request size**. Routine interactive turns should sit near the recommended

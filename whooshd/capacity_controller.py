@@ -36,7 +36,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    from whooshd.capacity_context import RequestCost
 
 from whooshd.capacity_profile import (
     ContextBudgets,
@@ -64,6 +67,49 @@ class CapacityAction(str, Enum):
     RUN = "run"          # An active slot is free; caller may execute.
     QUEUE = "queue"      # No slot free / denied; caller should queue.
     REJECT = "reject"    # Cannot ever queue (queue full); caller must reject.
+
+
+def _model_basename(value: str) -> str:
+    """Reduce a model identity to its comparable final segment.
+
+    Local snapshot paths and Hugging Face cache layouts name the same model
+    in different ways::
+
+        /models/models--mlx-community--gemma-4-12B-it-qat-4bit
+        mlx-community/gemma-4-12B-it-qat-4bit
+
+    Both reduce to ``gemma-4-12b-it-qat-4bit``.
+    """
+    text = (value or "").strip().rstrip("/")
+    if not text:
+        return ""
+    if "models--" in text:
+        text = text.rsplit("models--", 1)[1]
+        text = text.replace("--", "/", 1)
+    return text.rsplit("/", 1)[-1].strip().lower()
+
+
+def model_identity_matches(profile_model_id: str, candidate: str) -> bool:
+    """Whether *candidate* names the same model as *profile_model_id*.
+
+    Exact identity wins.  Otherwise the final path/repository segment is
+    compared, which lets a calibrated local snapshot path match a
+    Hugging Face repository id for the same weights.  Two genuinely
+    different models do not share a final segment in practice, and an
+    unmatched request simply receives no budgets — which is the safe
+    direction.
+    """
+    left = (profile_model_id or "").strip()
+    right = (candidate or "").strip()
+    if not left or not right:
+        return False
+    if left == right:
+        return True
+    left_base = _model_basename(left)
+    right_base = _model_basename(right)
+    if not left_base or not right_base:
+        return False
+    return left_base == right_base
 
 
 @dataclass(frozen=True)
@@ -140,6 +186,13 @@ class CapacityContext:
     runtime_ready: bool
     memory_pressure: MemoryPressureClass = MemoryPressureClass.UNKNOWN
     requested_estimated_tokens: Optional[int] = None  # forward-looking cost hint
+    #: The request's full cost breakdown, when admission has computed one.
+    #: The controller evaluates the *real* cost against the budgets so that
+    #: per-direction maxima (declared input/output limits) and the exactness
+    #: of the estimate are honoured.  When absent, only
+    #: ``requested_estimated_tokens`` is available and the comparison is
+    #: made against the combined total alone.
+    request_cost: Optional["RequestCost"] = None
     #: Per-model context budgets to compare the request cost against.  When
     #: absent the request is admitted unchanged -- an unmeasured model is
     #: never silently constrained.
@@ -209,18 +262,70 @@ class CapacityController:
         self._cached_profile_signature = None
         self._cached_profile = None
 
-    def context_budgets(self) -> Optional["ContextBudgets"]:
-        """Per-model context budgets from the loaded profile, if any.
+    def context_budgets(
+        self, model_id: Optional[str] = None
+    ) -> Optional["ContextBudgets"]:
+        """Per-model context budgets for *model_id*, if any.
 
-        Returns ``None`` when no profile is configured, the profile is
-        ineligible for this host, or the profile carries no budgets.  An
-        unmeasured model is never silently constrained.
+        The lookup is keyed by the **request's** model, not by the
+        process-wide ``WHOOSHD_CAPACITY_MODEL_ID``.  A broker that serves
+        several models must not apply model A's hard ceiling to a request
+        routed to model B — that is a mis-constraint, not a policy.  A
+        request whose model has no measured budgets is admitted unchanged
+        (an unmeasured model is never silently constrained).
+
+        When *model_id* is ``None`` the caller has not resolved a model, so
+        the configured controller identity is used instead.
         """
-        profile, eligible, _reason = self._profile_status()
-        if not eligible or profile is None:
+        profile = self._get_profile()
+        if profile is None:
             return None
         budgets = getattr(profile, "context_budgets", None)
-        return budgets if isinstance(budgets, ContextBudgets) else None
+        if not isinstance(budgets, ContextBudgets):
+            return None
+
+        if model_id is None:
+            configured = get_capacity_model_id()
+            if not configured or configured != profile.model_id:
+                return None
+        elif not model_identity_matches(profile.model_id, model_id):
+            return None
+
+        eligible, _reason = self._host_status(profile)
+        if not eligible:
+            return None
+        return budgets
+
+    @staticmethod
+    def _host_status(
+        profile: CapacityProfile,
+    ) -> tuple[bool, Optional[str]]:
+        """Whether *profile* was captured on a host this process may use.
+
+        This is the machine/runtime half of profile eligibility.  The
+        model half is deliberately separate: context budgets are selected
+        by the request's model, while the calibrated *concurrency* is
+        selected by the operator's configured identity.
+        """
+        runtime = get_capacity_runtime()
+        machine_class = get_capacity_machine_class()
+        if not runtime or not machine_class:
+            return False, "identity_unavailable"
+        if profile.runtime != runtime:
+            return False, "runtime_mismatch"
+        if profile.machine_class != machine_class:
+            return False, "machine_mismatch"
+
+        current_memory = CapacityController._host_memory_bytes()
+        if (
+            profile.host_memory_bytes is not None
+            and current_memory is not None
+            and profile.host_memory_bytes != current_memory
+        ):
+            return False, "host_memory_mismatch"
+        if profile.host_memory_bytes is not None and current_memory is None:
+            return False, "host_memory_unavailable"
+        return True, None
 
     @staticmethod
     def _host_memory_bytes() -> Optional[int]:
@@ -249,20 +354,9 @@ class CapacityController:
             return profile, False, "identity_unavailable"
         if profile.model_id != model_id:
             return profile, False, "model_mismatch"
-        if profile.runtime != runtime:
-            return profile, False, "runtime_mismatch"
-        if profile.machine_class != machine_class:
-            return profile, False, "machine_mismatch"
-
-        current_memory = self._host_memory_bytes()
-        if (
-            profile.host_memory_bytes is not None
-            and current_memory is not None
-            and profile.host_memory_bytes != current_memory
-        ):
-            return profile, False, "host_memory_mismatch"
-        if profile.host_memory_bytes is not None and current_memory is None:
-            return profile, False, "host_memory_unavailable"
+        eligible, reason = self._host_status(profile)
+        if not eligible:
+            return profile, False, reason
         return profile, True, None
 
     # ── Mode / ceiling ──────────────────────────────────────────────
@@ -370,8 +464,10 @@ class CapacityController:
             )
 
             estimated = ctx.requested_estimated_tokens or 0
-            context_eval = evaluate_context(
-                RequestCost(
+            if ctx.request_cost is not None:
+                cost = ctx.request_cost
+            else:
+                cost = RequestCost(
                     input_tokens=0,
                     output_tokens=0,
                     multimodal_tokens=0,
@@ -379,9 +475,8 @@ class CapacityController:
                     input_is_exact=False,
                     multimodal_is_exact=False,
                     output_is_exact=False,
-                ),
-                ctx.context_budgets,
-            )
+                )
+            context_eval = evaluate_context(cost, ctx.context_budgets)
             context_fields = {
                 "context_reason": context_eval.reason.value,
                 "context_budget": (

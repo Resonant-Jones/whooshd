@@ -69,10 +69,10 @@ Two files per run, under `docs/validation/`:
 | `prefill_p50_ms` | upstream-reported `timings.prompt_ms` | The prefill tax that prefix reuse removes |
 | `aggregate_tokens_per_second` | generated tokens / band wall-clock | Distinguishes max-working from recommended concurrency |
 | `per_request_tokens_per_second` | mean per request | What a single tenant actually receives |
-| `queue_latency_p50_ms` | lifecycle states | The smoothness metric |
+| `queue_latency_p50_ms` | broker lifecycle records (accepted → running) | The smoothness metric — absent unless the broker publishes both timestamps |
 | `swap_delta_pages` / `swap_in_delta_pages` | host `vm_stat` counters | Silent-thrash detector — critical on a fanless host |
 | `cache_hit_ratio` | upstream-reported cached prompt tokens | The only legitimate basis for a cache claim |
-| `leak_check` | `/runtime/admission` at rest | Lifecycle leak detection |
+| `leak_check` | `/runtime/admission` at rest | Lifecycle leak detection — `leaked` is `null` (unknown) when the broker was unreachable or a counter was missing, never an affirmative "no leak" |
 
 A measurement that could not be taken is reported as absent, never as zero.
 Zero is a meaningful value for throughput and would misrepresent an
@@ -88,6 +88,12 @@ unavailable reading.
 - **Queue latency is only meaningful when the queue is enabled.** With the
   queue off, excess requests are shed as `429` rather than queued, and the
   queue-latency field stays empty.
+- **Queue latency may be unmeasurable even with the queue enabled.** The
+  metric is accepted → running, and it needs *both* timestamps from the
+  broker's own lifecycle records. The broker currently publishes an accepted
+  timestamp but no running-transition timestamp, so the field stays empty and
+  `queue_latency_reason` says so. An absent value is never reported as
+  zero.
 - **Swap deltas are cumulative counters.** Only the delta across a band is
   meaningful; the absolute value is not.
 - **Cache counters come from the upstream runtime**, which is the same process

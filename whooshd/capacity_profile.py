@@ -81,6 +81,10 @@ class ContextBudget(str, Enum):
     HARD = "hard"
     RECOMMENDED = "recommended"
     INTERACTIVE = "interactive"
+    #: The model profile's declared maximum *input* size (per direction).
+    MAX_INPUT = "max_input"
+    #: The model profile's declared maximum *output* size (per direction).
+    MAX_OUTPUT = "max_output"
 
 
 class ContextDecisionReason(str, Enum):
@@ -90,6 +94,11 @@ class ContextDecisionReason(str, Enum):
     WITHIN_RECOMMENDED = "within_recommended"
     ABOVE_RECOMMENDED = "above_recommended"
     ABOVE_HARD = "above_hard"
+    #: The request's input exceeds the profile's declared ``max_input_tokens``.
+    ABOVE_INPUT_LIMIT = "above_input_limit"
+    #: The request's output limit exceeds the profile's declared
+    #: ``max_output_tokens``.
+    ABOVE_OUTPUT_LIMIT = "above_output_limit"
     NO_BUDGET = "no_budget"
 
 

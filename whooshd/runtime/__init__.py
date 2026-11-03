@@ -138,6 +138,17 @@ class RuntimeState:
         # ── Request lifecycle ───────────────────────────────────────────
         self._requests: dict[str, _RequestRecord] = {}
 
+        # ── Capacity reservations ───────────────────────────────────────
+        # A queued request that has been *granted* execution holds a
+        # reservation until it actually starts running.  The reservation
+        # occupies capacity at grant time, so a request that arrives in
+        # the scheduling gap between the grant and the granted waiter
+        # resuming cannot take the slot that has already been handed out.
+        # Keyed by request id; the value is the lane the slot was taken
+        # from, so lane capacity is reserved as precisely as global
+        # capacity is.
+        self._reservations: dict[str, str | None] = {}
+
         self.active_model: Optional[str] = None
 
         # ── Model registry (loaded lazily or from YAML) ────────────────
@@ -147,40 +158,73 @@ class RuntimeState:
 
     @property
     def active_jobs(self) -> int:
-        """Count of requests in non-terminal executing lifecycle states.
+        """Count of requests occupying an execution slot.
 
-        Queued requests are excluded — they are not actively executing.
+        Queued requests are excluded — they are not actively executing —
+        *except* when they have been granted execution and hold a
+        capacity reservation.  A granted-but-not-yet-running request
+        already owns its slot, so it is counted.
         """
-        return sum(
-            1
-            for r in self._requests.values()
-            if r.status
-            in (
-                RequestLifecycleState.ACCEPTED,
-                RequestLifecycleState.RUNNING,
-                RequestLifecycleState.STREAMING,
+        return (
+            sum(
+                1
+                for r in self._requests.values()
+                if r.status
+                in (
+                    RequestLifecycleState.ACCEPTED,
+                    RequestLifecycleState.RUNNING,
+                    RequestLifecycleState.STREAMING,
+                )
             )
+            + len(self._reservations)
         )
+
+    @property
+    def reserved_slots(self) -> int:
+        """Number of execution slots reserved by granted requests."""
+        return len(self._reservations)
+
+    def reserve_capacity(self, request_id: str, lane: str | None = None) -> bool:
+        """Reserve one execution slot for *request_id*.
+
+        Called at the moment a queued request is granted execution, so the
+        slot is accounted for before the granted waiter resumes.  Returns
+        True when a reservation was created and False when one already
+        existed for that request.
+        """
+        if request_id in self._reservations:
+            return False
+        self._reservations[request_id] = lane
+        return True
+
+    def release_capacity(self, request_id: str) -> None:
+        """Release the capacity reservation held for *request_id*, if any."""
+        self._reservations.pop(request_id, None)
 
     def active_jobs_for_lane(self, lane: Optional[str]) -> int:
         """Count of active requests bound for a specific inference lane.
 
         A lane is a runtime kind (``mlx_vlm``, ``mlx_lm_server``,
         ``llama_cpp``, ``stub``).  Requests whose lane was never recorded are
-        not counted against any lane.
+        not counted against any lane.  Capacity reservations are counted
+        against the lane they were taken from, so a granted request is
+        never double-admitted into the same lane.
         """
         if not lane:
             return 0
-        return sum(
-            1
-            for r in self._requests.values()
-            if r.lane == lane
-            and r.status
-            in (
-                RequestLifecycleState.ACCEPTED,
-                RequestLifecycleState.RUNNING,
-                RequestLifecycleState.STREAMING,
+        return (
+            sum(
+                1
+                for r in self._requests.values()
+                if r.lane == lane
+                and r.status
+                in (
+                    RequestLifecycleState.ACCEPTED,
+                    RequestLifecycleState.RUNNING,
+                    RequestLifecycleState.STREAMING,
+                )
             )
+            + sum(1 for reserved_lane in self._reservations.values() if reserved_lane == lane)
         )
 
     @property
@@ -228,6 +272,9 @@ class RuntimeState:
             rec.status = RequestLifecycleState.TIMED_OUT
             rec.ended_at = time.time()
             self.total_queue_timeout += 1
+        # A granted request that timed out before it started running gives
+        # its reserved slot back.
+        self.release_capacity(request_id)
 
     def record_queue_rejected(self) -> None:
         """Increment the queue-full rejection counter."""
@@ -830,6 +877,9 @@ class RuntimeState:
             RequestLifecycleState.QUEUED,
         ):
             rec.status = RequestLifecycleState.RUNNING
+            # The request now occupies its slot as an active job, so any
+            # reservation taken at grant time is handed over to the record.
+            self.release_capacity(request_id)
 
     def mark_streaming(self, request_id: str) -> None:
         """Transition an accepted or queued request to the streaming state."""
@@ -839,6 +889,7 @@ class RuntimeState:
             RequestLifecycleState.QUEUED,
         ):
             rec.status = RequestLifecycleState.STREAMING
+            self.release_capacity(request_id)
 
     def complete_request(self, request_id: str) -> None:
         """Mark a request as successfully completed."""
@@ -850,6 +901,7 @@ class RuntimeState:
         ):
             rec.status = RequestLifecycleState.COMPLETED
             rec.ended_at = time.time()
+        self.release_capacity(request_id)
 
     def cancel_request(self, request_id: str) -> None:
         """Mark a request as cancelled (client disconnect, timeout, etc.)."""
@@ -858,6 +910,9 @@ class RuntimeState:
             rec.status = RequestLifecycleState.CANCELLED
             rec.ended_at = time.time()
             self.total_requests_cancelled += 1
+        # A granted request that was cancelled before it started running
+        # gives its reserved slot back.
+        self.release_capacity(request_id)
 
     def record_stream_disconnect(self, request_id: str) -> None:
         """Record a client disconnect during streaming."""
@@ -870,6 +925,7 @@ class RuntimeState:
             rec.status = RequestLifecycleState.FAILED
             rec.ended_at = time.time()
             rec.error_code = error_code
+        self.release_capacity(request_id)
 
     # ── Request snapshot queries ────────────────────────────────────────
 

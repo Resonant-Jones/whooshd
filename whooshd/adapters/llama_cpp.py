@@ -541,6 +541,17 @@ class LlamaCppAdapter:
         # llama.cpp server supports SSE streaming natively.
         return True
 
+    @property
+    def max_concurrent_requests(self) -> Optional[int]:
+        """The lane's own concurrency ceiling.
+
+        This is the same limit the adapter's semaphore enforces, surfaced so
+        admission can respect it before dispatch.  Without it, a broker
+        whose global limit is higher than this runtime's ceiling would keep
+        sending work until the adapter refused it.
+        """
+        return self._max_concurrent
+
     # ── Configuration accessors ────────────────────────────────────────
 
     @property

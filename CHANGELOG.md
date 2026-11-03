@@ -59,6 +59,123 @@
   reports that the hard-limit comparison for that request is best-effort
   rather than a guarantee.
 
+- **Context budgets were selected by the wrong model.** Budget lookup keyed
+  on the process-wide `WHOOSHD_CAPACITY_MODEL_ID`, so a broker serving
+  several models applied one model's hard ceiling to a request routed to
+  another. Budgets are now looked up by the **resolved model that will
+  execute the request**. A request whose model has no measured budgets is
+  admitted unchanged — an unmeasured model is never silently constrained.
+
+- **The effective output limit was not reserved.** `max_completion_tokens` is
+  an alias for `max_tokens`, but a client that set only `max_completion_tokens`
+  left the request model carrying the *default* `max_tokens=256`, and the
+  estimator reserved 256 output tokens while the broker forwarded the larger
+  limit. The reservation now follows the **larger** of `max_tokens` and
+  `max_completion_tokens` — an upper bound on what the upstream may generate,
+  since the upstream's precedence between the two fields is not knowable from
+  here.
+
+- **Forwarded prompt-affecting fields were not counted.** Tool definitions,
+  assistant `tool_calls`, structured-output schemas, tool choice, stop
+  sequences, and message `name` / `tool_call_id` are all forwarded upstream
+  and all occupy prompt space, but the estimator counted only
+  `message.content`. A request carrying a large tool set passed a hard
+  budget it could never fit. Every forwarded field is now counted.
+
+- **The profile's declared per-direction maxima were never enforced.**
+  `max_input_tokens` and `max_output_tokens` below the combined hard ceiling
+  had no effect: a 16 K-input request was admitted against a 32 K hard
+  ceiling even with an 8 K input maximum declared, and an output request
+  above `max_output_tokens` was forwarded unchanged. Each direction is now
+  compared against its own declared limit and a breach is rejected. The
+  estimator no longer silently clamps the output reservation to the model's
+  maximum — clamping would rewrite the client's request without telling it.
+
+- **Cost precision was not propagated on every evaluation.** The interactive
+  tier omitted the exactness flag, and a declared per-unit multimodal
+  *estimate* was reported as if it were a measurement. Evaluations now carry
+  a tri-state `context_cost_status` — `exact`, `estimated`, or `unknown` —
+  populated on **every** branch including the no-budget path, alongside
+  `context_cost_is_exact` and `context_cost_has_unknown`.
+
+- **A grant transferred ownership but not capacity.** Under
+  `cache_aware_fifo`, the front waiter could observe a free slot, remove a
+  *different* entry (a cache-affinity candidate), and only then signal it.
+  The grant transferred queue ownership but not capacity: `active_jobs` did
+  not include the granted request until its coroutine resumed, so a request
+  arriving in that scheduling gap was admitted into the same slot. A grant
+  now **reserves** the execution slot synchronously with the removal, and the
+  reservation is held — against both global and lane capacity — until the
+  request actually starts running. The scheduler also checks the
+  *candidate's* own lane before granting, so a cache-affinity selection can
+  never hand work to a saturated lane.
+  Regression tests: `tests/test_queue_capacity_reservation.py` (4 tests),
+  verified to fail against the pre-fix code.
+
+- **Not every guarded adapter declared its concurrency ceiling.** MLX-LM
+  Server and llama.cpp enforce a semaphore limit but did not expose it, so
+  admission could not respect it. Both now declare
+  `max_concurrent_requests`, the same limit their semaphore enforces.
+
+- **The lane concurrency experiment could certify a concurrency it never
+  tested.** The broker's admission read was printed but never validated, and
+  the broker publishes no request-specific lane ceiling — so a broker whose
+  lane limit was still 1 would answer two requests with 2xx each, serially,
+  leaving `failures` empty and producing a `PASS` that purported to certify
+  concurrency two. The harness now **positively attests** the target's lane
+  configuration from operator declaration plus observable broker state, and
+  samples live admission state during the x2 band; an unattestable or
+  unreachable target is `UNVERIFIED`, never `PASS`. Final cleanup state is
+  verified too: an unreachable or nonzero `active_jobs` / `queue_depth` at
+  rest now fails or un-verifies the run instead of being recorded and
+  ignored.
+  Regression tests: `tests/test_lane_concurrency_experiment.py` (34 tests).
+
+- **The calibration harness measured the wrong thing, and could not fail.**
+  Seven defects in `whooshd.bench.runtime_calibration`, all confirmed
+  against the code and all now corrected:
+  - **Every band launched the same number of concurrent requests.** The
+    `band` argument was never used to throttle either measurement phase,
+    so with the defaults the x1, x2, x3 and x4 rows all exercised eight
+    simultaneous requests and their latency, overload and throughput
+    figures were mislabeled. Both phases are now gated by a semaphore of
+    the band's size, and the band reports the concurrency it actually
+    exercised.
+  - **A missing upstream probe crashed the Markdown path.** The optional
+    Markdown renderer indexed cache fields that an unconfigured probe does
+    not define, so a default run wrote its JSON and then failed with
+    `KeyError`. The absent fields are now present and absent values render
+    as absent.
+  - **A truncated stream counted as a success.** A 2xx response that ended
+    early, or that carried an SSE error frame, was recorded as a successful
+    request even though it had no terminal completion. A streaming request
+    now succeeds only when the response was 2xx **and** the terminal
+    `[DONE]` marker was observed.
+  - **Queue latency was advertised but never populated.** The metric is
+    accepted → running and needs both timestamps from the broker's own
+    lifecycle records. The broker publishes an accepted timestamp but no
+    running-transition timestamp, so the harness now reports the field as
+    unavailable with a stated reason instead of leaving it silently empty.
+  - **A failed cache probe was reported as measured evidence.** A 4xx/5xx
+    response, an unparsable body, or a payload without usage incremented
+    the attempt counter before any validation, and the probe was then
+    reported as available with zero cached tokens. A probe is available
+    only when the upstream answered successfully *and* returned valid usage
+    data; failures are counted with their reason.
+  - **An unreachable leak check was recorded as clean.** The final
+    lifecycle read was coerced through `or 0`, so an unreachable broker
+    produced `leaked: false` — an affirmative no-leak result from an
+    unmeasured state. The at-rest leak check now reports `unknown` when
+    the broker was unreachable or a counter was missing.
+  - **A failed token-accounting phase did not fail the band.** Streaming
+    successes were counted while non-streaming failures were skipped, so a
+    band could be marked successful on partial throughput evidence. Both
+    phases must now complete; a partial phase is reported as not measured
+    and the band is not successful.
+  Regression tests: `tests/test_runtime_calibration.py` (30 tests), verified
+  to fail against the pre-fix harness. **28 of the 30 failed before the
+  correction.**
+
 - **Queue/scheduler execution-ownership defect.** Under
   `WHOOSHD_SCHEDULER_POLICY=cache_aware_fifo`, `select_and_dequeue()` could
   remove a request that the calling waiter did not own. The removed request
@@ -92,19 +209,27 @@
 
 ### Measured
 
-- **CWC-013 lane concurrency experiment (isolated, 12B).** With the MLX-VLM
-  lane limit raised to 2 on an **isolated broker** — the working deployment
-  on port 8000 was not modified — two concurrent 12B requests both succeeded.
-  Aggregate throughput rose **+89 %** (6.99 → 13.24 tok/s) while per-request
-  latency rose only **6.3 %**; both requests completed in the same
-  wall-clock window, with measured durations differing by 0.2 ms. The
-  harness records per-request durations, not completion timestamps, so the
-  overlapping-execution conclusion rests on the throughput and wall-clock
-  evidence rather than on that 0.2 ms figure. Zero swap-out pages and a
-  clean lifecycle. This resolves the 12B concurrency-band calibration
-  that CWC-012 had recorded as blocked, and shows the lane limit of 1 was
-  leaving roughly half the machine's throughput unused.
-  Packet: `docs/validation/2026-11-03-cwc013-lane-concurrency-experiment.md`.
+- **CWC-013 lane concurrency experiment (isolated, 12B) — attested re-run.**
+  With the MLX-VLM lane limit raised to 2 on an **isolated broker** — the
+  working deployment on port 8000 was not modified — two concurrent 12B
+  requests both succeeded. Aggregate throughput rose from 8.218 to 13.661
+  tokens/sec (**+66 %**) while per-request latency rose **15.2 %**
+  (9 368 ms → 10 785 ms), with **zero** swap-out pages in both warm bands and
+  a verified clean lifecycle (`active_jobs_at_rest = 0`,
+  `queue_depth_at_rest = 0`, reachable).
+  The run is **attested**: the harness sampled the broker's own admission
+  state 191 times during the x2 band and observed `peak_active_jobs = 2` with
+  `peak_queue_depth = 0`, so the two requests are demonstrably in flight
+  together and neither was queued behind the other.
+  An earlier run of the same experiment reported **+89 %** at **+6.3 %**
+  latency, but its harness could neither attest the lane configuration it
+  claimed to test nor verify its own cleanup state — a broker whose lane
+  limit was still 1 would have produced the same `PASS`. That figure is
+  superseded and is not quoted; the attested re-run's figures are the ones of
+  record. The direction is unchanged: the lane limit of 1 was leaving roughly
+  half the machine's throughput unused.
+  Packet: `docs/validation/2026-11-03-cwc013-lane-concurrency-experiment.md`
+  (§8).
 
 - **CWC-012 runtime calibration (Gemma 4 12B, real Metal).** TTFT ~497 ms
   warm, prefill ~275 ms, ~7 tokens/sec at `max_tokens=128`, and a **0.956
