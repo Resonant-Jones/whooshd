@@ -418,41 +418,37 @@ The 3 skips are Metal-gated and pre-existing; they are not new. The
 campaign-era observation above was accurate for its date and is retained as
 historical evidence of that campaign.
 
-### Gemma 4 12B production calibration — BLOCKED (superseding PENDING)
+### Gemma 4 12B production calibration — RESOLVED by CWC-013
 
-Superseded on 2026-11-02 by the CWC-012 runtime calibration packet. The
-prerequisites are **present** — this host (`Mac16,10` M4 / 32 GB) and a
-complete ~10 GB local checkpoint — and the **deployment measurement passed**
-against the real launchd-managed MLX-VLM server.
+Superseded on 2026-11-03 by the
+[CWC-013 lane concurrency experiment](../validation/2026-11-03-cwc013-lane-concurrency-experiment.md).
 
-What is blocked is the *concurrency-band* calibration. The MLX-VLM lane's
-`WHOOSHD_MLX_VLM_MAX_CONCURRENT_REQUESTS` defaults to **1**, so bands above 1
-cannot be exercised. Raising that limit is an operator decision whose safety
-depends on the capacity evidence being sought — a circular dependency, so it
-must be made deliberately on the target host with the launchd calibration
-runner, not assumed.
+The CWC-012 packet recorded this as **BLOCKED** on the reasoning that raising
+the lane limit depends on the capacity evidence being sought. That reasoning
+was too strong: the question is answerable by controlled measurement.
 
-Measured in the CWC-012 packet (concurrency 1, 12B, real Metal):
+CWC-013 raised `WHOOSHD_MLX_VLM_MAX_CONCURRENT_REQUESTS` to 2 on an **isolated
+broker** — the working deployment on port 8000 was not modified — and measured:
 
-- TTFT: ~4.8 s cold, **~497 ms warm**
-- Prefill: **~275 ms** (upstream-reported)
-- Throughput: **~7 tokens/sec** per request at `max_tokens=128`
-- **Prompt-cache hit ratio: 0.956** (698 of 730 prompt tokens served from
-  cache)
-- Swap: zero pages out; lifecycle leak check clean
+| Metric | Concurrency 1 | Concurrency 2 |
+|---|---:|---:|
+| Successes | 1/1 | **2/2** |
+| Aggregate tokens/sec | 6.99 | **13.24** |
+| Per-request latency | 10 440 ms | 11 104 ms (+6.3 %) |
+| Spread across the 2 requests | — | 0.2 ms |
+| Swap pages out | 0 | **0** |
 
-Two results change how the roadmap should read:
+Two concurrent requests ran **simultaneously** (finishing 0.2 ms apart) and
+aggregate throughput rose **89 %**. The lane limit of 1 was leaving roughly
+half the machine's throughput unused, and was the source of the 429s seen
+under concurrent load.
 
-1. **The runtime already delivers prefix reuse.** Automatic prompt caching is
-   working on this deployment. ThreadWake's role is observation and policy
-   over observed cache behaviour, not a competing KV materializer.
-2. **The broker's advertised concurrency can exceed what the runtime
-   accepts.** The broker reported `effective_active_limit: 2` while the lane
-   admitted one request at a time, refusing the rest with 429.
+Concurrency 2 is therefore evidence-backed for this host and model.
+Concurrency above 2, sustained load, and behaviour on the fanless MacBook Air
+remain unmeasured.
 
-**No 12B concurrency, throughput, or TTFT claim is made beyond concurrency 1.**
-E2B results are not presented as 12B results. See
-[the CWC-012 packet](../validation/2026-11-02-cwc012-runtime-calibration.md).
+**No 12B concurrency, throughput, or TTFT claim is made beyond what was
+measured.** E2B results are not presented as 12B results.
 
 ### E4B portability — still BLOCKED
 

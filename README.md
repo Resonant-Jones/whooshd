@@ -65,7 +65,7 @@ This README is intentionally conservative: supported features are listed separat
 | Tool/function calling | Not implemented | Request fields may be retained without implying provider capability |
 | Production auth hardening | Not implemented | Local-first development posture only |
 | Multi-node routing | Not implemented | Future architecture |
-| Gemma 4 12B capacity calibration | Blocked | The MLX-VLM lane's concurrency limit defaults to 1, so concurrency bands above 1 cannot be exercised. The deployment measurement itself passed. See [CWC-012 Runtime Calibration](docs/validation/2026-11-02-cwc012-runtime-calibration.md) |
+| Gemma 4 12B capacity calibration | Measured | Concurrency 2 validated on an isolated broker: 2/2 success, aggregate throughput +89 %, zero swap-out. See [CWC-013 Lane Concurrency Experiment](docs/validation/2026-11-03-cwc013-lane-concurrency-experiment.md) |
 | Live Codexify deployment claim | Not claimed by tests alone | Rehearse against the target runtime and machine |
 | Performance improvement claims | Not automatic | Record hardware, model, runtime, and benchmark conditions |
 

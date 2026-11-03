@@ -227,7 +227,9 @@ def evaluate_context(
     ``no_budget`` — an unmeasured model is not silently constrained.
 
     Exceeding ``hard_max_tokens`` is a rejection.  Exceeding
-    ``recommended_max_tokens`` is admitted but records a downshift reason.
+    ``recommended_max_tokens`` is admitted but records an advisory reason.
+    No request is altered by exceeding it — the reason is reported, not
+    executed.  Only the hard maximum rejects.
     """
     if budgets is None:
         return ContextEvaluation(

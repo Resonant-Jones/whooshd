@@ -6,7 +6,7 @@ Roadmap P2.  Covers:
 * The request-cost estimator accounts for **input**, **output**, and
   **multimodal** tokens, and labels whether each figure is exact.
 * The capacity controller rejects a request that exceeds the hard budget and
-  records a downshift reason for one that exceeds only the recommended
+  records an advisory reason for one that exceeds only the recommended
   budget.
 * An unmeasured model is never silently constrained.
 * The public capacity snapshot stays free of request-derived token counts.
@@ -192,7 +192,7 @@ class TestContextEvaluation:
         assert result.reason == ContextDecisionReason.WITHIN_INTERACTIVE
         assert result.budget == ContextBudget.INTERACTIVE
 
-    def test_above_recommended_is_admitted_with_a_downshift_reason(self):
+    def test_above_recommended_is_admitted_with_an_advisory_reason(self):
         budgets = ContextBudgets(
             hard_max_tokens=1000, recommended_max_tokens=10, interactive_max_tokens=5
         )

@@ -1,0 +1,91 @@
+{
+  "schema_version": "whooshd.lane_experiment.v1",
+  "broker": "http://127.0.0.1:18940",
+  "model": "local-chat",
+  "admission_at_start": {
+    "max_active_requests": 2,
+    "queue_enabled": true,
+    "lane_max_concurrent": null
+  },
+  "cold_start_observation": {
+    "ok": true,
+    "latency_ms": 11439.8,
+    "status": 200,
+    "error": null,
+    "swap_out_delta_pages": 0,
+    "swap_in_delta_pages": 216,
+    "note": "Warm-up request, discarded from the concurrency comparison. A large swap delta here is the model being faulted back in from disk, not concurrency thrash."
+  },
+  "bands": [
+    {
+      "concurrency": 1,
+      "wall_seconds": 10.44,
+      "success_count": 1,
+      "failure_count": 0,
+      "records": [
+        {
+          "index": 0,
+          "status": 200,
+          "latency_ms": 10439.9,
+          "completion_tokens": 73,
+          "prompt_tokens": 365,
+          "ok": true
+        }
+      ],
+      "aggregate_tokens_per_second": 6.992,
+      "per_request_tokens_per_second": 6.992,
+      "latency_p50_ms": 10439.9,
+      "latency_max_ms": 10439.9,
+      "swap_out_delta_pages": 0,
+      "swap_in_delta_pages": 296,
+      "memory_pressure_before": "System-wide memory free percentage: 36%",
+      "memory_pressure_after": "System-wide memory free percentage: 36%"
+    },
+    {
+      "concurrency": 2,
+      "wall_seconds": 11.11,
+      "success_count": 2,
+      "failure_count": 0,
+      "records": [
+        {
+          "index": 0,
+          "status": 200,
+          "latency_ms": 11104.5,
+          "completion_tokens": 73,
+          "prompt_tokens": 365,
+          "ok": true
+        },
+        {
+          "index": 1,
+          "status": 200,
+          "latency_ms": 11104.1,
+          "completion_tokens": 74,
+          "prompt_tokens": 365,
+          "ok": true
+        }
+      ],
+      "aggregate_tokens_per_second": 13.237,
+      "per_request_tokens_per_second": 6.619,
+      "latency_p50_ms": 11104.3,
+      "latency_max_ms": 11104.5,
+      "swap_out_delta_pages": 0,
+      "swap_in_delta_pages": 418,
+      "memory_pressure_before": "System-wide memory free percentage: 36%",
+      "memory_pressure_after": "System-wide memory free percentage: 35%"
+    }
+  ],
+  "upstream": {
+    "available": true,
+    "prompt_tokens": 365,
+    "cached_prompt_tokens": 349,
+    "prefill_ms": 296.08566699607763,
+    "predicted_tokens": 74,
+    "generation_tps": null
+  },
+  "cleanup": {
+    "active_jobs_at_rest": 0,
+    "queue_depth_at_rest": 0
+  },
+  "verdict": "PASS",
+  "failures": []
+}

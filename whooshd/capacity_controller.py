@@ -89,6 +89,15 @@ class CapacityEvaluation:
     context_total_tokens: Optional[int] = None
     context_breached_budget: Optional[str] = None
 
+    # -- Route-specific capacity -------------------------------------
+    # The lane that will execute this request, that lane's own ceiling,
+    # and whether the lane (rather than the global limit) is what bound
+    # the decision.
+    lane: Optional[str] = None
+    lane_max_concurrent: Optional[int] = None
+    lane_active_jobs: Optional[int] = None
+    lane_limited: bool = False
+
     def snapshot(self) -> dict:
         """Safe observability snapshot.  No prompt or runtime content."""
         return {
@@ -109,6 +118,10 @@ class CapacityEvaluation:
             "context_reason": self.context_reason,
             "context_budget": self.context_budget,
             "context_breached_budget": self.context_breached_budget,
+            "lane": self.lane,
+            "lane_max_concurrent": self.lane_max_concurrent,
+            "lane_active_jobs": self.lane_active_jobs,
+            "lane_limited": self.lane_limited,
         }
 
 
@@ -131,6 +144,12 @@ class CapacityContext:
     #: absent the request is admitted unchanged -- an unmeasured model is
     #: never silently constrained.
     context_budgets: Optional["ContextBudgets"] = None
+    #: Inference lane that will execute this request, and that lane's own
+    #: concurrency ceiling (None when the lane declares none).
+    lane: Optional[str] = None
+    lane_max_concurrent: Optional[int] = None
+    #: Active requests already bound for this lane.
+    lane_active_jobs: int = 0
 
 
 @dataclass(frozen=True)
@@ -261,14 +280,23 @@ class CapacityController:
         self,
         *,
         memory_pressure: MemoryPressureClass = MemoryPressureClass.UNKNOWN,
+        lane_max_concurrent: Optional[int] = None,
     ) -> int:
         """Return the active concurrency limit, taking mode and pressure
         into account.
 
         Always ``>= 1``.  Adaptive mode never exceeds the operator
         ceiling.
+
+        When ``lane_max_concurrent`` is given, the limit is additionally
+        capped by that lane's own ceiling.  The lane ceiling is a
+        *reservation for one inference lane* — it does not lower the
+        global limit for other lanes, which keep their own budget.
         """
         ceiling = self.operator_ceiling
+
+        if lane_max_concurrent is not None:
+            ceiling = min(ceiling, max(int(lane_max_concurrent), 1))
 
         if self.mode == CapacityMode.FIXED:
             return ceiling
@@ -321,6 +349,23 @@ class CapacityController:
             "profile_rejection_reason": profile_rejection_reason,
         }
 
+        # -- Route-specific capacity reservation ------------------------
+        # The lane that will execute this request may be able to run fewer
+        # requests concurrently than the broker's global limit allows.
+        # Capping here means the broker queues rather than admitting work
+        # that would stall at the lane's own semaphore and be refused.
+        lane_limit = ctx.lane_max_concurrent
+        lane_active = ctx.lane_active_jobs
+        lane_fields: dict[str, Any] = {
+            "lane": ctx.lane,
+            "lane_max_concurrent": lane_limit,
+            "lane_active_jobs": lane_active,
+            "lane_limited": False,
+        }
+        lane_saturated = (
+            lane_limit is not None and lane_active >= max(int(lane_limit), 1)
+        )
+
         # -- Per-model context policy ------------------------------------
         # The context decision is taken before any capacity decision so a
         # request that cannot fit the model is rejected for the right
@@ -369,20 +414,43 @@ class CapacityController:
                     memory_pressure=ctx.memory_pressure,
                     **profile_fields,
                     **context_fields,
+                    **lane_fields,
                 )
+
+        # -- Lane saturation ----------------------------------------------
+        # Checked after the context decision, so a request that cannot fit
+        # the model is rejected for that reason rather than queued.  A
+        # saturated lane queues instead of admitting work that would stall
+        # at the lane's own semaphore and be refused.
+        if lane_saturated:
+            lane_fields["lane_limited"] = True
+            lane_ceiling = max(int(lane_limit), 1)
+            return CapacityEvaluation(
+                action=CapacityAction.QUEUE
+                if ctx.queue_depth < ctx.max_queue_depth
+                else CapacityAction.REJECT,
+                effective_active_limit=lane_ceiling,
+                operator_ceiling=operator_ceiling,
+                mode=mode,
+                reason=CapacityDecisionReason.LANE_CAPACITY,
+                memory_pressure=ctx.memory_pressure,
+                **profile_fields,
+                **context_fields,
+                **lane_fields,
+            )
 
         if not ctx.runtime_ready:
             return CapacityEvaluation(
                 action=CapacityAction.REJECT,
                 effective_active_limit=self.effective_active_limit(
                     memory_pressure=ctx.memory_pressure,
-                ),
-                operator_ceiling=operator_ceiling,
+                ),                operator_ceiling=operator_ceiling,
                 mode=mode,
                 reason=CapacityDecisionReason.RUNTIME_NOT_READY,
                 memory_pressure=ctx.memory_pressure,
                 **profile_fields,
                 **context_fields,
+                **lane_fields,
             )
 
         if ctx.queue_depth >= ctx.max_queue_depth:
@@ -397,9 +465,13 @@ class CapacityController:
                 memory_pressure=ctx.memory_pressure,
                 **profile_fields,
                 **context_fields,
+                **lane_fields,
             )
 
-        limit = self.effective_active_limit(memory_pressure=ctx.memory_pressure)
+        limit = self.effective_active_limit(
+            memory_pressure=ctx.memory_pressure,
+            lane_max_concurrent=ctx.lane_max_concurrent,
+        )
 
         # Decide: can we run?
         if ctx.active_jobs < limit:
@@ -421,6 +493,7 @@ class CapacityController:
                     memory_pressure=ctx.memory_pressure,
                     **profile_fields,
                     **context_fields,
+                    **lane_fields,
                 )
 
             if mode == CapacityMode.ADAPTIVE and calibrated is not None:
@@ -440,6 +513,7 @@ class CapacityController:
                 memory_pressure=ctx.memory_pressure,
                 **profile_fields,
                 **context_fields,
+                **lane_fields,
             )
 
         # No slot free — admit to queue.

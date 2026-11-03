@@ -26,6 +26,10 @@ The CLI tracks one daemon process at a time via `~/.whooshd/whooshd.pid` and
 probes, but PID and log state are global, not per-port. `whoosh down --port
 8010` stops the one tracked daemon, not a separate per-port instance.
 
+This limits running **several instances on one host**. It is not a
+multi-machine limitation: two installations on different hosts already have
+separate `~/.whooshd` directories, and their PID files do not conflict.
+
 The CLI will not kill unknown processes occupying a port. Inspect first:
 
 ```bash
@@ -73,6 +77,20 @@ is lower, requests beyond it are refused by the runtime even though the broker
 reports headroom. **Read the lane limit, not just the broker limit, when
 sizing concurrency.**
 
+**Admission now respects the lane.** Each adapter may declare its own
+concurrency ceiling. When a lane declares one, the broker's effective limit
+for that request is capped by it, so a request that the lane cannot run is
+**queued** rather than admitted to stall and be refused. The global limit is
+not lowered for other lanes — a strict lane reserves capacity for itself
+without constraining independent lanes.
+
+The MLX-VLM lane defaults to **one** concurrent request, which was chosen
+without concurrency evidence. [CWC-013](../validation/2026-11-03-cwc013-lane-concurrency-experiment.md)
+measured concurrency 2 on an isolated broker against the 12B: 2/2 success,
+aggregate throughput **+89 %**, per-request latency **+6.3 %**, zero swap-out.
+Raising the lane limit on the working deployment is now an evidence-backed
+choice rather than a guess.
+
 Generate a profile against a running instance:
 
 ```bash
@@ -95,7 +113,7 @@ A `CapacityProfile` may carry three token ceilings for the model it describes:
 | Budget | Meaning | Effect when exceeded |
 |---|---|---|
 | hard max | Capability ceiling — never exceeded | Request rejected with `context_overflow` (HTTP 422) |
-| recommended max | Default operating target | Request admitted with a recorded downshift reason |
+| recommended max | Default operating target | Request admitted unchanged;  records the advisory |
 | interactive max | Latency-sensitive path target | Request admitted; reason recorded |
 
 Every request is costed in **assembled tokens**: input plus reserved output

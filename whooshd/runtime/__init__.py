@@ -63,6 +63,11 @@ class _RequestRecord:
     model: str
     stream: bool
     upstream_request_id: str | None = None
+    # Inference lane that will execute this request.  Used to count active
+    # work per lane so admission can respect a lane's own concurrency
+    # ceiling.  None means the lane was not known when the record was
+    # created (e.g. rejected before route resolution).
+    lane: str | None = None
     status: RequestLifecycleState = RequestLifecycleState.ACCEPTED
     cancel_requested: bool = False
     cancel_token: CancellationToken | None = None
@@ -150,6 +155,27 @@ class RuntimeState:
             1
             for r in self._requests.values()
             if r.status
+            in (
+                RequestLifecycleState.ACCEPTED,
+                RequestLifecycleState.RUNNING,
+                RequestLifecycleState.STREAMING,
+            )
+        )
+
+    def active_jobs_for_lane(self, lane: Optional[str]) -> int:
+        """Count of active requests bound for a specific inference lane.
+
+        A lane is a runtime kind (``mlx_vlm``, ``mlx_lm_server``,
+        ``llama_cpp``, ``stub``).  Requests whose lane was never recorded are
+        not counted against any lane.
+        """
+        if not lane:
+            return 0
+        return sum(
+            1
+            for r in self._requests.values()
+            if r.lane == lane
+            and r.status
             in (
                 RequestLifecycleState.ACCEPTED,
                 RequestLifecycleState.RUNNING,
@@ -753,6 +779,7 @@ class RuntimeState:
         model: str,
         stream: bool,
         upstream_request_id: str | None = None,
+        lane: str | None = None,
     ) -> str:
         """Register a new request and return its ID.
 
@@ -766,6 +793,7 @@ class RuntimeState:
             model=model,
             stream=stream,
             upstream_request_id=normalize_identifier(upstream_request_id),
+            lane=lane,
             status=RequestLifecycleState.ACCEPTED,
             cancel_token=token,
         )

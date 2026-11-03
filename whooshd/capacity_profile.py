@@ -64,6 +64,7 @@ class CapacityDecisionReason(str, Enum):
     MEMORY_PRESSURE_HIGH = "memory_pressure_high"
     QUEUE_FULL = "queue_full"
     CONTEXT_OVERFLOW = "context_overflow"
+    LANE_CAPACITY = "lane_capacity"
     RUNTIME_NOT_READY = "runtime_not_ready"
     BATCH_ACTIVE_LIMIT_REACHED = "batch_active_limit_reached"
 

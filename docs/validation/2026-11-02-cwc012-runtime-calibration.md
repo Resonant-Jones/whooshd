@@ -34,17 +34,23 @@ identifiers, or KV state.
 
 ### Measured results
 
+**Sample size caveat, stated up front:** each band produced **one** successful
+request out of two attempts. The "p50"/"p95" columns below are therefore
+**single observations, not latency distributions** — the p95 in particular has
+no meaning at n=1. Treat them as "the one request that completed", not as
+percentiles. The overload counts are the reliable figures in this packet.
+
 | Metric | Band x1 | Band x2 |
 |---|---:|---:|
 | Requests succeeded | 1/2 | 1/2 |
 | Overloaded (429) | 1 | 1 |
 | Failed | 0 | 0 |
-| TTFT p50 | 4781 ms | **497 ms** |
-| Total latency p50 | 14389 ms | 10375 ms |
-| Prefill p50 (upstream-reported) | 276 ms | 274 ms |
+| TTFT (single observation) | 4781 ms | **497 ms** |
+| Total latency (single observation) | 14389 ms | 10375 ms |
+| Prefill (upstream-reported, median of 2 probes) | 276 ms | 274 ms |
 | Aggregate tokens/sec | 6.89 | 7.30 |
 | Per-request tokens/sec | 6.89 | 7.30 |
-| Prompt-cache hit ratio | **0.956** | **0.956** |
+| Cached prompt-token fraction | **0.956** | **0.956** |
 | Cached prompt tokens | 698 | 698 |
 | Swap pages out | 0 | 0 |
 | Swap pages in | 686 | 225 |
@@ -53,6 +59,26 @@ Leak check at rest: `active_jobs = 0`, `queue_depth = 0`, **leaked = false**.
 
 Band x1 includes model warm-up; band x2 is the warm figure. At `max_tokens=128`
 the model sustains roughly **7 tokens/sec** per request.
+
+### What the cache figure does and does not mean
+
+`0.956` is a **cached-token fraction** for **one repeated synthetic prompt**
+(698 of 730 prompt tokens served from cache). It is strong evidence that
+**native prefix reuse is active** in this deployment.
+
+It is **not** a request-level cache hit rate across normal workloads. A real
+workload has varied prompts, so the reuse fraction would differ — likely
+lower for genuinely new material, and it would depend on how much stable
+prefix each request carries. The number describes one repeated prompt, not a
+workload characteristic.
+
+### Prefill is not the cost that matters here
+
+For the measured warm turn, prefill was **~275 ms of a ~10.4 s total
+latency — about 2.7%**. Decode speed and concurrency therefore dominate the
+optimization conversation for this deployment, not additional prefix-cache
+machinery. That is consistent with the 95.6% reuse already available: there
+is little prefill left to reclaim.
 
 ---
 

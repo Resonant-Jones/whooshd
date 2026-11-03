@@ -85,6 +85,9 @@ def _estimade_prompt_chars(request: ChatCompletionRequest) -> int:
 def evaluate_chat_request(
     request: ChatCompletionRequest,
     runtime: RuntimeState,
+    *,
+    lane: Optional[str] = None,
+    lane_max_concurrent: Optional[int] = None,
 ) -> AdmissionResult:
     """Evaluate a chat completion request against configured limits.
 
@@ -95,6 +98,12 @@ def evaluate_chat_request(
     Structural checks (message count, prompt size, max_tokens) are
     evaluated first and always result in immediate rejection regardless
     of queue enablement.
+
+    ``lane`` and ``lane_max_concurrent`` describe the inference lane that
+    will execute this request.  When the lane declares its own concurrency
+    ceiling, the effective limit is capped by it so the broker queues
+    rather than admitting work the lane cannot run.  Pass them only after
+    the route has been resolved.
     """
     # ── Rule 1: message count (structural — always reject) ────────────
     max_msgs = get_max_messages()
@@ -157,6 +166,8 @@ def evaluate_chat_request(
     budgets = controller.context_budgets()
     context_eval = evaluate_context(cost, budgets)
 
+    lane_active = runtime.active_jobs_for_lane(lane) if lane else 0
+
     evaluation = controller.evaluate(
         _capacity_context(
             runtime=runtime,
@@ -164,6 +175,9 @@ def evaluate_chat_request(
             memory_pressure=memory_pressure,
             requested_estimated_tokens=cost.total_tokens,
             context_budgets=budgets,
+            lane=lane,
+            lane_max_concurrent=lane_max_concurrent,
+            lane_active_jobs=lane_active,
         )
     )
 
@@ -179,6 +193,10 @@ def evaluate_chat_request(
                 "context_budget": (
                     context_eval.budget.value if context_eval.budget else None
                 ),
+                "lane": evaluation.lane,
+                "lane_max_concurrent": evaluation.lane_max_concurrent,
+                "lane_active_jobs": evaluation.lane_active_jobs,
+                "lane_limited": evaluation.lane_limited,
             },
             http_status=200,
         )
@@ -285,6 +303,10 @@ def evaluate_chat_request(
             "context_budget": (
                 context_eval.budget.value if context_eval.budget else None
             ),
+            "lane": evaluation.lane,
+            "lane_max_concurrent": evaluation.lane_max_concurrent,
+            "lane_active_jobs": evaluation.lane_active_jobs,
+            "lane_limited": evaluation.lane_limited,
         },
         http_status=202,  # Accepted for queueing; caller waits
     )
@@ -297,6 +319,9 @@ def _capacity_context(
     memory_pressure: MemoryPressureClass,
     requested_estimated_tokens: Optional[int] = None,
     context_budgets: Optional[ContextBudgets] = None,
+    lane: Optional[str] = None,
+    lane_max_concurrent: Optional[int] = None,
+    lane_active_jobs: int = 0,
 ):
     """Build a :class:`CapacityContext` from a runtime + admission inputs.
 
@@ -314,6 +339,9 @@ def _capacity_context(
         memory_pressure=memory_pressure,
         requested_estimated_tokens=requested_estimated_tokens,
         context_budgets=context_budgets,
+        lane=lane,
+        lane_max_concurrent=lane_max_concurrent,
+        lane_active_jobs=lane_active_jobs,
     )
 
 

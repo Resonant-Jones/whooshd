@@ -448,13 +448,20 @@ def _begin_request_lifecycle(
     *,
     model: str,
     stream: bool,
+    lane: str | None = None,
 ) -> str:
-    """Create and retain a Whoosh'd lifecycle identity for a request."""
+    """Create and retain a Whoosh'd lifecycle identity for a request.
+
+    ``lane`` records which inference lane will execute the request, so
+    active work can be counted per lane and a lane's own concurrency
+    ceiling can be respected at admission.
+    """
 
     request_id = rt.begin_request(
         model=model,
         stream=stream,
         upstream_request_id=_upstream_request_id(request),
+        lane=lane,
     )
     request.state.whoosh_request_id = request_id
     return request_id
@@ -1128,8 +1135,34 @@ async def chat_completions(request: Request, req: ChatCompletionRequest):
     router = get_router()
     queue = get_queue()
 
+    # ── Route resolution (before admission) ────────────────────────────
+    # The lane that will execute this request determines its own
+    # concurrency ceiling, so the route must be known before admission.
+    # Resolving first also means an unknown model is reported as such
+    # rather than being admitted and then failing at dispatch.
+    try:
+        resolution = await router.resolve_model_runtime(req.model)
+        adapter = resolution.adapter
+    except ModelResolutionError as exc:
+        rt.record_rejected("rejected_model_not_ready")
+        return JSONResponse(
+            status_code=404,
+            content=_error_body_for_request(
+                request,
+                ErrorCode.MODEL_NOT_FOUND,
+                "Requested model is not available",
+                http_status=404,
+                details={"model_alias": safe_model_alias(exc.model_id)},
+            ),
+        )
+
     # ── Admission control ─────────────────────────────────────────────
-    admission = evaluate_chat_request(req, rt)
+    admission = evaluate_chat_request(
+        req,
+        rt,
+        lane=resolution.lane,
+        lane_max_concurrent=resolution.lane_max_concurrent,
+    )
 
     # Queue-full is a hard rejection — record queue-specific counter too.
     if admission.reason == AdmissionDecision.REJECTED_QUEUE_FULL:
@@ -1163,23 +1196,6 @@ async def chat_completions(request: Request, req: ChatCompletionRequest):
 
     # Accepted or queued — both count as non-rejected.
     rt.record_accepted()
-
-    # ── Resolve the adapter via router ───────────────────────────────
-    try:
-        resolution = await router.resolve_model_runtime(req.model)
-        adapter = resolution.adapter
-    except ModelResolutionError as exc:
-        rt.record_rejected("rejected_model_not_ready")
-        return JSONResponse(
-            status_code=404,
-            content=_error_body_for_request(
-                request,
-                ErrorCode.MODEL_NOT_FOUND,
-                "Requested model is not available",
-                http_status=404,
-                details={"model_alias": safe_model_alias(exc.model_id)},
-            ),
-        )
 
     # ── Vision capability check ──────────────────────────────────────
     has_image = _request_has_image_content(req)
@@ -1251,7 +1267,7 @@ async def chat_completions(request: Request, req: ChatCompletionRequest):
     if is_queued:
         # Create the request record and transition to queued.
         request_id = _begin_request_lifecycle(
-            rt, request, model=req.model, stream=req.stream
+            rt, request, model=req.model, stream=req.stream, lane=resolution.lane
         )
         rt.mark_queued(request_id)
         token = rt.get_cancellation_token(request_id)
@@ -1357,7 +1373,9 @@ async def chat_completions(request: Request, req: ChatCompletionRequest):
 
     # ── Non-streaming path (immediate execution) ──────────────────────
     if not req.stream:
-        request_id = _begin_request_lifecycle(rt, request, model=req.model, stream=False)
+        request_id = _begin_request_lifecycle(
+        rt, request, model=req.model, stream=False, lane=resolution.lane
+    )
         rt.mark_running(request_id)
         token = rt.get_cancellation_token(request_id)
         ctx = _execution_context(
@@ -1378,7 +1396,9 @@ async def chat_completions(request: Request, req: ChatCompletionRequest):
     if not adapter.supports_streaming:
         raise StreamingNotSupportedError()
 
-    request_id = _begin_request_lifecycle(rt, request, model=req.model, stream=True)
+    request_id = _begin_request_lifecycle(
+        rt, request, model=req.model, stream=True, lane=resolution.lane
+    )
     rt.mark_streaming(request_id)
     token = rt.get_cancellation_token(request_id)
     ctx = _execution_context(

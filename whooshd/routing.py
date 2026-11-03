@@ -141,6 +141,11 @@ class RuntimeResolution:
     resolved_model_id: str
     execution_mode: str
     qualification_attestation: RuntimeQualificationAttestationReference | None = None
+    # Inference lane that will execute this request, and that lane's own
+    # concurrency ceiling (None when the lane declares none).  Admission
+    # uses these so the broker does not admit work the lane cannot run.
+    lane: str | None = None
+    lane_max_concurrent: Optional[int] = None
 
     def for_model(self, model_id: str) -> "RuntimeResolution":
         """Retain the selected adapter while describing one batch member."""
@@ -151,6 +156,8 @@ class RuntimeResolution:
             advertised_model_id=model_id,
             resolved_model_id=self.resolved_model_id,
             execution_mode=self.execution_mode,
+            lane=self.lane,
+            lane_max_concurrent=self.lane_max_concurrent,
             qualification_attestation=target_attestation_reference(
                 self.adapter,
                 invocation_model_id=model_id,
@@ -276,6 +283,15 @@ class RuntimeRouter:
             loaded_model_id = adapter.model_id()
         except Exception:
             loaded_model_id = None
+        lane = str(adapter.kind)[:64]
+        lane_max_concurrent: Optional[int] = None
+        try:
+            # Adapters that declare no lane ceiling simply do not expose the
+            # attribute; a protocol default does not apply to concrete
+            # classes, so read it defensively.
+            lane_max_concurrent = getattr(adapter, "max_concurrent_requests", None)
+        except Exception:
+            lane_max_concurrent = None
         return RuntimeResolution(
             adapter=adapter,
             requested_model_id=model_id,
@@ -285,6 +301,8 @@ class RuntimeRouter:
             execution_mode=_EXECUTION_MODES.get(
                 str(adapter.kind), "external_sidecar"
             ),
+            lane=lane,
+            lane_max_concurrent=lane_max_concurrent,
             qualification_attestation=target_attestation_reference(
                 adapter,
                 invocation_model_id=model_id,

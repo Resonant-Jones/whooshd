@@ -8,6 +8,20 @@
 
 ### Fixed
 
+- **Route-specific capacity reservation.** The broker's global limit and the
+  inference lane's own limit were two independent admission decisions, and the
+  broker could admit a request that then stalled at the lane's semaphore and
+  was eventually refused — which defeated the purpose of broker-level
+  queueing. Each adapter may now declare its own concurrency ceiling; the
+  broker's effective limit for a request bound for that lane is capped by it,
+  so the request is queued rather than admitted to stall. The global limit is
+  not lowered for other lanes — a strict lane reserves capacity for itself
+  without constraining independent lanes.
+  The route is now resolved **before** admission, so the lane is known when the
+  decision is made. A saturated lane's refusal names the real constraint
+  instead of the global limit.
+  Tests: `tests/test_capacity_lane_reservation.py`.
+
 - **Queue/scheduler execution-ownership defect.** Under
   `WHOOSHD_SCHEDULER_POLICY=cache_aware_fifo`, `select_and_dequeue()` could
   remove a request that the calling waiter did not own. The removed request
@@ -28,7 +42,7 @@
   tokens, and multimodal content — and compares it against the model's
   budgets. `CapacityController.evaluate()` remains the single decision point.
   A request over the hard budget is rejected with `context_overflow`; one
-  over the recommended budget is admitted with a recorded downshift reason. A
+  over the recommended budget is admitted with a recorded advisory reason. A
   model with no calibrated budgets is never silently constrained.
 - **Real-runtime calibration harness.** `whooshd.bench.runtime_calibration`
   measures a live deployment — TTFT, upstream-reported prefill cost,
@@ -41,13 +55,24 @@
 
 ### Measured
 
+- **CWC-013 lane concurrency experiment (isolated, 12B).** With the MLX-VLM
+  lane limit raised to 2 on an **isolated broker** — the working deployment
+  on port 8000 was not modified — two concurrent 12B requests both succeeded.
+  Aggregate throughput rose **+89 %** (6.99 → 13.24 tok/s) while per-request
+  latency rose only **6.3 %**; the two requests finished 0.2 ms apart, which
+  shows they ran simultaneously rather than serialised. Zero swap-out pages
+  and a clean lifecycle. This resolves the 12B concurrency-band calibration
+  that CWC-012 had recorded as blocked, and shows the lane limit of 1 was
+  leaving roughly half the machine's throughput unused.
+  Packet: `docs/validation/2026-11-03-cwc013-lane-concurrency-experiment.md`.
+
 - **CWC-012 runtime calibration (Gemma 4 12B, real Metal).** TTFT ~497 ms
   warm, prefill ~275 ms, ~7 tokens/sec at `max_tokens=128`, and a **0.956
-  prompt-cache hit ratio** (698 of 730 prompt tokens served from cache).
-  Two findings change the roadmap: the runtime already delivers prefix reuse,
-  and the broker's advertised concurrency can exceed what the runtime
-  accepts. The 12B *concurrency-band* calibration is **BLOCKED** — the
-  MLX-VLM lane's concurrency limit defaults to 1. Packet:
+  cached prompt-token fraction** (698 of 730 prompt tokens). Prefill is under
+  3 % of turn latency, so decode speed and concurrency — not further
+  prefix-cache machinery — hold the remaining headroom. The cache figure is a
+  cached-token fraction for one repeated synthetic prompt, **not** a
+  request-level hit rate across normal workloads. Packet:
   `docs/validation/2026-11-02-cwc012-runtime-calibration.md`.
 
 ### Evaluated
@@ -60,8 +85,11 @@
 
 ### Not scheduled
 
-- **Multi-node routing** — demand-conditional. Needs demonstrated demand and
-  a per-node state directory (the CLI currently tracks one daemon globally).
+- **Multi-node routing** — demand-conditional. Host discovery, authenticated
+  network access, model availability, and routing authority are the
+  consequential blockers. A configurable state directory is a convenience for
+  several instances on *one* host; two installations on different machines
+  already have separate `~/.whooshd` directories.
 - **Embeddings / tool calling** — demand-conditional. Embeddings need an
   embedding model; tool calling needs an execute-versus-pass-through decision.
 

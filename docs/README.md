@@ -38,11 +38,12 @@ model serving.
 
 | Phase | Status |
 |---|---|
-| P0 real-runtime proof | **Passed** for the deployment measurement; 12B concurrency-band calibration **blocked** (lane concurrency limit is 1) |
+| P0 real-runtime proof | **Passed** — CWC-012 (deployment measurement) and CWC-013 (lane concurrency experiment, +89 % aggregate throughput at concurrency 2) |
 | P1 queue/scheduler execution-ownership defect | **Fixed** — a request is never removed from the queue without an owner |
 | P2 per-model context policy and request costing | **Shipped** — budgets on `CapacityProfile`, costing in `CapacityController` |
+| P2b route-specific capacity reservation | **Shipped** — admission caps the effective limit by the selected lane's own ceiling |
 | P3 MLX batch execution | **Evaluated — deferred.** See [the evaluation note](mlx-batch-execution-evaluation.md) |
-| P4 multi-node routing | **Demand-conditional** — not scheduled; needs demonstrated demand and a per-node state directory |
+| P4 multi-node routing | **Demand-conditional** — not scheduled. The consequential blockers are host discovery, authenticated network access, model availability, and routing authority. A configurable state directory matters for several instances on *one* host, not for two machines |
 | P5 embeddings / tool calling | **Demand-conditional** — embeddings need an embedding model; tool calling needs an execute-vs-pass-through decision |
 
 Deferred by existing decision and not reopened: durable KV snapshots, token-step

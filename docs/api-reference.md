@@ -75,6 +75,40 @@ canonical SSE error event and then closes the stream **without** a successful
 `[DONE]` sentinel. Clients must not treat stream EOF without a successful stop
 chunk as a completed response.
 
+## Route-specific capacity reservation
+
+Each inference lane may declare its own concurrency ceiling. The broker's
+global limit and a lane's ceiling are independent — a strict lane reserves
+capacity for itself without lowering the limit for other lanes.
+
+When a lane declares a ceiling, the broker's effective limit for a request
+bound for that lane is capped by it. A request that the lane cannot run is
+**queued** rather than admitted to stall at the lane's semaphore and be
+refused.
+
+The route is resolved **before** admission, so the lane is known when the
+decision is made. Admission details report the lane decision:
+
+```json
+{
+  "lane": "mlx_vlm",
+  "lane_max_concurrent": 1,
+  "lane_active_jobs": 0,
+  "lane_limited": false
+}
+```
+
+When a lane is saturated and the queue cannot take the request, the refusal
+names the real constraint rather than the global limit:
+
+```json
+{
+  "code": "runner_overloaded",
+  "message": "The selected inference lane is at its concurrency limit (1).",
+  "http_status": 429
+}
+```
+
 ## Per-model context policy
 
 A `CapacityProfile` may carry three token ceilings for the model it
@@ -84,7 +118,7 @@ reserved output plus multimodal content.
 | Budget | Effect when exceeded |
 |---|---|
 | hard max | Rejected with `context_overflow` (HTTP 422) |
-| recommended max | Admitted; `context_reason` records the downshift |
+| recommended max | Admitted unchanged; `context_reason` records the advisory |
 | interactive max | Admitted; `context_reason` records the tier |
 
 A model with no calibrated budgets is **never silently constrained** — the

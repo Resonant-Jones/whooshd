@@ -24,8 +24,9 @@ has since been resolved is annotated rather than silently erased.
 
 | Packet | Status | Date | Scope |
 |---|---|---|---|
+| **CWC-013 lane concurrency experiment (isolated, 12B)** | **PASSED** | 2026-11-03 | [packet](validation/2026-11-03-cwc013-lane-concurrency-experiment.md). Two concurrent 12B requests on an isolated broker (the port 8000 deployment was not modified): 2/2 success, aggregate throughput 6.99 → 13.24 tok/s, per-request latency +6.3 %, zero swap-out, clean lifecycle. Concurrency 2 only; not sustained-load, not a capacity certificate above 2, and not transferable to the fanless Air |
 | **CWC-012 runtime calibration — Gemma 4 12B deployment** | **PASSED** (measurement) | 2026-11-02 | [packet](validation/2026-11-02-cwc012-runtime-calibration.md). Real Metal, real 12B, real launchd-managed MLX-VLM server. TTFT, prefill, throughput, prompt-cache hit ratio, swap behaviour, leak check. **Not** a concurrency-band capacity claim |
-| CWC-012 — 12B concurrency-band calibration | **BLOCKED** | 2026-11-02 | The MLX-VLM lane's concurrency limit defaults to 1, so bands above 1 cannot be exercised. Raising the lane limit requires the capacity evidence this packet lacks |
+| CWC-012 — 12B concurrency-band calibration | **RESOLVED by CWC-013** | 2026-11-03 | The MLX-VLM lane's concurrency limit defaulted to 1, so bands above 1 could not be exercised. CWC-013 raised it to 2 on an isolated broker and measured the result |
 | Throughput control plane — real MLX plumbing (Gemma 4 E2B) | PASSED | 2026-08-19, requalified 2026-09-11 | Control-plane mechanics, admission, queue, scheduler, capacity gating, cancellation, isolation. Not a 12B throughput claim |
 | Throughput control plane — full-suite baseline | PASSED | 2026-10-02 | 2360 passed, 3 skipped. The campaign-era "17 failed" figure is resolved; see the report's dated amendment |
 | Capacity control plane automation | PASSED | 2026-10-02 | 37 tests across profile schema/round-trip, identity matching, operator ceilings, queue/scheduler authority, cancellation, SSE timing, batch interaction |
