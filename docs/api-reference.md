@@ -17,7 +17,6 @@ That contract lets Codexify validate `LOCAL_CHAT_MODEL` without relaxing its
 provider gate or guessing at a stale alias.
 
 ## Runtime and Inspection Endpoints
-
 - `GET /health`
 - `GET /health/runtime`
 - `GET /ready`
@@ -76,8 +75,51 @@ canonical SSE error event and then closes the stream **without** a successful
 `[DONE]` sentinel. Clients must not treat stream EOF without a successful stop
 chunk as a completed response.
 
-## Runtime provenance
+## Per-model context policy
 
+A `CapacityProfile` may carry three token ceilings for the model it
+describes. Every request is costed in **assembled tokens** — input plus
+reserved output plus multimodal content.
+
+| Budget | Effect when exceeded |
+|---|---|
+| hard max | Rejected with `context_overflow` (HTTP 422) |
+| recommended max | Admitted; `context_reason` records the downshift |
+| interactive max | Admitted; `context_reason` records the tier |
+
+A model with no calibrated budgets is **never silently constrained** — the
+estimate is reported as observability and the request is admitted unchanged.
+
+Admission responses carry the comparison:
+
+```json
+{
+  "estimated_tokens": 412,
+  "context_reason": "within_recommended",
+  "context_budget": "recommended"
+}
+```
+
+The rejection body names the budget that was breached:
+
+```json
+{
+  "code": "context_overflow",
+  "http_status": 422,
+  "retryable": false,
+  "category": "capacity_execution",
+  "details": {
+    "estimated_tokens": 41200,
+    "hard_max_tokens": 32768,
+    "context_breached_budget": "hard"
+  }
+}
+```
+
+The model's maximum context window is a **capability ceiling, not a target
+request size**.
+
+## Runtime provenance
 Schema `whooshd.runtime.v1` attaches bounded execution evidence:
 
 - `/v1/models` exposes it in each model's bounded metadata

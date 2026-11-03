@@ -15,6 +15,8 @@ model serving.
 
 - [Capacity Controller](capacity-controller.md) — how many requests may execute
   right now; fixed/adaptive modes, operator ceiling, model/host-bound profiles
+- [Per-model context policy](operator-guide.md#per-model-context-policy) —
+  hard / recommended / interactive token budgets per model
 - [Throughput Control Plane Report](reports/throughput-control-plane.md) —
   recorded real-MLX validation results and the capacity recommendation
 - [Control-Plane Contract v1](control-plane-v1.md) — bounded machine-readable
@@ -23,6 +25,28 @@ model serving.
   contract, field policy, runtime provenance, qualification attestation
 - [Logging Safety Contract](security/whooshd-logging-safety.md) — bounded
   diagnostics and what remains unproven
+
+## Operations
+
+- [Operator Guide](operator-guide.md) — run, inspect, diagnose, roll back
+- [Runtime Calibration](ops/whooshd-runtime-calibration.md) — measured
+  real-runtime evidence: TTFT, prefill, throughput, cache effectiveness
+- [CWC-012 Runtime Calibration packet](validation/2026-11-02-cwc012-runtime-calibration.md)
+- [Local launchd Runtime](ops/whooshd-launchd-local-runtime.md)
+
+## Roadmap Status
+
+| Phase | Status |
+|---|---|
+| P0 real-runtime proof | **Passed** for the deployment measurement; 12B concurrency-band calibration **blocked** (lane concurrency limit is 1) |
+| P1 queue/scheduler execution-ownership defect | **Fixed** — a request is never removed from the queue without an owner |
+| P2 per-model context policy and request costing | **Shipped** — budgets on `CapacityProfile`, costing in `CapacityController` |
+| P3 MLX batch execution | **Evaluated — deferred.** See [the evaluation note](mlx-batch-execution-evaluation.md) |
+| P4 multi-node routing | **Demand-conditional** — not scheduled; needs demonstrated demand and a per-node state directory |
+| P5 embeddings / tool calling | **Demand-conditional** — embeddings need an embedding model; tool calling needs an execute-vs-pass-through decision |
+
+Deferred by existing decision and not reopened: durable KV snapshots, token-step
+shared decode (Cave Thunder), production auth hardening.
 
 ## Reference
 

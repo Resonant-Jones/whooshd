@@ -39,6 +39,7 @@ from enum import Enum
 from typing import Optional
 
 from whooshd.capacity_profile import (
+    ContextBudgets,
     CapacityBand,
     CapacityDecisionReason,
     CapacityMode,
@@ -80,6 +81,14 @@ class CapacityEvaluation:
     profile_eligible: bool = False
     profile_rejection_reason: Optional[str] = None
 
+    # -- Per-model context policy ---------------------------------------
+    # Bounded, metadata-only evidence of how the request compared to the
+    # model's context budgets.  ``None`` means no budget was applied.
+    context_reason: Optional[str] = None
+    context_budget: Optional[str] = None
+    context_total_tokens: Optional[int] = None
+    context_breached_budget: Optional[str] = None
+
     def snapshot(self) -> dict:
         """Safe observability snapshot.  No prompt or runtime content."""
         return {
@@ -93,6 +102,13 @@ class CapacityEvaluation:
             "profile_loaded": self.profile_loaded,
             "profile_eligible": self.profile_eligible,
             "profile_rejection_reason": self.profile_rejection_reason,
+            # Context policy labels only.  The request-derived token counts
+            # stay on the evaluation object and are surfaced through the
+            # per-request admission details (which already carry
+            # ``estimated_chars``), not through this state snapshot.
+            "context_reason": self.context_reason,
+            "context_budget": self.context_budget,
+            "context_breached_budget": self.context_breached_budget,
         }
 
 
@@ -111,6 +127,10 @@ class CapacityContext:
     runtime_ready: bool
     memory_pressure: MemoryPressureClass = MemoryPressureClass.UNKNOWN
     requested_estimated_tokens: Optional[int] = None  # forward-looking cost hint
+    #: Per-model context budgets to compare the request cost against.  When
+    #: absent the request is admitted unchanged -- an unmeasured model is
+    #: never silently constrained.
+    context_budgets: Optional["ContextBudgets"] = None
 
 
 @dataclass(frozen=True)
@@ -169,6 +189,19 @@ class CapacityController:
         """Force the next call to reload from disk."""
         self._cached_profile_signature = None
         self._cached_profile = None
+
+    def context_budgets(self) -> Optional["ContextBudgets"]:
+        """Per-model context budgets from the loaded profile, if any.
+
+        Returns ``None`` when no profile is configured, the profile is
+        ineligible for this host, or the profile carries no budgets.  An
+        unmeasured model is never silently constrained.
+        """
+        profile, eligible, _reason = self._profile_status()
+        if not eligible or profile is None:
+            return None
+        budgets = getattr(profile, "context_budgets", None)
+        return budgets if isinstance(budgets, ContextBudgets) else None
 
     @staticmethod
     def _host_memory_bytes() -> Optional[int]:
@@ -288,6 +321,56 @@ class CapacityController:
             "profile_rejection_reason": profile_rejection_reason,
         }
 
+        # -- Per-model context policy ------------------------------------
+        # The context decision is taken before any capacity decision so a
+        # request that cannot fit the model is rejected for the right
+        # reason rather than queued behind work it can never fit.
+        context_fields: dict[str, Any] = {}
+        if ctx.context_budgets is not None:
+            from whooshd.capacity_context import (
+                RequestCost,
+                evaluate_context,
+            )
+
+            estimated = ctx.requested_estimated_tokens or 0
+            context_eval = evaluate_context(
+                RequestCost(
+                    input_tokens=0,
+                    output_tokens=0,
+                    multimodal_tokens=0,
+                    total_tokens=estimated,
+                    input_is_exact=False,
+                    multimodal_is_exact=False,
+                    output_is_exact=False,
+                ),
+                ctx.context_budgets,
+            )
+            context_fields = {
+                "context_reason": context_eval.reason.value,
+                "context_budget": (
+                    context_eval.budget.value if context_eval.budget else None
+                ),
+                "context_total_tokens": context_eval.total_tokens,
+                "context_breached_budget": (
+                    context_eval.breached_budget.value
+                    if context_eval.breached_budget
+                    else None
+                ),
+            }
+            if context_eval.over_limit:
+                return CapacityEvaluation(
+                    action=CapacityAction.REJECT,
+                    effective_active_limit=self.effective_active_limit(
+                        memory_pressure=ctx.memory_pressure,
+                    ),
+                    operator_ceiling=operator_ceiling,
+                    mode=mode,
+                    reason=CapacityDecisionReason.CONTEXT_OVERFLOW,
+                    memory_pressure=ctx.memory_pressure,
+                    **profile_fields,
+                    **context_fields,
+                )
+
         if not ctx.runtime_ready:
             return CapacityEvaluation(
                 action=CapacityAction.REJECT,
@@ -299,6 +382,7 @@ class CapacityController:
                 reason=CapacityDecisionReason.RUNTIME_NOT_READY,
                 memory_pressure=ctx.memory_pressure,
                 **profile_fields,
+                **context_fields,
             )
 
         if ctx.queue_depth >= ctx.max_queue_depth:
@@ -312,6 +396,7 @@ class CapacityController:
                 reason=CapacityDecisionReason.QUEUE_FULL,
                 memory_pressure=ctx.memory_pressure,
                 **profile_fields,
+                **context_fields,
             )
 
         limit = self.effective_active_limit(memory_pressure=ctx.memory_pressure)
@@ -335,6 +420,7 @@ class CapacityController:
                     reason=CapacityDecisionReason.MEMORY_PRESSURE_HIGH,
                     memory_pressure=ctx.memory_pressure,
                     **profile_fields,
+                    **context_fields,
                 )
 
             if mode == CapacityMode.ADAPTIVE and calibrated is not None:
@@ -353,6 +439,7 @@ class CapacityController:
                 reason=reason,
                 memory_pressure=ctx.memory_pressure,
                 **profile_fields,
+                **context_fields,
             )
 
         # No slot free — admit to queue.

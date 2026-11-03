@@ -24,7 +24,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Optional
+from typing import Any, Optional
 
 from pydantic import BaseModel, Field
 
@@ -63,11 +63,78 @@ class CapacityDecisionReason(str, Enum):
     INVALID_PROFILE = "invalid_profile"
     MEMORY_PRESSURE_HIGH = "memory_pressure_high"
     QUEUE_FULL = "queue_full"
+    CONTEXT_OVERFLOW = "context_overflow"
     RUNTIME_NOT_READY = "runtime_not_ready"
     BATCH_ACTIVE_LIMIT_REACHED = "batch_active_limit_reached"
 
 
 # ── Per-band evidence ──────────────────────────────────────────────────────
+class ContextBudget(str, Enum):
+    """Which context ceiling a request was measured against.
+
+    The three budgets are distinct by design: the hard maximum is a
+    capability ceiling, the recommended maximum is the default operating
+    target, and the interactive maximum is the latency-sensitive path.
+    """
+
+    HARD = "hard"
+    RECOMMENDED = "recommended"
+    INTERACTIVE = "interactive"
+
+
+class ContextDecisionReason(str, Enum):
+    """Structured reason for a context-budget decision."""
+
+    WITHIN_INTERACTIVE = "within_interactive"
+    WITHIN_RECOMMENDED = "within_recommended"
+    ABOVE_RECOMMENDED = "above_recommended"
+    ABOVE_HARD = "above_hard"
+    NO_BUDGET = "no_budget"
+
+
+class ContextBudgets(BaseModel):
+    """Per-model context ceilings, in tokens.
+
+    All values are token counts for the *assembled* request: input plus
+    reserved output plus multimodal content.  ``None`` means "not measured
+    for this model" and the controller degrades conservatively rather than
+    inventing a limit.
+
+    ``hard_max_tokens`` is a capability ceiling, not a target request size.
+    """
+
+    hard_max_tokens: Optional[int] = Field(
+        None, ge=1, description="Never exceeded; requests beyond this are rejected"
+    )
+    recommended_max_tokens: Optional[int] = Field(
+        None, ge=1, description="Default operating target; larger needs justification"
+    )
+    interactive_max_tokens: Optional[int] = Field(
+        None, ge=1, description="Latency-sensitive path target"
+    )
+    max_output_tokens: Optional[int] = Field(
+        None, ge=0, description="Model's maximum generated output per request"
+    )
+    max_input_tokens: Optional[int] = Field(
+        None, ge=0, description="Model's maximum input tokens per request"
+    )
+    multimodal_token_estimate: Optional[int] = Field(
+        None,
+        ge=0,
+        description="Tokens attributed to one unit of multimodal content (image/video)",
+    )
+
+    def safe_dict(self) -> dict[str, Any]:
+        return {
+            "hard_max_tokens": self.hard_max_tokens,
+            "recommended_max_tokens": self.recommended_max_tokens,
+            "interactive_max_tokens": self.interactive_max_tokens,
+            "max_output_tokens": self.max_output_tokens,
+            "max_input_tokens": self.max_input_tokens,
+            "multimodal_token_estimate": self.multimodal_token_estimate,
+        }
+
+
 
 
 class CapacityBand(BaseModel):
@@ -140,6 +207,13 @@ class CapacityProfile(BaseModel):
     bands: tuple[CapacityBand, ...] = Field(default_factory=tuple)
     recommended_active_concurrency: int = Field(
         1, ge=1, description="Operator-recommended concurrency after evidence review"
+    )
+
+    # -- Per-model context policy ------------------------------------
+    # Optional: a profile recorded before context budgets existed simply
+    # omits them, and the controller degrades to the legacy ceiling.
+    context_budgets: Optional[ContextBudgets] = Field(
+        None, description="Per-model context ceilings in tokens"
     )
 
     # ── Provenance ──────────────────────────────────────────────────

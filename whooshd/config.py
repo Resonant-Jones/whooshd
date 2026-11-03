@@ -147,6 +147,15 @@ def get_max_request_max_tokens() -> int:
     return _env_int("WHOOSHD_MAX_REQUEST_MAX_TOKENS", 32768)
 
 
+def get_default_max_tokens() -> int:
+    """Reserved output tokens when a request does not state ``max_tokens``.
+
+    Used by the request-cost estimator so an implicit request still has a
+    bounded, predictable KV reservation.
+    """
+    return _env_int("WHOOSHD_DEFAULT_MAX_TOKENS", 256)
+
+
 # ── llama.cpp settings ───────────────────────────────────────────────────
 
 

@@ -64,6 +64,15 @@ Whoosh'd falls back to the operator ceiling and records `missing_profile`,
 `invalid_profile`, or `model_mismatch`. Evidence calibrated for one model or
 host is never applied to another.
 
+**Two ceilings, and the lower one is real.** The broker's admission limit
+(`WHOOSHD_MAX_ACTIVE_REQUESTS`) and the adapter's own lane limit
+(`WHOOSHD_MLX_MAX_CONCURRENT_REQUESTS`, `WHOOSHD_MLX_VLM_MAX_CONCURRENT_REQUESTS`,
+`WHOOSHD_LLAMA_CPP_MAX_CONCURRENT_REQUESTS`) are independent. The broker's
+`/runtime/capacity` reports the *broker's* effective limit; if the lane limit
+is lower, requests beyond it are refused by the runtime even though the broker
+reports headroom. **Read the lane limit, not just the broker limit, when
+sizing concurrency.**
+
 Generate a profile against a running instance:
 
 ```bash
@@ -78,6 +87,38 @@ python -m whooshd.bench.capacity_bench \
 
 **Rollback:** `unset WHOOSHD_CAPACITY_MODE WHOOSHD_CAPACITY_PROFILE_PATH`
 returns the process to fixed/default behavior.
+
+### Per-model context policy
+
+A `CapacityProfile` may carry three token ceilings for the model it describes:
+
+| Budget | Meaning | Effect when exceeded |
+|---|---|---|
+| hard max | Capability ceiling — never exceeded | Request rejected with `context_overflow` (HTTP 422) |
+| recommended max | Default operating target | Request admitted with a recorded downshift reason |
+| interactive max | Latency-sensitive path target | Request admitted; reason recorded |
+
+Every request is costed in **assembled tokens**: input plus reserved output
+plus multimodal content. A model with no calibrated budgets is never
+constrained — the estimate is still reported as observability.
+
+The model's maximum context window is a **capability ceiling, not a target
+request size**. Routine interactive turns should sit near the recommended
+budget; the hard maximum is for the rare request that genuinely needs it.
+
+### Real-runtime calibration
+
+`whooshd.bench.runtime_calibration` measures a live deployment: time to first
+token, upstream-reported prefill cost, throughput, queue latency, host swap
+activity, prompt-cache effectiveness, and lifecycle leak at rest.
+
+```bash
+scripts/calibrate_runtime.sh
+```
+
+It reads only, and writes a report; it never changes runtime state. Run it
+through the launchd job when the measurement must happen outside an agent
+sandbox — see [Runtime Calibration](ops/whooshd-runtime-calibration.md).
 
 ### Queue and admission
 

@@ -46,9 +46,25 @@ class QueueEntry:
     # ── Batch execution ────────────────────────────────────────────
     batch_claimed: bool = False
     batch_result_future: Any = None  # asyncio.Future, set at runtime
+    # -- Execution ownership --------------------------------------------
+    # Set when this entry has been granted for execution.  A granted entry
+    # has been removed from the queue and its waiting caller owns it.
+    # Excluded from equality so entries stay comparable by request identity
+    # rather than by their synchronization primitives.
+    granted: bool = field(default=False, compare=False)
+    # Woken when :attr:`granted` becomes true, so the owning waiter learns
+    # of the grant without waiting for a poll tick.
+    grant_event: asyncio.Event = field(
+        default_factory=asyncio.Event, compare=False, repr=False
+    )
 
     def __post_init__(self) -> None:
         self.upstream_request_id = normalize_identifier(self.upstream_request_id)
+
+    def mark_granted(self) -> None:
+        """Record that this entry has been granted for execution."""
+        self.granted = True
+        self.grant_event.set()
 
 
 class RequestQueue:
@@ -257,7 +273,17 @@ class RequestQueue:
 
         # Atomic removal by request_id.  remove() also calls
         # scheduler.remove_request so bypass counts do not leak.
-        return self.remove(decision.request_id)
+        selected = self.remove(decision.request_id)
+        if selected is None:
+            # Another waiter claimed it first; nothing was removed here.
+            return None
+
+        # Execution ownership.  The removed entry is marked granted so its
+        # own waiting caller knows it may execute.  Without this, a
+        # cache-affinity selection would remove a request that no caller
+        # owns: it would neither run nor remain queued.
+        selected.mark_granted()
+        return selected
 
     def remove(self, request_id: str) -> Optional[QueueEntry]:
         """Remove a specific request by ID (for cancellation).
@@ -299,6 +325,32 @@ class RequestQueue:
 
     # ── Waiting ───────────────────────────────────────────────────────
 
+    async def _wait_for_signal(
+        self, entry: QueueEntry, timeout: float
+    ) -> None:
+        """Wait for a capacity signal, this entry's grant, or the timeout.
+
+        A waiter must wake when *its own* entry is granted, not only when
+        the shared capacity event fires: the granting waiter may have
+        selected a different candidate, and the granted entry's caller is
+        the only one that can execute it.
+        """
+        if entry.grant_event.is_set():
+            return
+        tasks = {
+            asyncio.ensure_future(self._capacity_event.wait()),
+            asyncio.ensure_future(entry.grant_event.wait()),
+        }
+        try:
+            await asyncio.wait(
+                tasks, timeout=timeout, return_when=asyncio.FIRST_COMPLETED
+            )
+        finally:
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+
     async def wait_for_execution(
         self,
         entry: QueueEntry,
@@ -338,6 +390,10 @@ class RequestQueue:
                 return False
 
             # ── Check if we are at the front of the queue ──────────
+            # Already granted?  Then this waiter owns the entry.
+            if entry.granted:
+                return True
+
             front = self.peek()
             if front is not None and front.request_id == entry.request_id:
                 # We are next — check capacity.
@@ -362,7 +418,24 @@ class RequestQueue:
                         entry.request_id,
                         getattr(selected, "request_id", None),
                     )
-                    return False
+                    # The scheduler preferred a different candidate
+                    # (cache affinity).  That candidate has been removed
+                    # and granted, and its own waiting caller owns it.
+                    # This entry is still queued and still ours, so we
+                    # keep waiting for our turn instead of abandoning it.
+                    logger.debug(
+                        "queue.select_deferred request_id=%s selected=%s",
+                        entry.request_id,
+                        getattr(selected, "request_id", None),
+                    )
+                    await self._wait_for_signal(
+                        entry,
+                        timeout=min(
+                            max(deadline - time.monotonic(), 0.0),
+                            self.poll_interval_s,
+                        ),
+                    )
+                    continue
                 # At front but no capacity — wait for capacity signal.
 
             # ── Check timeout ──────────────────────────────────────
@@ -380,9 +453,8 @@ class RequestQueue:
 
             # ── Wait for capacity signal or poll interval ──────────
             try:
-                await asyncio.wait_for(
-                    self._capacity_event.wait(),
-                    timeout=min(remaining, self.poll_interval_s),
+                await self._wait_for_signal(
+                    entry, timeout=min(remaining, self.poll_interval_s)
                 )
                 self._clear_capacity_signal()
             except asyncio.TimeoutError:

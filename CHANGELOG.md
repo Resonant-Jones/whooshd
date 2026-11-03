@@ -1,5 +1,72 @@
 # Changelog
 
+## v0.1.1 (Unreleased)
+
+> Follows the repository's release convention established in `1e3f480`: the top
+> section carries the version being prepared and stays marked unreleased until
+> the tag is cut. `v0.1.0` is tagged and released; work after it lives here.
+
+### Fixed
+
+- **Queue/scheduler execution-ownership defect.** Under
+  `WHOOSHD_SCHEDULER_POLICY=cache_aware_fifo`, `select_and_dequeue()` could
+  remove a request that the calling waiter did not own. The removed request
+  had no owner executing it — it neither ran nor remained queued — while the
+  front caller also failed to execute. Selection now grants the removed
+  entry to its own waiting caller, which is woken directly; a waiter that
+  loses the selection keeps its place instead of abandoning its request.
+  Behaviour under the default `fifo` policy is unchanged.
+  Regression tests: `tests/test_queue_execution_ownership.py`.
+
+### Added
+
+- **Per-model context policy.** `CapacityProfile` gains optional
+  `context_budgets` carrying hard / recommended / interactive token ceilings.
+  Profiles without them degrade to the legacy ceiling.
+- **Request-level token and memory costing.** New `whooshd.capacity_context`
+  estimates the assembled cost of a request — input tokens, reserved output
+  tokens, and multimodal content — and compares it against the model's
+  budgets. `CapacityController.evaluate()` remains the single decision point.
+  A request over the hard budget is rejected with `context_overflow`; one
+  over the recommended budget is admitted with a recorded downshift reason. A
+  model with no calibrated budgets is never silently constrained.
+- **Real-runtime calibration harness.** `whooshd.bench.runtime_calibration`
+  measures a live deployment — TTFT, upstream-reported prefill cost,
+  throughput, queue latency, host swap activity, prompt-cache effectiveness,
+  and lifecycle leak at rest. An unmeasurable value is reported as absent,
+  never as zero.
+- **Calibration launchd job and operator guide.** `scripts/calibrate_runtime.sh`
+  and `.local/launchd/com.resonant.whooshd-calibration.plist` run the
+  measurement outside an agent sandbox, where Metal is reachable.
+
+### Measured
+
+- **CWC-012 runtime calibration (Gemma 4 12B, real Metal).** TTFT ~497 ms
+  warm, prefill ~275 ms, ~7 tokens/sec at `max_tokens=128`, and a **0.956
+  prompt-cache hit ratio** (698 of 730 prompt tokens served from cache).
+  Two findings change the roadmap: the runtime already delivers prefix reuse,
+  and the broker's advertised concurrency can exceed what the runtime
+  accepts. The 12B *concurrency-band* calibration is **BLOCKED** — the
+  MLX-VLM lane's concurrency limit defaults to 1. Packet:
+  `docs/validation/2026-11-02-cwc012-runtime-calibration.md`.
+
+### Evaluated
+
+- **MLX batch execution — deferred.** Existing experimental work (guarded
+  adapter batching, the `batch_generate` capability probe, the
+  `supports_chat_batching` signal) was evaluated rather than redesigned. No
+  change to the shipped path. Note:
+  `docs/mlx-batch-execution-evaluation.md`.
+
+### Not scheduled
+
+- **Multi-node routing** — demand-conditional. Needs demonstrated demand and
+  a per-node state directory (the CLI currently tracks one daemon globally).
+- **Embeddings / tool calling** — demand-conditional. Embeddings need an
+  embedding model; tool calling needs an execute-versus-pass-through decision.
+
+---
+
 ## v0.1.0 (Unreleased)
 
 First GA release. Delta from `v0.1.0rc3` (222 commits), grouped by subsystem.

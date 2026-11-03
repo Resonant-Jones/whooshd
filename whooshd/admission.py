@@ -21,13 +21,21 @@ from typing import Optional
 
 from pydantic import BaseModel, Field
 
+from whooshd.capacity_context import (
+    evaluate_context,
+    estimate_request_cost,
+)
 from whooshd.capacity_controller import (
     CapacityAction,
     CapacityController,
     CapacityEvaluation,
 )
-from whooshd.capacity_profile import MemoryPressureClass
+from whooshd.capacity_profile import (
+    ContextBudgets,
+    MemoryPressureClass,
+)
 from whooshd.config import (
+    get_default_max_tokens,
     get_enable_queue,
     get_max_active_requests,
     get_max_messages,
@@ -48,6 +56,7 @@ class AdmissionDecision(str, Enum):
     REJECTED_TOO_MANY_MESSAGES = "rejected_too_many_messages"
     REJECTED_MAX_TOKENS_TOO_HIGH = "rejected_max_tokens_too_high"
     REJECTED_MODEL_NOT_READY = "rejected_model_not_ready"
+    REJECTED_CONTEXT_OVERFLOW = "rejected_context_overflow"
 
 
 class AdmissionResult(BaseModel):
@@ -137,11 +146,24 @@ def evaluate_chat_request(
     # admission via ModelResolutionError.  Admission only reasons
     # about capacity; the controller is told the runtime is ready so
     # its QUEUE/REJECT decisions are driven by capacity alone.
+    # Per-model context policy.  The estimate is computed once here and
+    # handed to the controller, which remains the single decision point.
+    # When no budget is configured for the model the estimate is still
+    # reported (observability) but does not constrain the request.
+    cost = estimate_request_cost(
+        request,
+        default_max_tokens=get_default_max_tokens(),
+    )
+    budgets = controller.context_budgets()
+    context_eval = evaluate_context(cost, budgets)
+
     evaluation = controller.evaluate(
         _capacity_context(
             runtime=runtime,
             max_queue_depth=max_queue,
             memory_pressure=memory_pressure,
+            requested_estimated_tokens=cost.total_tokens,
+            context_budgets=budgets,
         )
     )
 
@@ -151,10 +173,50 @@ def evaluate_chat_request(
         return AdmissionResult(
             accepted=True,
             reason=AdmissionDecision.ACCEPTED,
+            details={
+                "estimated_tokens": cost.total_tokens,
+                "context_reason": context_eval.reason.value,
+                "context_budget": (
+                    context_eval.budget.value if context_eval.budget else None
+                ),
+            },
             http_status=200,
         )
 
     if evaluation.action == CapacityAction.REJECT:
+        # context_overflow → REJECTED_CONTEXT_OVERFLOW.  The request cannot
+        # fit the model regardless of available capacity, so it must not be
+        # queued behind work it can never fit.
+        if evaluation.reason.value == "context_overflow":
+            return AdmissionResult(
+                accepted=False,
+                reason=AdmissionDecision.REJECTED_CONTEXT_OVERFLOW,
+                error_code=ErrorCode.CONTEXT_OVERFLOW,
+                message=(
+                    "Request exceeds the model's hard context budget "
+                    f"({cost.total_tokens} tokens)."
+                ),
+                details={
+                    "estimated_tokens": cost.total_tokens,
+                    "input_tokens": cost.input_tokens,
+                    "output_tokens": cost.output_tokens,
+                    "multimodal_tokens": cost.multimodal_tokens,
+                    "input_is_exact": cost.input_is_exact,
+                    "context_reason": context_eval.reason.value,
+                    "context_budget": (
+                        context_eval.budget.value if context_eval.budget else None
+                    ),
+                    "context_breached_budget": (
+                        context_eval.breached_budget.value
+                        if context_eval.breached_budget
+                        else None
+                    ),
+                    "hard_max_tokens": context_eval.hard_max_tokens,
+                    "recommended_max_tokens": context_eval.recommended_max_tokens,
+                    "interactive_max_tokens": context_eval.interactive_max_tokens,
+                },
+                http_status=422,
+            )
         # queue_full → REJECTED_QUEUE_FULL.  runtime_not_ready is
         # never reached here (see comment above); if it is, treat as
         # overload for backward compatibility with the pre-throughput
@@ -218,6 +280,11 @@ def evaluate_chat_request(
             "capacity_reason": evaluation.reason.value,
             "capacity_mode": evaluation.mode.value,
             "effective_active_limit": evaluation.effective_active_limit,
+            "estimated_tokens": cost.total_tokens,
+            "context_reason": context_eval.reason.value,
+            "context_budget": (
+                context_eval.budget.value if context_eval.budget else None
+            ),
         },
         http_status=202,  # Accepted for queueing; caller waits
     )
@@ -228,6 +295,8 @@ def _capacity_context(
     runtime: RuntimeState,
     max_queue_depth: int,
     memory_pressure: MemoryPressureClass,
+    requested_estimated_tokens: Optional[int] = None,
+    context_budgets: Optional[ContextBudgets] = None,
 ):
     """Build a :class:`CapacityContext` from a runtime + admission inputs.
 
@@ -243,6 +312,8 @@ def _capacity_context(
         max_queue_depth=max_queue_depth,
         runtime_ready=True,
         memory_pressure=memory_pressure,
+        requested_estimated_tokens=requested_estimated_tokens,
+        context_budgets=context_budgets,
     )
 
 

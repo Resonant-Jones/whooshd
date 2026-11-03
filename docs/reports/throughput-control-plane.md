@@ -418,27 +418,41 @@ The 3 skips are Metal-gated and pre-existing; they are not new. The
 campaign-era observation above was accurate for its date and is retained as
 historical evidence of that campaign.
 
-### Gemma 4 12B production calibration — PENDING, cause stated
+### Gemma 4 12B production calibration — BLOCKED (superseding PENDING)
 
-§1 and §12 record the 12B calibration as pending. As of 2026-10-02 the
-prerequisites have been checked:
+Superseded on 2026-11-02 by the CWC-012 runtime calibration packet. The
+prerequisites are **present** — this host (`Mac16,10` M4 / 32 GB) and a
+complete ~10 GB local checkpoint — and the **deployment measurement passed**
+against the real launchd-managed MLX-VLM server.
 
-| Prerequisite | Status |
-|---|---|
-| Target host is the campaign host | Present — Mac mini `Mac16,10`, Apple M4, 32 GB |
-| 12B checkpoint | Present and complete — `models--mlx-community--gemma-4-12B-it-qat-4bit`, ~10 GB, 3 safetensors shards plus config, index, tokenizer, chat template |
-| Metal device usable during the release session | Not available |
-| `mlx_lm` / `mlx_vlm` installed | Not installed |
+What is blocked is the *concurrency-band* calibration. The MLX-VLM lane's
+`WHOOSHD_MLX_VLM_MAX_CONCURRENT_REQUESTS` defaults to **1**, so bands above 1
+cannot be exercised. Raising that limit is an operator decision whose safety
+depends on the capacity evidence being sought — a circular dependency, so it
+must be made deliberately on the target host with the launchd calibration
+runner, not assumed.
 
-The calibration was **not performed** because no MLX inference could execute
-in the release session. No 12B concurrency band, aggregate token throughput, or
-TTFT figure is claimed. E2B results are not presented as 12B results.
+Measured in the CWC-012 packet (concurrency 1, 12B, real Metal):
 
-This remains **PENDING** and is not a GA blocker: the control-plane mechanics
-are already validated against a real MLX runtime by the E2B campaign above.
-The outstanding work is to run `whooshd.bench.capacity_bench` on a
-Metal-capable session with the MLX runtime installed, pointed at the existing
-local checkpoint.
+- TTFT: ~4.8 s cold, **~497 ms warm**
+- Prefill: **~275 ms** (upstream-reported)
+- Throughput: **~7 tokens/sec** per request at `max_tokens=128`
+- **Prompt-cache hit ratio: 0.956** (698 of 730 prompt tokens served from
+  cache)
+- Swap: zero pages out; lifecycle leak check clean
+
+Two results change how the roadmap should read:
+
+1. **The runtime already delivers prefix reuse.** Automatic prompt caching is
+   working on this deployment. ThreadWake's role is observation and policy
+   over observed cache behaviour, not a competing KV materializer.
+2. **The broker's advertised concurrency can exceed what the runtime
+   accepts.** The broker reported `effective_active_limit: 2` while the lane
+   admitted one request at a time, refusing the rest with 429.
+
+**No 12B concurrency, throughput, or TTFT claim is made beyond concurrency 1.**
+E2B results are not presented as 12B results. See
+[the CWC-012 packet](../validation/2026-11-02-cwc012-runtime-calibration.md).
 
 ### E4B portability — still BLOCKED
 

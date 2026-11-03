@@ -1,0 +1,86 @@
+{
+  "bands": [
+    {
+      "aggregate_tokens_per_second": 6.887,
+      "cache_hit_ratio": 0.956164,
+      "cached_prompt_tokens": 698,
+      "concurrency": 1,
+      "failure_count": 0,
+      "latency_p50_ms": 14389.426946640015,
+      "latency_p95_ms": 14389.426946640015,
+      "notes": [],
+      "overload_count": 1,
+      "per_request_tokens_per_second": 6.887,
+      "prefill_p50_ms": 276.02447949902853,
+      "queue_latency_p50_ms": null,
+      "queue_latency_p95_ms": null,
+      "request_count": 2,
+      "stuck_count": 0,
+      "success_count": 1,
+      "successful": false,
+      "swap_delta_pages": 0,
+      "swap_in_delta_pages": 686,
+      "swap_used_pages_after": 8729850,
+      "swap_used_pages_before": 8729850,
+      "ttft_p50_ms": 4781.080007553101,
+      "ttft_p95_ms": 4781.080007553101
+    },
+    {
+      "aggregate_tokens_per_second": 7.303,
+      "cache_hit_ratio": 0.956164,
+      "cached_prompt_tokens": 698,
+      "concurrency": 2,
+      "failure_count": 0,
+      "latency_p50_ms": 10375.078916549683,
+      "latency_p95_ms": 10375.078916549683,
+      "notes": [],
+      "overload_count": 1,
+      "per_request_tokens_per_second": 7.303,
+      "prefill_p50_ms": 274.26379149619606,
+      "queue_latency_p50_ms": null,
+      "queue_latency_p95_ms": null,
+      "request_count": 2,
+      "stuck_count": 0,
+      "success_count": 1,
+      "successful": false,
+      "swap_delta_pages": 0,
+      "swap_in_delta_pages": 225,
+      "swap_used_pages_after": 8729850,
+      "swap_used_pages_before": 8729850,
+      "ttft_p50_ms": 497.1048831939697,
+      "ttft_p95_ms": 497.1048831939697
+    }
+  ],
+  "cache_effectiveness": {
+    "attempts": 2,
+    "available": true,
+    "cache_hit_ratio": 0.956164,
+    "cached_prompt_tokens": 698,
+    "prefill_ms": 271.62550000139163,
+    "prompt_tokens": 730
+  },
+  "captured_at": "2026-11-03T02:00:49.801622+00:00",
+  "host": {
+    "machine": "arm64",
+    "platform": "macOS-27.2-arm64-arm-64bit",
+    "python": "3.11.14"
+  },
+  "leak_check": {
+    "active_jobs_at_rest": 0,
+    "broker_reachable": true,
+    "leaked": false,
+    "queue_depth_at_rest": 0
+  },
+  "metal": {
+    "detail": "RuntimeError: [metal::load_device] No Metal device available. This typically occurs in headless, sandboxed, or virtualized macOS sessions where the GPU is not accessible.",
+    "metal_available": false
+  },
+  "schema_version": "whooshd.calibration.v1",
+  "target": {
+    "base_url": "http://127.0.0.1:8000",
+    "max_tokens": 128,
+    "model": "local-chat",
+    "prompt_chars": 2048,
+    "upstream_url": "http://127.0.0.1:8082"
+  }
+}

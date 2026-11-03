@@ -24,6 +24,8 @@ has since been resolved is annotated rather than silently erased.
 
 | Packet | Status | Date | Scope |
 |---|---|---|---|
+| **CWC-012 runtime calibration — Gemma 4 12B deployment** | **PASSED** (measurement) | 2026-11-02 | [packet](validation/2026-11-02-cwc012-runtime-calibration.md). Real Metal, real 12B, real launchd-managed MLX-VLM server. TTFT, prefill, throughput, prompt-cache hit ratio, swap behaviour, leak check. **Not** a concurrency-band capacity claim |
+| CWC-012 — 12B concurrency-band calibration | **BLOCKED** | 2026-11-02 | The MLX-VLM lane's concurrency limit defaults to 1, so bands above 1 cannot be exercised. Raising the lane limit requires the capacity evidence this packet lacks |
 | Throughput control plane — real MLX plumbing (Gemma 4 E2B) | PASSED | 2026-08-19, requalified 2026-09-11 | Control-plane mechanics, admission, queue, scheduler, capacity gating, cancellation, isolation. Not a 12B throughput claim |
 | Throughput control plane — full-suite baseline | PASSED | 2026-10-02 | 2360 passed, 3 skipped. The campaign-era "17 failed" figure is resolved; see the report's dated amendment |
 | Capacity control plane automation | PASSED | 2026-10-02 | 37 tests across profile schema/round-trip, identity matching, operator ceilings, queue/scheduler authority, cancellation, SSE timing, batch interaction |
@@ -34,7 +36,7 @@ has since been resolved is annotated rather than silently erased.
 | Guarded adapter batching HTTP grouping | PASSED | 2026-07-02 | Does not demonstrate live-path batch-group formation |
 | Guarded adapter batching initial | INCONCLUSIVE | 2026-07-02 | Superseded by the two results above |
 | Cave Thunder decision | RECORDED | 2026-07-02 | Token-step shared decode remains MLX-blocked |
-| Gemma 4 12B production capacity calibration | **PENDING** | — | Host (`Mac16,10` M4 / 32 GB) and a complete ~10 GB local checkpoint are **present**; the benchmark run has **not** been performed. Not a GA blocker |
+| Gemma 4 12B production capacity calibration | **BLOCKED** | 2026-11-02 | The MLX-VLM lane's concurrency limit defaults to 1, so concurrency bands above 1 cannot be exercised. The deployment measurement itself PASSED — see the CWC-012 packet |
 | Gemma 4 E4B cross-model portability smoke | **BLOCKED** | 2026-08-19 | `mlx_vlm` rejected 126 checkpoint parameters — `MLX_RUNTIME` / `MODEL` incompatibility. Explicit follow-up, not a passing result |
 
 ## How to Run Validations

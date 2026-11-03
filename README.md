@@ -35,6 +35,7 @@ This README is intentionally conservative: supported features are listed separat
 | Runtime provenance | Supported | Bounded `whooshd.runtime.v1` evidence on inventory and successful responses |
 | Request correlation | Supported | Bounded v1: separate upstream `X-Request-ID` and Whoosh'd `X-Whoosh-Request-ID` |
 | Capacity control plane | Supported | `fixed` default; `adaptive` may only lower the active limit via a validated `CapacityProfile`; `GET /runtime/capacity` |
+| Per-model context policy | Supported | Per-model hard / recommended / interactive token budgets; requests over the hard budget are rejected with `context_overflow` |
 | Health and readiness | Supported | `GET /health`, `GET /ready`, `GET /health/runtime` |
 | Runtime lifecycle | Supported | Runtime snapshots, model warmup, unload, request tracking |
 | Request cancellation | Supported | `POST /runtime/requests/{id}/cancel` |
@@ -64,7 +65,7 @@ This README is intentionally conservative: supported features are listed separat
 | Tool/function calling | Not implemented | Request fields may be retained without implying provider capability |
 | Production auth hardening | Not implemented | Local-first development posture only |
 | Multi-node routing | Not implemented | Future architecture |
-| Gemma 4 12B capacity calibration | Pending | Target host and a complete local checkpoint are present; the benchmark run has not been performed. See [Throughput Control Plane](docs/reports/throughput-control-plane.md) |
+| Gemma 4 12B capacity calibration | Blocked | The MLX-VLM lane's concurrency limit defaults to 1, so concurrency bands above 1 cannot be exercised. The deployment measurement itself passed. See [CWC-012 Runtime Calibration](docs/validation/2026-11-02-cwc012-runtime-calibration.md) |
 | Live Codexify deployment claim | Not claimed by tests alone | Rehearse against the target runtime and machine |
 | Performance improvement claims | Not automatic | Record hardware, model, runtime, and benchmark conditions |
 
