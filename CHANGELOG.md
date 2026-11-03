@@ -22,6 +22,43 @@
   instead of the global limit.
   Tests: `tests/test_capacity_lane_reservation.py`.
 
+- **Lane-aware admission did not hold end to end.** The first implementation
+  had two defects that the controller tests did not expose, because they proved
+  the decisions individually rather than the complete
+  admission → queue → release → execution contract.
+  - **Queued requests could still bypass the lane limit.** The queue released
+    work on global capacity alone, so a request whose lane was saturated was
+    granted execution and then stalled at the adapter's semaphore — the exact
+    failure the feature exists to prevent. The lane is now re-checked at
+    release time.
+  - **Unrelated lanes were incorrectly constrained.** The effective limit was
+    computed as `min(global, lane)` and compared against the *global* active
+    counter. That starved an idle lane whenever any other lane was busy, and
+    let a saturated lane start work the global budget had room for. Global
+    capacity and lane capacity are now separate constraints over separate
+    counters, both of which must hold.
+  - The queue-full check now runs *after* the availability check. A request
+    that can run immediately is no longer refused because the queue happens to
+    be full — which matters now that the queue legitimately holds
+    lane-saturated work while global capacity sits free.
+  - **`/v1/generate` is now lane-aware too.** It previously used a simple
+    global-only check and did not consult the capacity controller at all. Both
+    routes now resolve the adapter before admitting, so the selected lane's
+    ceiling is known when the decision is made.
+  - Integration regressions cover both scenarios end to end, plus the
+    queue-release path and the generate route:
+    `tests/test_lane_admission_integration.py`. Verified to fail against the
+    pre-fix code.
+
+- **Multimodal context cost was undercounted.** The estimator supported a
+  per-unit multimodal cost, but the live admission path never supplied it, so
+  image content was counted as zero tokens. The profile's
+  `multimodal_token_estimate` is now wired into admission, and content whose
+  cost cannot be determined is reported as an **unknown cost** rather than
+  zero: `context_cost_has_unknown` marks it and `context_cost_is_exact`
+  reports that the hard-limit comparison for that request is best-effort
+  rather than a guarantee.
+
 - **Queue/scheduler execution-ownership defect.** Under
   `WHOOSHD_SCHEDULER_POLICY=cache_aware_fifo`, `select_and_dequeue()` could
   remove a request that the calling waiter did not own. The removed request
@@ -59,9 +96,12 @@
   lane limit raised to 2 on an **isolated broker** — the working deployment
   on port 8000 was not modified — two concurrent 12B requests both succeeded.
   Aggregate throughput rose **+89 %** (6.99 → 13.24 tok/s) while per-request
-  latency rose only **6.3 %**; the two requests finished 0.2 ms apart, which
-  shows they ran simultaneously rather than serialised. Zero swap-out pages
-  and a clean lifecycle. This resolves the 12B concurrency-band calibration
+  latency rose only **6.3 %**; both requests completed in the same
+  wall-clock window, with measured durations differing by 0.2 ms. The
+  harness records per-request durations, not completion timestamps, so the
+  overlapping-execution conclusion rests on the throughput and wall-clock
+  evidence rather than on that 0.2 ms figure. Zero swap-out pages and a
+  clean lifecycle. This resolves the 12B concurrency-band calibration
   that CWC-012 had recorded as blocked, and shows the lane limit of 1 was
   leaving roughly half the machine's throughput unused.
   Packet: `docs/validation/2026-11-03-cwc013-lane-concurrency-experiment.md`.

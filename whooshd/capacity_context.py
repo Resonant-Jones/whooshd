@@ -66,6 +66,11 @@ class RequestCost:
     multimodal_is_exact: bool = False
     #: True when the output reservation is the model's declared maximum.
     output_is_exact: bool = False
+    #: True when the request carries content whose cost could **not** be
+    #: determined.  This is distinct from "the cost is zero": a request
+    #: with images and no per-unit estimate is *undercounted*, not free.
+    #: When set, any budget comparison against this cost is best-effort.
+    has_unknown_cost: bool = False
 
     def safe_dict(self) -> dict[str, Any]:
         return {
@@ -76,6 +81,7 @@ class RequestCost:
             "input_is_exact": self.input_is_exact,
             "multimodal_is_exact": self.multimodal_is_exact,
             "output_is_exact": self.output_is_exact,
+            "has_unknown_cost": self.has_unknown_cost,
         }
 
 
@@ -93,6 +99,11 @@ class ContextEvaluation:
     recommended_max_tokens: Optional[int] = None
     interactive_max_tokens: Optional[int] = None
     cost: Optional[RequestCost] = None
+    #: True when the comparison against the budgets is exact.  False when
+    #: the cost estimate is inexact — most importantly when the request
+    #: carries content whose cost could not be determined, in which case
+    #: the hard-limit check is **best-effort**, not a guarantee.
+    cost_is_exact: bool = True
 
     def safe_dict(self) -> dict[str, Any]:
         return {
@@ -107,6 +118,7 @@ class ContextEvaluation:
             "hard_max_tokens": self.hard_max_tokens,
             "recommended_max_tokens": self.recommended_max_tokens,
             "interactive_max_tokens": self.interactive_max_tokens,
+            "cost_is_exact": self.cost_is_exact,
             "cost": self.cost.safe_dict() if self.cost else None,
         }
 
@@ -204,6 +216,9 @@ def estimate_request_cost(
     else:
         multimodal_tokens = 0
 
+    # Content whose cost could not be determined is *undercounted*, not free.
+    has_unknown_cost = bool(media_parts) and not multimodal_is_exact
+
     return RequestCost(
         input_tokens=input_tokens,
         output_tokens=output_tokens,
@@ -212,6 +227,7 @@ def estimate_request_cost(
         input_is_exact=input_is_exact,
         multimodal_is_exact=multimodal_is_exact,
         output_is_exact=output_is_exact,
+        has_unknown_cost=has_unknown_cost,
     )
 
 
@@ -231,12 +247,15 @@ def evaluate_context(
     No request is altered by exceeding it — the reason is reported, not
     executed.  Only the hard maximum rejects.
     """
+    exact = not cost.has_unknown_cost
+
     if budgets is None:
         return ContextEvaluation(
             reason=ContextDecisionReason.NO_BUDGET,
             total_tokens=cost.total_tokens,
             within_budget=True,
             over_limit=False,
+            cost_is_exact=exact,
             cost=cost,
         )
 
@@ -255,6 +274,7 @@ def evaluate_context(
             hard_max_tokens=hard,
             recommended_max_tokens=recommended,
             interactive_max_tokens=interactive,
+            cost_is_exact=exact,
             cost=cost,
         )
 
@@ -268,6 +288,7 @@ def evaluate_context(
             hard_max_tokens=hard,
             recommended_max_tokens=recommended,
             interactive_max_tokens=interactive,
+            cost_is_exact=exact,
             cost=cost,
         )
 
@@ -281,6 +302,7 @@ def evaluate_context(
             hard_max_tokens=hard,
             recommended_max_tokens=recommended,
             interactive_max_tokens=interactive,
+            cost_is_exact=exact,
             cost=cost,
         )
 

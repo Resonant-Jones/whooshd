@@ -280,23 +280,19 @@ class CapacityController:
         self,
         *,
         memory_pressure: MemoryPressureClass = MemoryPressureClass.UNKNOWN,
-        lane_max_concurrent: Optional[int] = None,
     ) -> int:
-        """Return the active concurrency limit, taking mode and pressure
-        into account.
+        """Return the global active concurrency limit, taking mode and
+        pressure into account.
 
         Always ``>= 1``.  Adaptive mode never exceeds the operator
         ceiling.
 
-        When ``lane_max_concurrent`` is given, the limit is additionally
-        capped by that lane's own ceiling.  The lane ceiling is a
-        *reservation for one inference lane* — it does not lower the
-        global limit for other lanes, which keep their own budget.
+        This is the **global** limit only.  A lane's own concurrency
+        ceiling is a separate constraint on a separate counter; the two
+        are not interchangeable and must not be combined with ``min``.
+        See :meth:`evaluate` for how both are applied.
         """
         ceiling = self.operator_ceiling
-
-        if lane_max_concurrent is not None:
-            ceiling = min(ceiling, max(int(lane_max_concurrent), 1))
 
         if self.mode == CapacityMode.FIXED:
             return ceiling
@@ -362,10 +358,6 @@ class CapacityController:
             "lane_active_jobs": lane_active,
             "lane_limited": False,
         }
-        lane_saturated = (
-            lane_limit is not None and lane_active >= max(int(lane_limit), 1)
-        )
-
         # -- Per-model context policy ------------------------------------
         # The context decision is taken before any capacity decision so a
         # request that cannot fit the model is rejected for the right
@@ -417,28 +409,6 @@ class CapacityController:
                     **lane_fields,
                 )
 
-        # -- Lane saturation ----------------------------------------------
-        # Checked after the context decision, so a request that cannot fit
-        # the model is rejected for that reason rather than queued.  A
-        # saturated lane queues instead of admitting work that would stall
-        # at the lane's own semaphore and be refused.
-        if lane_saturated:
-            lane_fields["lane_limited"] = True
-            lane_ceiling = max(int(lane_limit), 1)
-            return CapacityEvaluation(
-                action=CapacityAction.QUEUE
-                if ctx.queue_depth < ctx.max_queue_depth
-                else CapacityAction.REJECT,
-                effective_active_limit=lane_ceiling,
-                operator_ceiling=operator_ceiling,
-                mode=mode,
-                reason=CapacityDecisionReason.LANE_CAPACITY,
-                memory_pressure=ctx.memory_pressure,
-                **profile_fields,
-                **context_fields,
-                **lane_fields,
-            )
-
         if not ctx.runtime_ready:
             return CapacityEvaluation(
                 action=CapacityAction.REJECT,
@@ -453,28 +423,30 @@ class CapacityController:
                 **lane_fields,
             )
 
-        if ctx.queue_depth >= ctx.max_queue_depth:
-            return CapacityEvaluation(
-                action=CapacityAction.REJECT,
-                effective_active_limit=self.effective_active_limit(
-                    memory_pressure=ctx.memory_pressure,
-                ),
-                operator_ceiling=operator_ceiling,
-                mode=mode,
-                reason=CapacityDecisionReason.QUEUE_FULL,
-                memory_pressure=ctx.memory_pressure,
-                **profile_fields,
-                **context_fields,
-                **lane_fields,
-            )
-
         limit = self.effective_active_limit(
             memory_pressure=ctx.memory_pressure,
-            lane_max_concurrent=ctx.lane_max_concurrent,
         )
 
+        # -- Two independent constraints ---------------------------------
+        # Global capacity and lane capacity are different budgets over
+        # different counters.  Both must hold for a request to run:
+        #
+        #   global:  active_jobs        < global_limit
+        #   lane:    lane_active_jobs   < lane_max_concurrent
+        #
+        # Combining them with min() and comparing against the global
+        # counter is wrong in both directions: it lets a saturated lane
+        # start work when the global budget has room, and it starves an
+        # idle lane because some *other* lane is busy.
+        global_available = ctx.active_jobs < limit
+        lane_available = True
+        if ctx.lane_max_concurrent is not None:
+            lane_available = ctx.lane_active_jobs < max(
+                int(ctx.lane_max_concurrent), 1
+            )
+
         # Decide: can we run?
-        if ctx.active_jobs < limit:
+        if global_available and lane_available:
             # Memory-pressure override: even with a free slot, queue
             # under high pressure if deny is enabled.  This is a
             # conservative seam; future cost-aware controllers will
@@ -516,7 +488,39 @@ class CapacityController:
                 **lane_fields,
             )
 
-        # No slot free — admit to queue.
+        # This request cannot run now.  The queue holds work that could
+        # not run at the time it arrived, so this request belongs at the
+        # back of it — unless the lane is the binding constraint, in which
+        # case that is the more useful reason to report.
+        queue_has_room = ctx.queue_depth < ctx.max_queue_depth
+
+        if not lane_available:
+            lane_fields["lane_limited"] = True
+            return CapacityEvaluation(
+                action=CapacityAction.QUEUE if queue_has_room else CapacityAction.REJECT,
+                effective_active_limit=limit,
+                operator_ceiling=operator_ceiling,
+                mode=mode,
+                reason=CapacityDecisionReason.LANE_CAPACITY,
+                memory_pressure=ctx.memory_pressure,
+                **profile_fields,
+                **context_fields,
+                **lane_fields,
+            )
+
+        if not queue_has_room:
+            return CapacityEvaluation(
+                action=CapacityAction.REJECT,
+                effective_active_limit=limit,
+                operator_ceiling=operator_ceiling,
+                mode=mode,
+                reason=CapacityDecisionReason.QUEUE_FULL,
+                memory_pressure=ctx.memory_pressure,
+                **profile_fields,
+                **context_fields,
+                **lane_fields,
+            )
+
         return CapacityEvaluation(
             action=CapacityAction.QUEUE,
             effective_active_limit=limit,
@@ -527,6 +531,8 @@ class CapacityController:
             else CapacityDecisionReason.OPERATOR_CEILING,
             memory_pressure=ctx.memory_pressure,
             **profile_fields,
+            **context_fields,
+            **lane_fields,
         )
 
     # ── Snapshot ─────────────────────────────────────────────────────

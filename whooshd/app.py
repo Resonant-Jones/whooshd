@@ -633,10 +633,35 @@ async def generate(request: Request, req: GenerateRequest) -> GenerateResponse:
     """
     rt = get_runtime()
     router = get_router()
-    # ── Admission control (simple: just active request limit) ─────────
-    from whooshd.config import get_max_active_requests
 
-    if rt.active_jobs >= get_max_active_requests():
+    # ── Route resolution (before admission) ────────────────────────────
+    # The lane that will execute this request determines its own
+    # concurrency ceiling, so the route must be known before admission.
+    model = req.model_id or "stub-model"
+    try:
+        resolution = await router.resolve_model_runtime(model)
+    except ModelResolutionError as exc:
+        rt.record_rejected("rejected_model_not_ready")
+        return JSONResponse(
+            status_code=404,
+            content=_error_body_for_request(
+                request,
+                ErrorCode.MODEL_NOT_FOUND,
+                "Requested model is not available",
+                http_status=404,
+                details={"model_alias": safe_model_alias(exc.model_id)},
+            ),
+        )
+
+    # ── Admission control ─────────────────────────────────────────────
+    # The same lane-aware admission as the chat path: global capacity and
+    # the selected lane's own ceiling are independent constraints, and
+    # both must hold.
+    if not active_capacity_available(
+        rt,
+        lane=resolution.lane,
+        lane_max_concurrent=resolution.lane_max_concurrent,
+    ):
         rt.record_rejected("rejected_overloaded")
         raise HTTPException(
             status_code=429,
@@ -645,14 +670,19 @@ async def generate(request: Request, req: GenerateRequest) -> GenerateResponse:
                 ErrorCode.RUNNER_OVERLOADED,
                 "Whoosh'd is at its active request limit.",
                 http_status=429,
-                details={"active_jobs": rt.active_jobs},
+                details={
+                    "active_jobs": rt.active_jobs,
+                    "lane": resolution.lane,
+                    "lane_max_concurrent": resolution.lane_max_concurrent,
+                },
             ),
         )
 
     rt.record_accepted()
 
-    model = req.model_id or "stub-model"
-    request_id = _begin_request_lifecycle(rt, request, model=model, stream=False)
+    request_id = _begin_request_lifecycle(
+        rt, request, model=model, stream=False, lane=resolution.lane
+    )
     rt.mark_running(request_id)
 
     try:
@@ -1281,7 +1311,15 @@ async def chat_completions(request: Request, req: ChatCompletionRequest):
         ready = await queue.wait_for_execution(
             entry,
             cancel_token=token,
-            capacity_available=lambda: active_capacity_available(rt),
+            # The lane must be re-checked at release time, not only at
+            # admission: the lane may have saturated while this request
+            # waited.  Releasing on global capacity alone would hand the
+            # request to an adapter that cannot run it.
+            capacity_available=lambda: active_capacity_available(
+                rt,
+                lane=resolution.lane,
+                lane_max_concurrent=resolution.lane_max_concurrent,
+            ),
         )
 
         if not ready:

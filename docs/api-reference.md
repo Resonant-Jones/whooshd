@@ -124,6 +124,35 @@ reserved output plus multimodal content.
 A model with no calibrated budgets is **never silently constrained** — the
 estimate is reported as observability and the request is admitted unchanged.
 
+### Multimodal cost
+
+When a request carries image or other multimodal content, its cost depends on
+the model's per-unit token cost for that content. That figure comes from the
+profile's `context_budgets.multimodal_token_estimate`.
+
+If a request carries multimodal content and **no** per-unit estimate is
+configured, the content is **not** counted as zero tokens — it is counted as
+an **unknown cost**. The admission details report this explicitly:
+
+```json
+{
+  "context_cost_is_exact": false,
+  "context_cost_has_unknown": true
+}
+```
+
+`context_cost_is_exact: false` means the hard-limit comparison for that
+request is **best-effort**, not a guarantee. The request is still admitted
+unless the *known* portion of its cost already exceeds the hard budget — in
+which case rejecting is safe, because the true cost can only be higher.
+
+### Scope
+
+Lane-aware admission and per-model context policy apply to **both**
+`/v1/chat/completions` and `/v1/generate`. Both routes resolve the adapter
+before admitting, so the selected lane's ceiling is known when the decision
+is made.
+
 Admission responses carry the comparison:
 
 ```json

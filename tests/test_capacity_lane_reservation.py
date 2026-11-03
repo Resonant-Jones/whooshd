@@ -1,32 +1,32 @@
 """Tests for route-specific capacity reservation.
 
-The broker's global limit and the inference lane's own limit are two
-different ceilings.  When the lane is stricter — as the MLX-VLM adapter is,
-with a semaphore that defaults to one concurrent request — the broker must
-respect the lane's ceiling at admission rather than admitting work that will
-stall at the adapter and be refused.
+Global capacity and lane capacity are **separate constraints over separate
+counters**.  Both must hold for a request to run:
 
-These tests pin:
+* global: ``active_jobs < global_limit``
+* lane:   ``lane_active_jobs < lane_max_concurrent``
 
-* the lane ceiling caps the effective limit without lowering the global
-  limit for other lanes;
-* a saturated lane queues (or rejects) instead of admitting;
-* per-lane active counts are accurate and independent;
-* a lane that declares no ceiling is unaffected;
-* the global operator ceiling is still honoured.
+Conflating them is wrong in both directions:
+
+* comparing the *global* counter against ``min(global, lane)`` lets a
+  saturated lane start work the global budget has room for;
+* it also starves an **idle** lane because some *other* lane is busy.
+
+Both constraints must be re-checked at initial admission **and** when a
+queued request is released.
 """
 
 from __future__ import annotations
 
 import pytest
 
+from whooshd.admission import active_capacity_available
 from whooshd.capacity_controller import (
     CapacityAction,
     CapacityContext,
     CapacityController,
     CapacityDecisionReason,
 )
-from whooshd.contracts import ChatCompletionRequest, ChatMessage
 from whooshd.runtime import RuntimeState
 
 
@@ -41,34 +41,78 @@ def _ctx(**kwargs) -> CapacityContext:
     return CapacityContext(**base)
 
 
-class TestLaneCapLimitsTheEffectiveLimit:
-    def test_lane_ceiling_caps_the_effective_limit(self):
+# ── The two constraints are independent ────────────────────────────────────
+
+
+class TestGlobalAndLaneConstraintsAreIndependent:
+    def test_global_limit_is_not_capped_by_the_lane(self):
+        """The lane ceiling must not lower the *global* limit."""
         controller = CapacityController()
         result = controller.evaluate(
             _ctx(lane="mlx_vlm", lane_max_concurrent=1, lane_active_jobs=0)
         )
-        # Global ceiling is 2 by default; the lane allows 1.
-        assert result.effective_active_limit == 1
-        assert result.lane == "mlx_vlm"
+        assert result.effective_active_limit == controller.operator_ceiling
+        # The lane ceiling is reported separately.
         assert result.lane_max_concurrent == 1
-        assert result.lane_limited is False
 
-    def test_global_ceiling_is_not_lowered_for_other_lanes(self):
-        """A strict lane must not constrain a different lane."""
+    def test_saturated_lane_with_spare_global_capacity_does_not_run(self):
+        """Reviewer case 1.
+
+        Global capacity 2, MLX-VLM lane capacity 1, one MLX-VLM request
+        already running.  The second MLX-VLM request must not be admitted
+        even though the global budget has room.
+        """
         controller = CapacityController()
         result = controller.evaluate(
-            _ctx(lane="llama_cpp", lane_max_concurrent=8, lane_active_jobs=0)
+            _ctx(
+                active_jobs=1,
+                lane="mlx_vlm",
+                lane_max_concurrent=1,
+                lane_active_jobs=1,
+            )
         )
-        assert result.effective_active_limit == controller.operator_ceiling
-        assert result.lane_max_concurrent == 8
+        assert result.action != CapacityAction.RUN
+        assert result.action == CapacityAction.QUEUE
+        assert result.reason == CapacityDecisionReason.LANE_CAPACITY
+        assert result.lane_limited is True
 
-    def test_lane_without_a_ceiling_is_unaffected(self):
+    def test_idle_second_lane_runs_while_another_lane_is_busy(self):
+        """Reviewer case 2.
+
+        Global capacity 2, one MLX-VLM request active, and an idle lane
+        with its own ceiling of 1.  The idle lane must be allowed to run.
+        """
+        controller = CapacityController()
+        result = controller.evaluate(
+            _ctx(
+                active_jobs=1,
+                lane="llama_cpp",
+                lane_max_concurrent=1,
+                lane_active_jobs=0,
+            )
+        )
+        assert result.action == CapacityAction.RUN
+        assert result.lane_limited is False
+
+    def test_both_lanes_busy_but_global_has_room_still_queues(self):
+        controller = CapacityController()
+        result = controller.evaluate(
+            _ctx(
+                active_jobs=1,
+                lane="mlx_vlm",
+                lane_max_concurrent=1,
+                lane_active_jobs=1,
+            )
+        )
+        assert result.action == CapacityAction.QUEUE
+
+    def test_a_lane_without_a_ceiling_is_unaffected(self):
         controller = CapacityController()
         result = controller.evaluate(_ctx(lane="stub", lane_max_concurrent=None))
-        assert result.effective_active_limit == controller.operator_ceiling
+        assert result.action == CapacityAction.RUN
         assert result.lane_max_concurrent is None
 
-    def test_operator_ceiling_still_bounds_the_lane(self):
+    def test_operator_ceiling_still_bounds_the_global_limit(self):
         controller = CapacityController()
         result = controller.evaluate(
             _ctx(lane="mlx_vlm", lane_max_concurrent=99, lane_active_jobs=0)
@@ -76,45 +120,54 @@ class TestLaneCapLimitsTheEffectiveLimit:
         assert result.effective_active_limit == controller.operator_ceiling
 
 
-class TestSaturatedLaneIsNotAdmitted:
-    def test_saturated_lane_queues_rather_than_admitting(self):
-        controller = CapacityController()
-        result = controller.evaluate(
-            _ctx(lane="mlx_vlm", lane_max_concurrent=1, lane_active_jobs=1)
-        )
-        assert result.action == CapacityAction.QUEUE
-        assert result.reason == CapacityDecisionReason.LANE_CAPACITY
-        assert result.lane_limited is True
+# ── Queue release re-checks the lane ──────────────────────────────────────
 
-    def test_saturated_lane_rejects_when_the_queue_is_full(self):
-        controller = CapacityController()
-        result = controller.evaluate(
-            _ctx(
-                lane="mlx_vlm",
-                lane_max_concurrent=1,
-                lane_active_jobs=1,
-                queue_depth=8,
-                max_queue_depth=8,
-            )
-        )
-        assert result.action == CapacityAction.REJECT
-        assert result.reason == CapacityDecisionReason.LANE_CAPACITY
 
-    def test_a_free_lane_is_admitted(self):
-        controller = CapacityController()
-        result = controller.evaluate(
-            _ctx(lane="mlx_vlm", lane_max_concurrent=2, lane_active_jobs=1)
+class TestQueueReleaseChecksTheLane:
+    def test_release_is_withheld_when_the_lane_is_saturated(self):
+        """A queued request must not be released into a saturated lane."""
+        rt = RuntimeState()
+        rt.begin_request(model="m", stream=False, lane="mlx_vlm")
+
+        # Global capacity 2, one active job -> global has room.
+        assert rt.active_jobs == 1
+        assert (
+            active_capacity_available(rt, lane="mlx_vlm", lane_max_concurrent=1)
+            is False
         )
-        assert result.action == CapacityAction.RUN
-        assert result.lane_limited is False
+
+    def test_release_is_allowed_for_an_idle_lane(self):
+        rt = RuntimeState()
+        rt.begin_request(model="m", stream=False, lane="mlx_vlm")
+
+        # A different lane, idle, with its own ceiling of 1.
+        assert (
+            active_capacity_available(rt, lane="llama_cpp", lane_max_concurrent=1)
+            is True
+        )
+
+    def test_release_is_withheld_when_global_capacity_is_gone(self):
+        rt = RuntimeState()
+        for _ in range(2):
+            rt.begin_request(model="m", stream=False, lane="mlx_vlm")
+        assert (
+            active_capacity_available(rt, lane="llama_cpp", lane_max_concurrent=4)
+            is False
+        )
+
+    def test_lane_release_is_independent_of_the_lane_argument(self):
+        """Without a lane ceiling the global rule applies unchanged."""
+        rt = RuntimeState()
+        rt.begin_request(model="m", stream=False, lane="mlx_vlm")
+        assert active_capacity_available(rt) is True
+
+
+# ── Per-lane active counts ────────────────────────────────────────────────
 
 
 class TestPerLaneActiveCounts:
-    def _runtime(self) -> RuntimeState:
-        return RuntimeState()
-
     def test_lane_counts_are_independent(self):
-        rt = self._runtime()
+        rt = RuntimeState()
         a = rt.begin_request(model="m", stream=False, lane="mlx_vlm")
         rt.begin_request(model="m", stream=False, lane="llama_cpp")
 
@@ -127,7 +180,7 @@ class TestPerLaneActiveCounts:
         assert rt.active_jobs_for_lane("llama_cpp") == 1
 
     def test_requests_without_a_lane_are_counted_against_no_lane(self):
-        rt = self._runtime()
+        rt = RuntimeState()
         rt.begin_request(model="m", stream=False)
         assert rt.active_jobs_for_lane("mlx_vlm") == 0
         assert rt.active_jobs_for_lane(None) == 0
@@ -136,10 +189,13 @@ class TestPerLaneActiveCounts:
     def test_queued_requests_do_not_count_as_active_for_their_lane(self):
         from whooshd.contracts import RequestLifecycleState
 
-        rt = self._runtime()
+        rt = RuntimeState()
         rid = rt.begin_request(model="m", stream=False, lane="mlx_vlm")
         rt.mark_queued(rid)
         assert rt.active_jobs_for_lane("mlx_vlm") == 0
+
+
+# ── Snapshot ───────────────────────────────────────────────────────────────
 
 
 class TestSnapshotCarriesTheLaneDecision:
@@ -162,6 +218,9 @@ class TestSnapshotCarriesTheLaneDecision:
         data = str(result.snapshot())
         for forbidden in ("prompt", "messages", "content", "tokens", "kv"):
             assert forbidden not in data, f"leaked: {forbidden}"
+
+
+# ── Adapter contract ───────────────────────────────────────────────────────
 
 
 class TestAdapterDeclaresItsLaneCeiling:

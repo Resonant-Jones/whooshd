@@ -41,12 +41,19 @@ concurrency limit.
 | `max_tokens` | 128 |
 
 A **warm-up request is issued and discarded** before the measured bands. The
-model may have been evicted since it was last used, and a cold request faults
-the 10 GB of weights back in from disk — producing a very large swap delta
-that says nothing about concurrency. (In the first run of this experiment,
-the cold band showed 341 271 swap-out pages; the warm bands showed zero. The
-cold figure is a *warm-up* observation, recorded separately below, and is not
-a concurrency result.)
+model may have been evicted since it was last used, and a cold request can
+produce a very large swap delta that says nothing about concurrency.
+
+**The first run's cold band showed 341 271 swap-out pages; the warm bands
+showed zero. The cause of that first-run observation is not established.**
+Paging model weights *in* does not by itself explain pages being swapped
+*out*, so it remains an unexplained first-run observation rather than a
+diagnosed effect. The warm measurements reporting zero swap-out are useful on
+their own, but they do not retroactively explain it.
+
+The harness now separates the two: the warm-up request's swap delta is
+reported under `cold_start_observation` and excluded from the concurrency
+verdict.
 
 Harness: `scripts/lane_concurrency_experiment.py`.
 
@@ -59,7 +66,7 @@ Harness: `scripts/lane_concurrency_experiment.py`.
 | Aggregate tokens/sec | 6.99 | **13.24** |
 | Per-request tokens/sec | 6.99 | 6.62 |
 | Latency (single request) | 10 440 ms | 11 104 ms |
-| Latency spread across the 2 requests | — | 0.2 ms |
+| Latency spread between the 2 requests | — | 0.2 ms |
 | Swap pages **out** | 0 | **0** |
 | Swap pages in | 296 | 418 |
 | System-wide memory free after | 36 % | 35 % |
@@ -80,10 +87,17 @@ memory-pressure spike, clean lifecycle.
 **1. Concurrency 2 is real and cheap on this machine.**
 
 Aggregate throughput went from 6.99 to 13.24 tokens/sec — **+89 %** — while
-per-request latency rose only **6.3 %** (10 440 ms → 11 104 ms). The two
-concurrent requests finished within **0.2 ms of each other**, which is direct
-evidence they ran simultaneously rather than being serialised behind one
-another.
+per-request latency rose only **6.3 %** (10 440 ms → 11 104 ms). Both
+requests completed within the same wall-clock window, and their measured
+durations differed by **0.2 ms**.
+
+The harness records per-request *durations*, not absolute completion
+timestamps. Near-identical durations are consistent with overlapping execution
+but do not independently establish that the responses finished at precisely
+the same instant, nor that GPU decoding proceeded in lockstep. The
+**throughput and wall-clock evidence** — aggregate tokens/sec roughly doubling
+with both requests succeeding in the same window — is what carries the
+overlapping-execution conclusion.
 
 At concurrency 1 the machine was substantially under-utilised. The decode
 loop was not the only thing running — it was waiting.

@@ -84,6 +84,14 @@ for that request is capped by it, so a request that the lane cannot run is
 not lowered for other lanes — a strict lane reserves capacity for itself
 without constraining independent lanes.
 
+Global capacity and lane capacity are **separate constraints over separate
+counters**, and both are checked — at initial admission *and* when a queued
+request is released. A saturated lane does not consume another lane's budget,
+and an idle lane is not starved because a different lane is busy.
+
+Both `/v1/chat/completions` and `/v1/generate` resolve the route before
+admitting, so the lane is known when the decision is made.
+
 The MLX-VLM lane defaults to **one** concurrent request, which was chosen
 without concurrency evidence. [CWC-013](../validation/2026-11-03-cwc013-lane-concurrency-experiment.md)
 measured concurrency 2 on an isolated broker against the 12B: 2/2 success,

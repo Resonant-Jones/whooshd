@@ -159,11 +159,18 @@ def evaluate_chat_request(
     # handed to the controller, which remains the single decision point.
     # When no budget is configured for the model the estimate is still
     # reported (observability) but does not constrain the request.
+    #
+    # Budgets are read first because the profile's per-unit multimodal
+    # estimate feeds the costing: without it, image content would be
+    # counted as zero tokens rather than as an unknown cost.
+    budgets = controller.context_budgets()
     cost = estimate_request_cost(
         request,
         default_max_tokens=get_default_max_tokens(),
+        multimodal_token_estimate=(
+            budgets.multimodal_token_estimate if budgets is not None else None
+        ),
     )
-    budgets = controller.context_budgets()
     context_eval = evaluate_context(cost, budgets)
 
     lane_active = runtime.active_jobs_for_lane(lane) if lane else 0
@@ -190,6 +197,8 @@ def evaluate_chat_request(
             details={
                 "estimated_tokens": cost.total_tokens,
                 "context_reason": context_eval.reason.value,
+                "context_cost_is_exact": context_eval.cost_is_exact,
+                "context_cost_has_unknown": cost.has_unknown_cost,
                 "context_budget": (
                     context_eval.budget.value if context_eval.budget else None
                 ),
@@ -221,6 +230,10 @@ def evaluate_chat_request(
                     "multimodal_tokens": cost.multimodal_tokens,
                     "input_is_exact": cost.input_is_exact,
                     "context_reason": context_eval.reason.value,
+                "context_cost_is_exact": context_eval.cost_is_exact,
+                "context_cost_has_unknown": cost.has_unknown_cost,
+                    "context_cost_is_exact": context_eval.cost_is_exact,
+                    "context_cost_has_unknown": cost.has_unknown_cost,
                     "context_budget": (
                         context_eval.budget.value if context_eval.budget else None
                     ),
@@ -378,12 +391,36 @@ def reset_controller_for_tests() -> None:
     _controller = None
 
 
-def active_capacity_available(runtime: RuntimeState) -> bool:
-    """Whether the shared controller currently permits another active job."""
-    limit = _get_controller().effective_active_limit(
+def active_capacity_available(
+    runtime: RuntimeState,
+    *,
+    lane: Optional[str] = None,
+    lane_max_concurrent: Optional[int] = None,
+) -> bool:
+    """Whether the shared controller currently permits another active job.
+
+    Two independent constraints must both hold:
+
+    * **global** — ``active_jobs`` below the global effective limit;
+    * **lane** — ``active_jobs_for_lane(lane)`` below that lane's own
+      concurrency ceiling, when the lane declares one.
+
+    The lane check is what stops a queued request from being granted
+    execution when its lane is already saturated.  Checking only the global
+    counter would let the queue hand work to a lane that cannot run it,
+    which is the failure the lane-aware admission exists to prevent.
+    """
+    controller = _get_controller()
+    limit = controller.effective_active_limit(
         memory_pressure=_memory_pressure_from_runtime(runtime),
     )
-    return runtime.active_jobs < limit
+    if runtime.active_jobs >= limit:
+        return False
+    if lane_max_concurrent is not None and lane:
+        lane_active = runtime.active_jobs_for_lane(lane)
+        if lane_active >= max(int(lane_max_concurrent), 1):
+            return False
+    return True
 
 
 # ── Snapshot helper ────────────────────────────────────────────────────────
