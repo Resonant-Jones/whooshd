@@ -69,47 +69,82 @@ class CapacityAction(str, Enum):
     REJECT = "reject"    # Cannot ever queue (queue full); caller must reject.
 
 
-def _model_basename(value: str) -> str:
-    """Reduce a model identity to its comparable final segment.
+def _canonical_model_identity(value: str) -> tuple[Optional[str], str]:
+    """Reduce a model identity to ``(repository_identity, bare_name)``.
 
-    Local snapshot paths and Hugging Face cache layouts name the same model
-    in different ways::
+    ``repository_identity`` is the namespaced form (``org/name``) when the
+    identity carries one, and ``None`` when it does not.  ``bare_name`` is
+    the final segment, always present.
 
-        /models/models--mlx-community--gemma-4-12B-it-qat-4bit
-        mlx-community/gemma-4-12B-it-qat-4bit
+    The namespaced form is what prevents two repositories that share a
+    basename from being conflated::
 
-    Both reduce to ``gemma-4-12b-it-qat-4bit``.
+        org-a/foo  ->  ("org-a/foo", "foo")
+        org-b/foo  ->  ("org-b/foo", "foo")
+
+    Known local snapshot layouts are canonicalised rather than truncated:
+
+    * the Hugging Face cache directory ``models--org--name`` becomes
+      ``org/name`` — the same weights under the repository's real name;
+    * a filesystem path keeps only its final segment, because a parent
+      directory is a *location*, not a namespace, and must not be
+      mistaken for one.
     """
     text = (value or "").strip().rstrip("/")
     if not text:
-        return ""
+        return (None, "")
+
+    # Hugging Face cache layout: models--<org>--<name>
     if "models--" in text:
-        text = text.rsplit("models--", 1)[1]
-        text = text.replace("--", "/", 1)
-    return text.rsplit("/", 1)[-1].strip().lower()
+        tail = text.rsplit("models--", 1)[1]
+        org, sep, name = tail.partition("--")
+        if sep and org and name:
+            return (f"{org.lower()}/{name.lower()}", name.lower())
+        return (None, tail.lower())
+
+    # A filesystem path: the parent directory is a location, not a
+    # namespace.
+    if text.startswith(("/", "./", "../", "~")):
+        return (None, text.rsplit("/", 1)[-1].lower())
+
+    # A repository id: org/name
+    if "/" in text:
+        return (text.lower(), text.rsplit("/", 1)[-1].lower())
+
+    # A bare name.
+    return (None, text.lower())
 
 
 def model_identity_matches(profile_model_id: str, candidate: str) -> bool:
     """Whether *candidate* names the same model as *profile_model_id*.
 
-    Exact identity wins.  Otherwise the final path/repository segment is
-    compared, which lets a calibrated local snapshot path match a
-    Hugging Face repository id for the same weights.  Two genuinely
-    different models do not share a final segment in practice, and an
-    unmatched request simply receives no budgets — which is the safe
-    direction.
+    A match is asserted only when the two identities can be shown to be the
+    same:
+
+    * **both** carry a repository identity — the namespaced forms must be
+      equal.  ``org-a/foo`` and ``org-b/foo`` are therefore *not* the same
+      model, however similar their final segments;
+    * **neither** carries a repository identity — the bare names must be
+      equal, because there is no namespace to compare;
+    * **exactly one** carries a repository identity — the identities cannot
+      be confirmed equal, so they are not treated as a match.  An
+      unconfirmed match would apply one model's ceiling to another, which
+      is the failure this function exists to prevent.
+
+    A local snapshot path and the corresponding repository id for the same
+    weights *are* recognised as the same model, because the snapshot layout
+    carries the repository's real name.
     """
-    left = (profile_model_id or "").strip()
-    right = (candidate or "").strip()
-    if not left or not right:
+    left_repo, left_name = _canonical_model_identity(profile_model_id)
+    right_repo, right_name = _canonical_model_identity(candidate)
+
+    if not left_name or not right_name:
         return False
-    if left == right:
-        return True
-    left_base = _model_basename(left)
-    right_base = _model_basename(right)
-    if not left_base or not right_base:
+    if left_repo and right_repo:
+        return left_repo == right_repo
+    if left_repo or right_repo:
         return False
-    return left_base == right_base
+    return left_name == right_name
 
 
 @dataclass(frozen=True)
@@ -235,11 +270,27 @@ class CapacityController:
         self._profile_path = profile_path
         self._cached_profile: Optional[CapacityProfile] = None
         self._cached_profile_signature: Optional[tuple[str, Optional[float]]] = None
+        #: Signature of the last *failed* profile load.  A malformed or
+        #: schema-invalid profile is a persistent configuration error, and
+        #: re-reading and re-validating the same file on every request
+        #: would turn a fail-safe into request-path disk I/O.  The failure
+        #: is cached by the same path+mtime signature, so it is retried
+        #: only when the file actually changes.
+        self._cached_profile_failure_signature: Optional[
+            tuple[str, Optional[float]]
+        ] = None
 
     # ── Profile loader ───────────────────────────────────────────────
 
     def _get_profile(self) -> Optional[CapacityProfile]:
-        """Load the profile if configured.  Cached by path+mtime."""
+        """Load the profile if configured.  Cached by path+mtime.
+
+        Both the successful result **and** the failure are cached against
+        the file's path and mtime.  A missing, unreadable, malformed, or
+        schema-invalid profile is remembered so the same broken file is not
+        re-parsed on every request; the cache is invalidated as soon as the
+        file's signature changes.
+        """
         import os
 
         path = self._profile_path or get_capacity_profile_path()
@@ -252,15 +303,23 @@ class CapacityController:
         sig = (path, mtime)
         if self._cached_profile_signature == sig and self._cached_profile is not None:
             return self._cached_profile
+        if self._cached_profile_failure_signature == sig:
+            # The same file already failed to load.  Do not re-read it.
+            return None
+
         profile = safe_load_profile(path)
         self._cached_profile_signature = sig
         self._cached_profile = profile
+        self._cached_profile_failure_signature = (
+            None if profile is not None else sig
+        )
         return profile
 
     def invalidate_profile_cache(self) -> None:
         """Force the next call to reload from disk."""
         self._cached_profile_signature = None
         self._cached_profile = None
+        self._cached_profile_failure_signature = None
 
     def context_budgets(
         self, model_id: Optional[str] = None
@@ -286,7 +345,14 @@ class CapacityController:
 
         if model_id is None:
             configured = get_capacity_model_id()
-            if not configured or configured != profile.model_id:
+            # The operator's declared identity and the profile's model id
+            # are compared the same way a request's model is: the same
+            # relation, so a declared repository id and a profile recorded
+            # against its local snapshot are recognised as one model, while
+            # two repositories sharing a basename are not.
+            if not configured or not model_identity_matches(
+                profile.model_id, configured
+            ):
                 return None
         elif not model_identity_matches(profile.model_id, model_id):
             return None

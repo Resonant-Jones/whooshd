@@ -145,9 +145,17 @@ not by the process-wide `WHOOSHD_CAPACITY_MODEL_ID`. A broker that serves
 several models therefore never applies model A's hard ceiling to a request
 routed to model B: that would be a mis-constraint, not a policy.
 
-A request whose model has no measured budgets is admitted unchanged. A local
+A request whose model has no measured budgets is admitted unchanged.
+
+**Identity is compared with its repository, not just its name.** A local
 snapshot path and the corresponding Hugging Face repository id for the same
-weights are treated as the same model; two different checkpoints are not.
+weights are recognised as the same model — the snapshot layout
+(`models--org--name`) carries the repository's real name. Two repositories
+that share a final segment (`org-a/foo` and `org-b/foo`) are **not** the
+same model, and neither is a repository id and a bare name: where the
+namespace cannot be confirmed on both sides, the identities are not treated
+as equal. An unconfirmed match would apply one model's ceiling to another,
+which is the failure this lookup exists to prevent.
 
 ### What is counted
 

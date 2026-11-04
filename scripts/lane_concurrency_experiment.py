@@ -738,6 +738,26 @@ async def run_band(client: httpx.AsyncClient, concurrency: int) -> dict:
     tokens = sum(r.get("completion_tokens") or 0 for r in ok)
     latencies = [r["latency_ms"] for r in ok]
 
+    # Per-request generation rate is the mean of each request's *own*
+    # rate, not the band's average token count divided by the band's wall
+    # time.  The band wall is effectively the slowest request's duration,
+    # so a wall-time division underreports every faster request.
+    per_request_rates = []
+    for record in ok:
+        completion = record.get("completion_tokens")
+        latency_ms = record.get("latency_ms")
+        if completion is None or not latency_ms:
+            continue
+        seconds = latency_ms / 1000.0
+        if seconds <= 0:
+            continue
+        per_request_rates.append(completion / seconds)
+    per_request_rate = (
+        round(sum(per_request_rates) / len(per_request_rates), 3)
+        if per_request_rates
+        else None
+    )
+
     swap_out_delta = None
     swap_in_delta = None
     if swap_before and swap_after:
@@ -751,9 +771,7 @@ async def run_band(client: httpx.AsyncClient, concurrency: int) -> dict:
         "failure_count": concurrency - len(ok),
         "records": records,
         "aggregate_tokens_per_second": round(tokens / wall, 3) if wall > 0 else None,
-        "per_request_tokens_per_second": (
-            round(tokens / len(ok) / wall, 3) if ok and wall > 0 else None
-        ),
+        "per_request_tokens_per_second": per_request_rate,
         "latency_p50_ms": round(statistics.median(latencies), 1) if latencies else None,
         "latency_max_ms": round(max(latencies), 1) if latencies else None,
         "swap_out_delta_pages": swap_out_delta,

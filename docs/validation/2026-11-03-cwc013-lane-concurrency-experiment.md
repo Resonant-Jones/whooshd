@@ -239,7 +239,7 @@ during the x2 band.
 | Successes | 1/1 | **2/2** | 1/1 | **2/2** |
 | Failures | 0 | **0** | 0 | **0** |
 | Aggregate tokens/sec | 8.218 | **13.661** | 7.383 | **14.920** |
-| Per-request tokens/sec | 8.218 | 6.830 | 7.383 | 7.460 |
+| Per-request tokens/sec | 8.219 | 6.953 | 7.384 | 7.489 |
 | Latency (p50) | 9 368.2 ms | 10 785.1 ms | 9 886.7 ms | 9 747.8 ms |
 | Latency (max) | 9 368.2 ms | 10 979.3 ms | 9 886.7 ms | 9 784.5 ms |
 | **Observed peak active jobs** | 1 | **2** | 1 | **2** |
@@ -262,6 +262,16 @@ Lifecycle cleanup after both runs: **verified** — `reachable = true`,
 `active_jobs_at_rest = 0`, `queue_depth_at_rest = 0`.
 
 **Verdict: PASS** in both runs — `failures: []`, `unverified: []`.
+
+**Per-request rate note (amended 2026-11-04).** The per-request tokens/sec
+row was originally computed by dividing a band's average token count by the
+band's wall clock. That is not the mean per-request generation rate — the
+band wall is effectively the slowest request's duration, so every faster
+request was underreported. The row above is the mean of each request's own
+`completion_tokens / latency_seconds`, recomputed from the per-request
+records both runs already stored. The correction is small (the x2 bands
+moved by 1.8 % and 0.4 %) and the **aggregate** row is unaffected, because
+aggregate throughput genuinely is band wall time.
 
 ### 8.5 What the attested runs establish
 

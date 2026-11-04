@@ -215,6 +215,37 @@
   Regression tests: `tests/test_lifecycle_boundary_findings.py` (15 tests) —
   **10 failed against the pre-fix commit**, all passing after.
 
+- **Three further defects raised against `94c9049`:**
+  - **Model-budget matching could conflate repositories.** The identity
+    comparison fell back to the final path segment, so a profile for
+    `org-a/foo` was applied to a request resolved to `org-b/foo` — one
+    model's context ceiling applied to another, which can wrongly reject
+    valid requests or admit work beyond the real model's ceiling. Identity
+    is now compared **with its repository**: the Hugging Face snapshot
+    layout (`models--org--name`) is canonicalised to `org/name` rather than
+    truncated, and where the namespace cannot be confirmed on both sides the
+    identities are not treated as equal. A local snapshot path and its
+    repository id are still recognised as the same model.
+  - **Per-request throughput used band wall time.** The experiment harness
+    computed a band's per-request rate by dividing its average token count
+    by the whole band's wall clock, which is effectively the slowest
+    request's duration — so faster requests were underreported. The rate is
+    now the mean of each request's own `completion_tokens / latency_seconds`,
+    as the runtime-calibration harness already did. The published CWC-013
+    per-request figures were recomputed from the recorded per-request data;
+    the aggregate row is unaffected, because aggregate throughput genuinely
+    is band wall time.
+  - **An invalid profile was re-parsed on every request.** When
+    `WHOOSHD_CAPACITY_PROFILE_PATH` pointed at a malformed or schema-invalid
+    profile, the loader only reused the cache for a *successful* load, so
+    every chat and generate request re-read and re-validated the same
+    broken file — turning a persistent configuration error into
+    request-path disk I/O. The failure is now cached against the same
+    path+mtime signature, and retried when the file changes.
+
+  Regression tests: `tests/test_round3_findings.py` (14 tests) — **7 failed
+  against the pre-fix commit**, all passing after.
+
 - **Queue/scheduler execution-ownership defect.** Under
   `WHOOSHD_SCHEDULER_POLICY=cache_aware_fifo`, `select_and_dequeue()` could
   remove a request that the calling waiter did not own. The removed request
