@@ -150,7 +150,9 @@ A request whose model has no measured budgets is admitted unchanged.
 **Identity is compared with its repository, not just its name.** A local
 snapshot path and the corresponding Hugging Face repository id for the same
 weights are recognised as the same model — the snapshot layout
-(`models--org--name`) carries the repository's real name. Two repositories
+(`models--org--name`) carries the repository's real name, and everything
+below that directory (`snapshots/<revision>`, `blobs/`, `refs/`) is cache
+layout rather than part of the repository's identity. Two repositories
 that share a final segment (`org-a/foo` and `org-b/foo`) are **not** the
 same model, and neither is a repository id and a bare name: where the
 namespace cannot be confirmed on both sides, the identities are not treated

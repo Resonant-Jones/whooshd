@@ -516,10 +516,20 @@ class RuntimeRouter:
         request: GenerateRequest,
         *,
         request_id: str | None = None,
+        resolution: RuntimeResolution | None = None,
     ) -> GenerateResponse:
-        """Route a generate request to the correct adapter."""
+        """Route a generate request to the correct adapter.
+
+        When *resolution* is supplied it is used as the execution target
+        instead of resolving the model again.  A caller that has already
+        resolved and admitted the request must not have the target
+        re-resolved underneath it: the execution target has to be the
+        target whose capacity and context policy were evaluated, and a
+        second resolution can land on a different adapter or lane.
+        """
         model_id = request.model_id or "stub-model"
-        resolution = await self.resolve_model_runtime(model_id)
+        if resolution is None:
+            resolution = await self.resolve_model_runtime(model_id)
         result = await resolution.adapter.generate(
             ensure_backend_generate_request(
                 request, adapter_kind=resolution.adapter.kind

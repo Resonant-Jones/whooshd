@@ -111,13 +111,24 @@ state during the x2 band and observed `peak_active_jobs = 2` with
 `peak_queue_depth = 0`, so the two requests are demonstrably in flight
 together.
 
-Quote the gain as a **range**, not a figure. Across two attested runs the
-aggregate throughput gain was **+66 %** and **+102 %**, with a per-request
-latency cost between **−1.4 %** and **+15.2 %**. The stable conclusion is
-that concurrency 2 *roughly doubles* aggregate throughput on this host and
-checkpoint; the exact percentage is not repeatable run to run.
+Quote the gain as a **range**, not a figure. Across four attested runs the
+aggregate throughput gain was **+66 %**, **+102 %**, **+69.5 %** and
+**+91.0 %**, with a per-request latency cost between **−1.4 %** and
+**+18.8 %**. The stable conclusion is that concurrency 2 *roughly doubles*
+aggregate throughput on this host and checkpoint; the exact percentage is
+not repeatable run to run.
+
+**Concurrency 2 is not demonstrably free of paging cost.** Three of the four
+runs recorded zero swap-out in every warm band; the fourth **failed its
+thrash criterion** (30 016 pages swapped out in the x2 band) in the run that
+followed the model being faulted back in from disk. The signal did not
+reproduce in the run immediately afterwards, so the mechanism is an
+association, not an established cause. If you raise the lane limit on a
+working deployment, watch swap activity under representative load and be
+ready to roll back.
+
 Raising the lane limit on the working deployment is now an evidence-backed
-choice rather than a guess.
+choice rather than a guess — with that caveat attached.
 
 Generate a profile against a running instance:
 

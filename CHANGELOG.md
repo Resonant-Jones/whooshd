@@ -246,6 +246,43 @@
   Regression tests: `tests/test_round3_findings.py` (14 tests) — **7 failed
   against the pre-fix commit**, all passing after.
 
+- **Five further defects raised against `fa771512`:**
+  - **A local snapshot path no longer matched its own model.** The identity
+    canonicaliser read the repository name out of the *path* below the
+    Hugging Face cache directory, so `models--org--name` resolved to the
+    repository `org/name/snapshots/<revision>`. A profile written against
+    `org/name` then matched nothing and that model's hard context ceiling
+    was silently never applied, so requests beyond the configured ceiling
+    were admitted unchanged. The cache directory is now the identity
+    boundary: the revision below it, and the `blobs` / `refs` layout beside
+    it, are cache layout and not part of the repository's identity.
+  - **A queued request could outlive its own deadline.** When the front
+    entry's deadline expired, the scheduler declined to select it and
+    returned no candidate; the retry branch then waited with a zero timeout
+    and continued, skipping the timeout check, so the request spun in the
+    queue indefinitely instead of receiving its queue-timeout response. The
+    deadline is now checked before the selection is retried.
+  - **The experiment counted a response without token usage as a successful
+    sample.** A 2xx response carrying no `usage` object was accepted and
+    the absent token count was treated as zero, so a band could be
+    certified `PASS` on a measurement it never made. A sample now requires
+    usable completion-token usage; a response without it is recorded as
+    missing evidence, and the band's throughput is reported as unknown
+    rather than as zero.
+  - **Unavailable swap counters did not affect the verdict.** Swap-out is
+    the experiment's thrash criterion, but an unreadable counter was
+    treated as "no problem" rather than "not measured". An unavailable swap
+    read now makes the run `UNVERIFIED`: missing evidence is never a clean
+    run.
+  - **`/v1/generate` resolved the model twice.** The route resolved the
+    model for admission, and `router.generate()` then resolved it again, so
+    the request could execute on a different adapter than the one whose
+    capacity and context policy had been evaluated. The route now dispatches
+    through the resolution it was admitted against, as the chat path does.
+
+  Regression tests: `tests/test_round4_findings.py` (19 tests) — **16 failed
+  against the pre-fix commit**, all passing after.
+
 - **Queue/scheduler execution-ownership defect.** Under
   `WHOOSHD_SCHEDULER_POLICY=cache_aware_fifo`, `select_and_dequeue()` could
   remove a request that the calling waiter did not own. The removed request
@@ -279,23 +316,33 @@
 
 ### Measured
 
-- **CWC-013 lane concurrency experiment (isolated, 12B) — two attested
+- **CWC-013 lane concurrency experiment (isolated, 12B) — four attested
   re-runs.** With the MLX-VLM lane limit raised to 2 on **isolated brokers**
   — the working deployment on port 8000 was not modified — two concurrent 12B
-  requests both succeeded, twice, with **zero** swap-out pages in every warm
-  band and a verified clean lifecycle (`active_jobs_at_rest = 0`,
-  `queue_depth_at_rest = 0`, reachable) in both runs.
-  Both runs are **attested**: the harness sampled the broker's own admission
+  requests both succeeded in every run, with a verified clean lifecycle
+  (`active_jobs_at_rest = 0`, `queue_depth_at_rest = 0`, reachable) in all of
+  them.
+  All runs are **attested**: the harness sampled the broker's own admission
   state during the x2 band and observed `peak_active_jobs = 2` with
   `peak_queue_depth = 0`, so the two requests are demonstrably in flight
   together and neither was queued behind the other.
   **The gain is a range, not a figure.** Aggregate throughput rose **+66 %**
-  in one run (8.218 → 13.661 tok/s, per-request latency +15.2 %) and **+102 %**
-  in the other (7.383 → 14.920 tok/s, per-request latency −1.4 %) — two runs
-  minutes apart on the same host and checkpoint. The honest statement is:
+  (8.218 → 13.661 tok/s, per-request latency +15.2 %), **+102 %**
+  (7.383 → 14.920 tok/s, −1.4 %), **+69.5 %** (7.351 → 12.457 tok/s, +18.8 %)
+  and **+91.0 %** (8.209 → 15.679 tok/s, +5.4 %) across four runs on the same
+  host and checkpoint. The honest statement is:
   **concurrency 2 roughly doubles aggregate throughput, with a per-request
-  latency cost somewhere between −1 % and +15 %.** Any single percentage
+  latency cost somewhere between −1 % and +19 %.** Any single percentage
   overstates how repeatable the number is.
+  **The thrash criterion is not always met.** Three runs recorded **zero**
+  swap-out pages in every warm band. A fourth — run under the corrected
+  harness, immediately after the model was faulted back in from disk
+  (252 978 pages out, 601 205 in) — **failed** the criterion, swapping out
+  30 016 pages in the x2 band. The signal did not reproduce in the run
+  immediately afterwards, with the model resident, so the mechanism is an
+  association and not an established cause. Concurrency 2 on this host is
+  therefore **not** demonstrably free of paging cost: raising the lane limit
+  on a working deployment is a decision to make with swap monitoring.
   An earlier run of the same experiment reported **+89 %** at **+6.3 %**
   latency, but its harness could neither attest the lane configuration it
   claimed to test nor verify its own cleanup state — a broker whose lane
@@ -304,7 +351,7 @@
   The direction is unchanged and is the conclusion that survives: the lane
   limit of 1 was leaving roughly half the machine's throughput unused.
   Packet: `docs/validation/2026-11-03-cwc013-lane-concurrency-experiment.md`
-  (§8).
+  (§8, amended by §9).
 
 - **CWC-012 runtime calibration (Gemma 4 12B, real Metal).** TTFT ~497 ms
   warm, prefill ~275 ms, ~7 tokens/sec at `max_tokens=128`, and a **0.956

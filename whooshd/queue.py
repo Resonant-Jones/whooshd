@@ -238,6 +238,21 @@ class RequestQueue:
             return False
         return time.monotonic() >= entry.deadline_at
 
+    def _timeout_entry(self, entry: QueueEntry) -> None:
+        """Remove an expired entry and record its queue timeout.
+
+        The entry leaves the queue here, so a caller that has waited past
+        its own deadline cannot be granted an execution slot afterwards.
+        """
+        removed = self.remove(entry.request_id)
+        if removed is not None:
+            logger.info(
+                "queue.timeout request_id=%s waited=%.1fs depth_after=%d",
+                entry.request_id,
+                self.timeout_seconds,
+                self.depth,
+            )
+
     def enqueue(self, entry: QueueEntry) -> None:
         """Append a request to the back of the FIFO queue.
 
@@ -553,6 +568,15 @@ class RequestQueue:
                         entry.request_id,
                         getattr(selected, "request_id", None),
                     )
+                    # The scheduler declines to select an expired entry,
+                    # so a ``None`` result may mean *this* entry's own
+                    # deadline has passed.  Retrying the selection past
+                    # the deadline would spin the request in the queue
+                    # forever instead of returning its queue-timeout
+                    # response, so expiry is checked before the retry.
+                    if self._is_expired(entry):
+                        self._timeout_entry(entry)
+                        return False
                     await self._wait_for_signal(
                         entry,
                         timeout=min(
@@ -566,14 +590,7 @@ class RequestQueue:
             # ── Check timeout ──────────────────────────────────────
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                removed = self.remove(entry.request_id)
-                if removed is not None:
-                    logger.info(
-                        "queue.timeout request_id=%s waited=%.1fs depth_after=%d",
-                        entry.request_id,
-                        self.timeout_seconds,
-                        self.depth,
-                    )
+                self._timeout_entry(entry)
                 return False
 
             # ── Wait for capacity signal or poll interval ──────────

@@ -146,7 +146,12 @@ def _install_fake_broker(monkeypatch, broker: _FakeBroker) -> None:
     monkeypatch.setattr(harness, "EXPECTED_LANE_MAX_CONCURRENT_RAW", "2")
     monkeypatch.setattr(harness, "EXPECTED_LANE_RAW", None)
     monkeypatch.setattr(harness, "SAMPLE_INTERVAL", 0.02)
-    monkeypatch.setattr(harness, "swap_counters", lambda: None)
+    # The thrash criterion is part of the verdict, so the fake host must
+    # *report* swap counters — an unreadable counter is missing evidence,
+    # not a clean run.
+    monkeypatch.setattr(
+        harness, "swap_counters", lambda: {"swapins": 0, "swapouts": 0}
+    )
     monkeypatch.setattr(harness, "mem_pressure", lambda: "unavailable")
     monkeypatch.setattr(harness.httpx, "AsyncClient", _FakeAsyncClient)
     monkeypatch.setattr(_FakeAsyncClient, "broker", broker, raising=False)

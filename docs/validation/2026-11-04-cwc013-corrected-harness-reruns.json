@@ -1,0 +1,290 @@
+{
+  "schema_version": "whooshd.lane_experiment.reruns.v1",
+  "packet": "2026-11-03-cwc013-lane-concurrency-experiment.md",
+  "amended": "2026-11-04",
+  "note": "Two re-runs under the corrected harness (token evidence and swap evidence enforced). Run C FAILED its thrash criterion; Run D passed. Both are attested by live admission sampling (peak_active_jobs = 2, peak_queue_depth = 0 in the x2 band). The working deployment on port 8000 was not modified; both runs used the isolated broker on port 18940 against the launchd-managed 12B upstream on port 8082.",
+  "runs": [
+    {
+      "run": "C",
+      "report": {
+        "schema_version": "whooshd.lane_experiment.v1",
+        "broker": "http://127.0.0.1:18940",
+        "model": "local-chat",
+        "admission_at_start": {
+          "reachable": true,
+          "max_active_requests": 2,
+          "queue_enabled": true,
+          "lane_max_concurrent": null,
+          "lane_max_concurrent_reported": null,
+          "lane_max_concurrent_source": null
+        },
+        "lane_attestation": {
+          "status": "ATTESTED",
+          "reasons": [],
+          "evidence": {
+            "expected_lane_max_concurrent": 2,
+            "expected_lane": "mlx_vlm",
+            "reported_lane_max_concurrent": null,
+            "reported_lane_max_concurrent_source": null,
+            "reported_lane": null,
+            "broker_reachable": true,
+            "global_ceilings": {
+              "max_active_requests": 2,
+              "effective_active_limit": 2,
+              "operator_ceiling": 2
+            },
+            "config_attested_by_broker_report": false,
+            "observation_samples": 218,
+            "observed_peak_active_jobs": 2,
+            "observed_peak_queue_depth": 0,
+            "config_attested_by_observation": true
+          }
+        },
+        "cold_start_observation": {
+          "ok": true,
+          "latency_ms": 62001.3,
+          "status": 200,
+          "error": null,
+          "swap_out_delta_pages": 252978,
+          "swap_in_delta_pages": 601205,
+          "lane_evidence": null,
+          "note": "Warm-up request, discarded from the concurrency comparison. A large swap delta here is the model being faulted back in from disk, not concurrency thrash."
+        },
+        "bands": [
+          {
+            "concurrency": 1,
+            "wall_seconds": 9.93,
+            "success_count": 1,
+            "failure_count": 0,
+            "measured_count": 1,
+            "unverified_count": 0,
+            "token_evidence_available": true,
+            "records": [
+              {
+                "index": 0,
+                "status": 200,
+                "latency_ms": 9929.8,
+                "completion_tokens": 73,
+                "prompt_tokens": 365,
+                "ok": true
+              }
+            ],
+            "aggregate_tokens_per_second": 7.351,
+            "per_request_tokens_per_second": 7.352,
+            "latency_p50_ms": 9929.8,
+            "latency_max_ms": 9929.8,
+            "swap_out_delta_pages": 0,
+            "swap_in_delta_pages": 68,
+            "memory_pressure_before": "System-wide memory free percentage: 24%",
+            "memory_pressure_after": "System-wide memory free percentage: 25%",
+            "admission_observation": {
+              "samples": 182,
+              "peak_active_jobs": 1,
+              "peak_queue_depth": 0,
+              "sample_interval_seconds": 0.05
+            }
+          },
+          {
+            "concurrency": 2,
+            "wall_seconds": 11.8,
+            "success_count": 2,
+            "failure_count": 0,
+            "measured_count": 2,
+            "unverified_count": 0,
+            "token_evidence_available": true,
+            "records": [
+              {
+                "index": 0,
+                "status": 200,
+                "latency_ms": 11800.1,
+                "completion_tokens": 74,
+                "prompt_tokens": 365,
+                "ok": true
+              },
+              {
+                "index": 1,
+                "status": 200,
+                "latency_ms": 11799.4,
+                "completion_tokens": 73,
+                "prompt_tokens": 365,
+                "ok": true
+              }
+            ],
+            "aggregate_tokens_per_second": 12.457,
+            "per_request_tokens_per_second": 6.229,
+            "latency_p50_ms": 11799.8,
+            "latency_max_ms": 11800.1,
+            "swap_out_delta_pages": 30016,
+            "swap_in_delta_pages": 654,
+            "memory_pressure_before": "System-wide memory free percentage: 25%",
+            "memory_pressure_after": "System-wide memory free percentage: 24%",
+            "admission_observation": {
+              "samples": 218,
+              "peak_active_jobs": 2,
+              "peak_queue_depth": 0,
+              "sample_interval_seconds": 0.05
+            }
+          }
+        ],
+        "upstream": {
+          "available": true,
+          "prompt_tokens": 365,
+          "cached_prompt_tokens": 349,
+          "prefill_ms": 282.9569579917006,
+          "predicted_tokens": 74,
+          "generation_tps": 7.263441464843109
+        },
+        "cleanup": {
+          "reachable": true,
+          "active_jobs_at_rest": 0,
+          "queue_depth_at_rest": 0
+        },
+        "verdict": "FAILED",
+        "failures": [
+          "band x2 swapped OUT 30016 pages while warm (thrash signal)"
+        ],
+        "unverified": []
+      }
+    },
+    {
+      "run": "D",
+      "report": {
+        "schema_version": "whooshd.lane_experiment.v1",
+        "broker": "http://127.0.0.1:18940",
+        "model": "local-chat",
+        "admission_at_start": {
+          "reachable": true,
+          "max_active_requests": 2,
+          "queue_enabled": true,
+          "lane_max_concurrent": null,
+          "lane_max_concurrent_reported": null,
+          "lane_max_concurrent_source": null
+        },
+        "lane_attestation": {
+          "status": "ATTESTED",
+          "reasons": [],
+          "evidence": {
+            "expected_lane_max_concurrent": 2,
+            "expected_lane": "mlx_vlm",
+            "reported_lane_max_concurrent": null,
+            "reported_lane_max_concurrent_source": null,
+            "reported_lane": null,
+            "broker_reachable": true,
+            "global_ceilings": {
+              "max_active_requests": 2,
+              "effective_active_limit": 2,
+              "operator_ceiling": 2
+            },
+            "config_attested_by_broker_report": false,
+            "observation_samples": 171,
+            "observed_peak_active_jobs": 2,
+            "observed_peak_queue_depth": 0,
+            "config_attested_by_observation": true
+          }
+        },
+        "cold_start_observation": {
+          "ok": true,
+          "latency_ms": 10053.0,
+          "status": 200,
+          "error": null,
+          "swap_out_delta_pages": 0,
+          "swap_in_delta_pages": 88,
+          "lane_evidence": null,
+          "note": "Warm-up request, discarded from the concurrency comparison. A large swap delta here is the model being faulted back in from disk, not concurrency thrash."
+        },
+        "bands": [
+          {
+            "concurrency": 1,
+            "wall_seconds": 8.89,
+            "success_count": 1,
+            "failure_count": 0,
+            "measured_count": 1,
+            "unverified_count": 0,
+            "token_evidence_available": true,
+            "records": [
+              {
+                "index": 0,
+                "status": 200,
+                "latency_ms": 8891.7,
+                "completion_tokens": 73,
+                "prompt_tokens": 365,
+                "ok": true
+              }
+            ],
+            "aggregate_tokens_per_second": 8.209,
+            "per_request_tokens_per_second": 8.21,
+            "latency_p50_ms": 8891.7,
+            "latency_max_ms": 8891.7,
+            "swap_out_delta_pages": 0,
+            "swap_in_delta_pages": 84,
+            "memory_pressure_before": "System-wide memory free percentage: 33%",
+            "memory_pressure_after": "System-wide memory free percentage: 33%",
+            "admission_observation": {
+              "samples": 162,
+              "peak_active_jobs": 1,
+              "peak_queue_depth": 0,
+              "sample_interval_seconds": 0.05
+            }
+          },
+          {
+            "concurrency": 2,
+            "wall_seconds": 9.38,
+            "success_count": 2,
+            "failure_count": 0,
+            "measured_count": 2,
+            "unverified_count": 0,
+            "token_evidence_available": true,
+            "records": [
+              {
+                "index": 0,
+                "status": 200,
+                "latency_ms": 9374.1,
+                "completion_tokens": 74,
+                "prompt_tokens": 365,
+                "ok": true
+              },
+              {
+                "index": 1,
+                "status": 200,
+                "latency_ms": 9374.1,
+                "completion_tokens": 73,
+                "prompt_tokens": 365,
+                "ok": true
+              }
+            ],
+            "aggregate_tokens_per_second": 15.679,
+            "per_request_tokens_per_second": 7.841,
+            "latency_p50_ms": 9374.1,
+            "latency_max_ms": 9374.1,
+            "swap_out_delta_pages": 0,
+            "swap_in_delta_pages": 180,
+            "memory_pressure_before": "System-wide memory free percentage: 33%",
+            "memory_pressure_after": "System-wide memory free percentage: 34%",
+            "admission_observation": {
+              "samples": 171,
+              "peak_active_jobs": 2,
+              "peak_queue_depth": 0,
+              "sample_interval_seconds": 0.05
+            }
+          }
+        ],
+        "upstream": {
+          "available": true,
+          "prompt_tokens": 365,
+          "cached_prompt_tokens": 349,
+          "prefill_ms": 276.0000839771237,
+          "predicted_tokens": 74,
+          "generation_tps": 8.764062098958762
+        },
+        "cleanup": {
+          "reachable": true,
+          "active_jobs_at_rest": 0,
+          "queue_depth_at_rest": 0
+        },
+        "verdict": "PASS",
+        "failures": [],
+        "unverified": []
+      }
+    }
+  ]
+}

@@ -717,7 +717,9 @@ async def generate(request: Request, req: GenerateRequest) -> GenerateResponse:
     rt.mark_running(request_id)
 
     try:
-        result = await router.generate(req, request_id=request_id)
+        result = await router.generate(
+            req, request_id=request_id, resolution=resolution
+        )
         rt.complete_request(request_id)
         return result
     except UpstreamRuntimeError:

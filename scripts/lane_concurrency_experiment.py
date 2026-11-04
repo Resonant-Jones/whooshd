@@ -440,11 +440,17 @@ def evaluate_cleanup(
 
 
 def collect_band_failures(bands: list[dict]) -> list[str]:
-    """Measured failures across the warm bands."""
+    """Measured failures across the warm bands.
+
+    A response that came back without usable token usage is **not** a
+    request failure — the request may well have succeeded and only the
+    measurement be missing.  Those samples are reported by
+    :func:`collect_band_unverified` instead.
+    """
     failures: list[str] = []
     for band in bands:
         for record in band.get("records", []):
-            if not record.get("ok"):
+            if not record.get("ok") and not record.get("measurement_missing"):
                 failures.append(
                     f"band x{band.get('concurrency')} request failed: {record.get('error')}"
                 )
@@ -455,6 +461,33 @@ def collect_band_failures(bands: list[dict]) -> list[str]:
                 f"{swap_out} pages while warm (thrash signal)"
             )
     return failures
+
+
+def collect_band_unverified(bands: list[dict]) -> list[str]:
+    """Evidence the warm bands did not obtain.
+
+    Missing evidence is never a clean run.  A band whose responses
+    carried no usable token usage, or whose swap counters could not be
+    read, leaves one of the experiment's own criteria unmeasured.  Such
+    a band makes the verdict ``UNVERIFIED`` — not ``PASS``, because the
+    criterion was never checked, and not ``FAILED``, because nothing
+    failed.
+    """
+    unverified: list[str] = []
+    for band in bands:
+        concurrency = band.get("concurrency")
+        missing = int(band.get("unverified_count") or 0)
+        if missing:
+            unverified.append(
+                f"band x{concurrency} returned {missing} response(s) without usable "
+                "completion-token usage, so no throughput was measured for them"
+            )
+        if band.get("swap_out_delta_pages") is None:
+            unverified.append(
+                f"band x{concurrency} could not read swap counters, so the thrash "
+                "criterion was not measured"
+            )
+    return unverified
 
 
 def compose_verdict(failures: list[str], unverified: list[str]) -> str:
@@ -617,6 +650,25 @@ def mem_pressure() -> str:
 # ── Requests ───────────────────────────────────────────────────────────────
 
 
+def usable_completion_tokens(usage: Any) -> int | None:
+    """The completion-token count carried by a usage object, or ``None``.
+
+    A response whose usage object carries no usable completion-token
+    count is **not** measurement evidence: the experiment cannot compute
+    a throughput figure from it.  Such a sample is recorded as missing
+    evidence rather than as a zero-token sample, because "no tokens
+    observed" and "no tokens reported" are different claims.
+    """
+    if not isinstance(usage, dict):
+        return None
+    value = usage.get("completion_tokens")
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    if value < 0:
+        return None
+    return int(value)
+
+
 async def one_request(client: httpx.AsyncClient, index: int) -> dict:
     payload = {
         "model": MODEL,
@@ -632,10 +684,26 @@ async def one_request(client: httpx.AsyncClient, index: int) -> dict:
         body: Any = None
         if 200 <= resp.status_code < 300:
             body = resp.json()
-            usage = body.get("usage") or {}
-            record["completion_tokens"] = usage.get("completion_tokens")
-            record["prompt_tokens"] = usage.get("prompt_tokens")
-            record["ok"] = True
+            usage = body.get("usage") if isinstance(body, dict) else None
+            completion_tokens = usable_completion_tokens(usage)
+            record["completion_tokens"] = completion_tokens
+            record["prompt_tokens"] = (
+                usage.get("prompt_tokens") if isinstance(usage, dict) else None
+            )
+            if completion_tokens is None:
+                # A 2xx response without usable token usage is not a
+                # successful *measurement*.  It is recorded as missing
+                # evidence so the run cannot be certified PASS on a
+                # sample it never actually measured.
+                record["ok"] = False
+                record["measurement_missing"] = True
+                record["error"] = "missing_completion_token_usage"
+            elif completion_tokens == 0:
+                record["ok"] = False
+                record["measurement_missing"] = True
+                record["error"] = "zero_completion_tokens"
+            else:
+                record["ok"] = True
         else:
             record["ok"] = False
             record["error"] = (resp.json() if resp.headers.get("content-type", "").startswith("application/json") else resp.text)[:200]
@@ -735,6 +803,17 @@ async def run_band(client: httpx.AsyncClient, concurrency: int) -> dict:
     pressure_after = mem_pressure()
 
     ok = [r for r in records if r.get("ok")]
+    # Responses that came back 2xx but carried no usable token usage:
+    # the request may have succeeded, but this sample contributes no
+    # measurement.  They are counted separately so a missing measurement
+    # is never reported as a request failure, and never as a zero-token
+    # measurement.
+    unmeasured = [r for r in records if r.get("measurement_missing")]
+    failed = [
+        r
+        for r in records
+        if not r.get("ok") and not r.get("measurement_missing")
+    ]
     tokens = sum(r.get("completion_tokens") or 0 for r in ok)
     latencies = [r["latency_ms"] for r in ok]
 
@@ -767,10 +846,15 @@ async def run_band(client: httpx.AsyncClient, concurrency: int) -> dict:
     return {
         "concurrency": concurrency,
         "wall_seconds": round(wall, 2),
-        "success_count": len(ok),
-        "failure_count": concurrency - len(ok),
+        "success_count": len(ok) + len(unmeasured),
+        "failure_count": len(failed),
+        "measured_count": len(ok),
+        "unverified_count": len(unmeasured),
+        "token_evidence_available": bool(ok),
         "records": records,
-        "aggregate_tokens_per_second": round(tokens / wall, 3) if wall > 0 else None,
+        "aggregate_tokens_per_second": (
+            round(tokens / wall, 3) if wall > 0 and ok else None
+        ),
         "per_request_tokens_per_second": per_request_rate,
         "latency_p50_ms": round(statistics.median(latencies), 1) if latencies else None,
         "latency_max_ms": round(max(latencies), 1) if latencies else None,
@@ -1032,6 +1116,7 @@ async def main() -> int:
 
     failures = collect_band_failures(results) + attestation.failures
     unverified = list(attestation.unverified)
+    unverified.extend(collect_band_unverified(results))
 
     cleanup_failures, cleanup_unverified = evaluate_cleanup(rest_state, rest_reachable)
     failures.extend(cleanup_failures)

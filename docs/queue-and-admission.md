@@ -129,6 +129,10 @@ successfully under explicit guarded adapter-batch test conditions.
   already waited past `WHOOSHD_QUEUE_TIMEOUT_SECONDS`. An owner whose grant
   arrives after its own deadline treats it as a timeout rather than
   executing.
+- **The deadline is checked before the selection is retried.** The scheduler
+  declines to select an expired entry, so a retry that found no candidate
+  could otherwise keep an expired request alive indefinitely instead of
+  returning its queue-timeout response.
 - **`queue_depth` counts requests still waiting**, not requests already
   granted. A request the scheduler has granted has left the queue and holds
   a capacity reservation, even though its lifecycle record has not yet

@@ -3,7 +3,9 @@
 **Date:** 2026-11-03
 **Follows:** [CWC-012 Runtime Calibration](2026-11-02-cwc012-runtime-calibration.md)
 **Status: PASSED** — two concurrent requests against the 12B execute
-simultaneously and efficiently, with no memory pressure or thrash.
+simultaneously and efficiently. Four attested runs; the throughput
+conclusion holds in all four, and the no-thrash reading is qualified by
+§9.3.
 
 > **Amended 2026-11-03 (§8).** The run recorded in §3–§4 was produced by a
 > harness that could **not** prove the lane configuration it claimed to test
@@ -13,6 +15,16 @@ simultaneously and efficiently, with no memory pressure or thrash.
 > quoting any number from this packet — in particular, §8.5 gives the
 > throughput gain as a **range across two attested runs**, not a single
 > percentage.
+
+> **Amended 2026-11-04 (§9).** The harness's verdict contract was tightened:
+> a response without usable token usage and an unreadable swap counter are
+> now **missing evidence** (`UNVERIFIED`), and a band with no token
+> measurement reports **unknown** throughput instead of zero. The packet was
+> re-run under the corrected harness (§9.2). **One of the two runs FAILED
+> its thrash criterion**; the other passed. The throughput conclusion is
+> unchanged and now rests on four runs; the "no thrash" reading is
+> **qualified** — see §9.3. The §3–§8 figures are unchanged and remain the
+> historical record.
 
 ---
 
@@ -321,3 +333,110 @@ rather than an explanation.
 Everything in §5 still holds, unchanged. In particular these remain a
 **single short burst** per run, not a sustained-load result, and they are
 **not** a capacity certificate for concurrency above 2.
+
+## 9. Re-run under the corrected harness (2026-11-04)
+
+### 9.1 What changed
+
+Two further defects were found in the measurement code itself, and both were
+in the **verdict** path rather than in the measurement:
+
+- **A 2xx response without token usage counted as a successful sample.** The
+  absent token count was treated as zero, so a band the experiment never
+  measured could be certified `PASS`. A sample now requires usable
+  completion-token usage; a response without it is recorded as **missing
+  evidence**, and the band's throughput is reported as **unknown** rather
+  than as zero.
+- **An unreadable swap counter was treated as "no problem".** Swap-out is the
+  experiment's thrash criterion, so a counter that could not be read left the
+  criterion **unmeasured** while the verdict stayed `PASS`. An unavailable
+  swap read now makes the run `UNVERIFIED`.
+
+Neither change alters what is measured when the evidence is present: the
+throughput figures in §8.4 are unaffected, because they come from the same
+per-request records.
+
+### 9.2 The two runs
+
+Same model, same upstream runtime, same isolation rule — **the working
+deployment on port 8000 was not modified**. Both runs used the isolated
+broker on port 18940 and the launchd-managed 12B upstream on port 8082.
+
+| Setting | Value |
+|---|---|
+| Isolated broker | `http://127.0.0.1:18940` — port 8000 untouched |
+| `WHOOSHD_MLX_VLM_MAX_CONCURRENT_REQUESTS` | `2` |
+| `WHOOSHD_MAX_ACTIVE_REQUESTS` | `2` |
+| `WHOOSHD_ENABLE_QUEUE` | `true`, depth 8 |
+| Upstream runtime | `mlx_vlm server` on `127.0.0.1:8082` (the launchd-managed 12B) |
+| Model | `mlx-community/gemma-4-12B-it-qat-4bit` |
+| Declared expected lane ceiling | `2` |
+
+**Attestation: `ATTESTED`** in both runs — the broker's admission state was
+sampled during every band, and the x2 band showed `peak_active_jobs = 2`
+with `peak_queue_depth = 0` in both runs: the two requests are demonstrably
+in flight together, and neither was queued behind the other.
+
+| Metric | Run C | Run D |
+|---|---:|---:|
+| **Verdict** | **FAILED** (thrash criterion) | **PASS** |
+| Successes | 1/1 and 2/2 | 1/1 and 2/2 |
+| Aggregate tokens/sec (x1 → x2) | 7.351 → **12.457** | 8.209 → **15.679** |
+| Aggregate gain | **+69.5 %** | **+91.0 %** |
+| Per-request tokens/sec (x1 → x2) | 7.352 → 6.229 | 8.210 → 7.841 |
+| Latency p50 (x1 → x2) | 9 929.8 ms → 11 799.8 ms | 8 891.7 ms → 9 374.1 ms |
+| Latency change | **+18.8 %** | **+5.4 %** |
+| Warm-band swap pages **out** (x1 / x2) | 0 / **30 016** | 0 / **0** |
+| Cold warm-up swap out | **252 978** (601 205 in) | 0 (88 in) |
+| Observed peak active jobs (x2) | 2 | 2 |
+| Observed peak queue depth (x2) | 0 | 0 |
+| Admission samples (x1 / x2) | 182 / 218 | 162 / 171 |
+| Token evidence | measured (1 / 2 samples) | measured (1 / 2 samples) |
+| Cleanup at rest | `active_jobs = 0`, `queue_depth = 0`, reachable | same |
+| Upstream decode rate | 7.263 tok/s | 8.764 tok/s |
+
+Raw reports:
+[`2026-11-04-cwc013-corrected-harness-reruns.json`](2026-11-04-cwc013-corrected-harness-reruns.json).
+
+### 9.3 The thrash observation, and what it qualifies
+
+Run C's x2 band **swapped out 30 016 pages**, and the harness returned
+`FAILED`: the thrash criterion is measured, and it was measured negative.
+That is the criterion doing its job — the same criterion that reads zero in
+Runs A, B and D.
+
+The two runs differ in one measured way. Run C's cold warm-up swapped out
+**252 978** pages and **601 205** pages in over 62.0 s: the model was being
+**faulted back in from disk** immediately before the bands, and the host was
+in a paging state. Run D, started immediately afterwards with the model
+resident (cold warm-up: 0 swap-out), swapped out **0** pages in both bands.
+
+So the thrash signal **coincided with the weights being paged back in**, and
+**did not reproduce** in the following run. That is an **association, not an
+established mechanism** — the same discipline applied to the 341 271-page
+observation in §8.6, which remains *not established* and now has two further
+observations of the same shape rather than an explanation.
+
+What this changes:
+
+- §8.5's **"No thrash"** reading was true of Runs A and B and of Run D, and
+  is **not** true of Run C. The honest statement is: **on this host, two
+  concurrent 12B requests did not thrash in three of four attested runs, and
+  did thrash once — in the run that followed the weights being faulted back
+  in from disk.**
+- The **throughput conclusion is unaffected and is better supported**: the
+  aggregate gain was **+66 %, +102 %, +69.5 % and +91.0 %** across four
+  runs, with per-request latency between **−1.4 % and +18.8 %**.
+
+### 9.4 What the four runs do and do not establish
+
+Everything in §5 and §8.7 still holds. In particular:
+
+- The gain is a **range across four runs**, not a figure. Any single
+  percentage — including the original, superseded **+89 %** — overstates how
+  repeatable the number is.
+- These remain **single short bursts**, not a sustained-load result, and
+  **not** a capacity certificate for concurrency above 2.
+- A concurrency-2 lane on this host is **not** demonstrably free of paging
+  cost. Applying the lane limit to the live deployment is therefore an
+  operational decision to be made with swap monitoring, not a free win.

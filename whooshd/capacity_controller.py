@@ -34,6 +34,7 @@ keeps it deterministic and trivially testable.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import TYPE_CHECKING, Optional
@@ -69,6 +70,14 @@ class CapacityAction(str, Enum):
     REJECT = "reject"    # Cannot ever queue (queue full); caller must reject.
 
 
+# A local snapshot path names one *revision* of a repository.  The
+# revision is a version marker, not part of the repository's identity,
+# so it is stripped before the repository name is parsed.  Without this,
+# ``org/name/snapshots/<revision>`` would be read as a repository whose
+# name is ``name/snapshots/<revision>``, which matches nothing.
+_SNAPSHOT_REVISION_RE = re.compile(r"/snapshots/[^/]+$")
+
+
 def _canonical_model_identity(value: str) -> tuple[Optional[str], str]:
     """Reduce a model identity to ``(repository_identity, bare_name)``.
 
@@ -86,6 +95,8 @@ def _canonical_model_identity(value: str) -> tuple[Optional[str], str]:
 
     * the Hugging Face cache directory ``models--org--name`` becomes
       ``org/name`` — the same weights under the repository's real name;
+    * a snapshot path is reduced to the repository it points at, because
+      the revision after ``snapshots/`` is not part of the identity;
     * a filesystem path keeps only its final segment, because a parent
       directory is a *location*, not a namespace, and must not be
       mistaken for one.
@@ -94,13 +105,21 @@ def _canonical_model_identity(value: str) -> tuple[Optional[str], str]:
     if not text:
         return (None, "")
 
+    # A snapshot revision is not part of the repository's identity.
+    text = _SNAPSHOT_REVISION_RE.sub("", text)
+
     # Hugging Face cache layout: models--<org>--<name>
     if "models--" in text:
         tail = text.rsplit("models--", 1)[1]
-        org, sep, name = tail.partition("--")
+        # The cache directory is the boundary.  Everything after it
+        # (``snapshots/<revision>``, ``blobs/<sha>``, ``refs/<branch>``)
+        # is cache layout, not identity, so the name is read from the
+        # directory itself and never from the path below it.
+        head = tail.split("/", 1)[0]
+        org, sep, name = head.partition("--")
         if sep and org and name:
             return (f"{org.lower()}/{name.lower()}", name.lower())
-        return (None, tail.lower())
+        return (None, head.lower())
 
     # A filesystem path: the parent directory is a location, not a
     # namespace.

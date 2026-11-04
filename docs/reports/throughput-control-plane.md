@@ -444,16 +444,39 @@ Two attested re-runs, each on an isolated broker:
 | Observed peak queue depth | 0 | **0** | 0 | **0** |
 | Swap pages out | 0 | **0** | 0 | **0** |
 
-Two concurrent requests ran **simultaneously** in both runs. Aggregate
+Two further attested re-runs on 2026-11-04, under the corrected harness
+(packet §9). The verdict contract now treats an unreadable swap counter and
+a response without token usage as missing evidence rather than as a clean
+band:
+
+| Metric | Run C x1 | Run C x2 | Run D x1 | Run D x2 |
+|---|---:|---:|---:|---:|
+| Successes | 1/1 | **2/2** | 1/1 | **2/2** |
+| Aggregate tokens/sec | 7.351 | **12.457** (+69.5 %) | 8.209 | **15.679** (+91.0 %) |
+| Per-request latency (p50) | 9 930 ms | 11 800 ms (+18.8 %) | 8 892 ms | 9 374 ms (+5.4 %) |
+| Observed peak active jobs | 1 | **2** | 1 | **2** |
+| Observed peak queue depth | 0 | **0** | 0 | **0** |
+| Swap pages out | 0 | **30 016** | 0 | **0** |
+| Verdict | **FAILED** (thrash) | — | **PASS** | — |
+
+Two concurrent requests ran **simultaneously** in all four runs. Aggregate
 throughput roughly **doubled**; the lane limit of 1 was leaving roughly half
 the machine's throughput unused, and was the source of the 429s seen under
 concurrent load.
 
-**The gain is a range, not a figure.** Two attested runs minutes apart gave
-+66 % and +102 % aggregate throughput, with per-request latency between
-−1.4 % and +15.2 %. The stable conclusion is the qualitative one:
+**The gain is a range, not a figure.** Four attested runs gave +66 %, +102 %,
++69.5 % and +91.0 % aggregate throughput, with per-request latency between
+−1.4 % and +18.8 %. The stable conclusion is the qualitative one:
 concurrency 2 roughly doubles aggregate throughput on this host and
 checkpoint. Any single percentage overstates how repeatable the number is.
+
+**The thrash criterion is not always met.** Three of the four runs recorded
+zero swap-out in every warm band. Run C **failed** it, swapping out 30 016
+pages in the x2 band, in the run whose cold warm-up faulted the model back in
+from disk (252 978 pages out, 601 205 in). The immediately following run,
+with the model resident, recorded zero. The signal therefore coincided with
+the fault-in and did not reproduce — an association, not an established
+mechanism.
 
 An earlier run of the same experiment reported +89 % at +6.3 % latency, but
 its harness could neither attest the lane configuration it claimed to test
