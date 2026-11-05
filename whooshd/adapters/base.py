@@ -6,7 +6,7 @@ implement this interface so the HTTP layer stays thin and testable.
 
 from __future__ import annotations
 
-from typing import AsyncIterator, Optional, Protocol
+from typing import Optional, AsyncIterator, Optional, Protocol
 
 from whooshd.contracts import (
     ChatCompletionChunk,
@@ -53,6 +53,23 @@ class InferenceAdapter(Protocol):
     def supports_streaming(self) -> bool:
         """Whether this adapter can serve streaming responses."""
         ...
+
+    @property
+    def max_concurrent_requests(self) -> Optional[int]:
+        """Concurrency ceiling for this inference lane, or None.
+
+        A lane that can only execute a bounded number of requests at once
+        (for example the MLX-VLM adapter, whose semaphore defaults to one)
+        declares that ceiling here.  Admission uses it so the broker does
+        not admit a request that will then stall at the adapter's own
+        semaphore and be refused.
+
+        ``None`` means the lane declares no ceiling of its own, and the
+        global operator ceiling applies unchanged.  The default
+        implementation returns ``None`` so adapters that do not care need
+        not implement it.
+        """
+        return None
 
     async def generate(self, request: GenerateRequest) -> GenerateResponse:
         """Run inference for a single generation request (Codexify format)."""

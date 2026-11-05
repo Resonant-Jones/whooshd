@@ -21,13 +21,21 @@ from typing import Optional
 
 from pydantic import BaseModel, Field
 
+from whooshd.capacity_context import (
+    evaluate_context,
+    estimate_request_cost,
+)
 from whooshd.capacity_controller import (
     CapacityAction,
     CapacityController,
     CapacityEvaluation,
 )
-from whooshd.capacity_profile import MemoryPressureClass
+from whooshd.capacity_profile import (
+    ContextBudgets,
+    MemoryPressureClass,
+)
 from whooshd.config import (
+    get_default_max_tokens,
     get_enable_queue,
     get_max_active_requests,
     get_max_messages,
@@ -48,6 +56,7 @@ class AdmissionDecision(str, Enum):
     REJECTED_TOO_MANY_MESSAGES = "rejected_too_many_messages"
     REJECTED_MAX_TOKENS_TOO_HIGH = "rejected_max_tokens_too_high"
     REJECTED_MODEL_NOT_READY = "rejected_model_not_ready"
+    REJECTED_CONTEXT_OVERFLOW = "rejected_context_overflow"
 
 
 class AdmissionResult(BaseModel):
@@ -76,6 +85,10 @@ def _estimade_prompt_chars(request: ChatCompletionRequest) -> int:
 def evaluate_chat_request(
     request: ChatCompletionRequest,
     runtime: RuntimeState,
+    *,
+    lane: Optional[str] = None,
+    lane_max_concurrent: Optional[int] = None,
+    model_id: Optional[str] = None,
 ) -> AdmissionResult:
     """Evaluate a chat completion request against configured limits.
 
@@ -86,6 +99,17 @@ def evaluate_chat_request(
     Structural checks (message count, prompt size, max_tokens) are
     evaluated first and always result in immediate rejection regardless
     of queue enablement.
+
+    ``lane`` and ``lane_max_concurrent`` describe the inference lane that
+    will execute this request.  When the lane declares its own concurrency
+    ceiling, the effective limit is capped by it so the broker queues
+    rather than admitting work the lane cannot run.  Pass them only after
+    the route has been resolved.
+
+    ``model_id`` is the **resolved** model that will execute the request.
+    Context budgets are selected by that model, never by the process-wide
+    controller identity, so a request routed to model B is never measured
+    against model A's hard ceiling.
     """
     # ── Rule 1: message count (structural — always reject) ────────────
     max_msgs = get_max_messages()
@@ -137,11 +161,41 @@ def evaluate_chat_request(
     # admission via ModelResolutionError.  Admission only reasons
     # about capacity; the controller is told the runtime is ready so
     # its QUEUE/REJECT decisions are driven by capacity alone.
+    # Per-model context policy.  The estimate is computed once here and
+    # handed to the controller, which remains the single decision point.
+    # When no budget is configured for the model the estimate is still
+    # reported (observability) but does not constrain the request.
+    #
+    # Budgets are read first because the profile's per-unit multimodal
+    # estimate feeds the costing: without it, image content would be
+    # counted as zero tokens rather than as an unknown cost.
+    #
+    # The budgets are selected by the *request's* resolved model.  Using
+    # the process-wide controller identity here would apply model A's hard
+    # ceiling to a request routed to model B.
+    budgets = controller.context_budgets(model_id=model_id)
+    cost = estimate_request_cost(
+        request,
+        default_max_tokens=get_default_max_tokens(),
+        multimodal_token_estimate=(
+            budgets.multimodal_token_estimate if budgets is not None else None
+        ),
+    )
+    context_eval = evaluate_context(cost, budgets)
+
+    lane_active = runtime.active_jobs_for_lane(lane) if lane else 0
+
     evaluation = controller.evaluate(
         _capacity_context(
             runtime=runtime,
             max_queue_depth=max_queue,
             memory_pressure=memory_pressure,
+            requested_estimated_tokens=cost.total_tokens,
+            request_cost=cost,
+            context_budgets=budgets,
+            lane=lane,
+            lane_max_concurrent=lane_max_concurrent,
+            lane_active_jobs=lane_active,
         )
     )
 
@@ -151,10 +205,31 @@ def evaluate_chat_request(
         return AdmissionResult(
             accepted=True,
             reason=AdmissionDecision.ACCEPTED,
+            details={
+                "estimated_tokens": cost.total_tokens,
+                "context_reason": context_eval.reason.value,
+                "context_cost_is_exact": context_eval.cost_is_exact,
+                "context_cost_status": context_eval.cost_status,
+                "context_cost_has_unknown": cost.has_unknown_cost,
+                "context_budget": (
+                    context_eval.budget.value if context_eval.budget else None
+                ),
+                "context_max_input_tokens": context_eval.max_input_tokens,
+                "context_max_output_tokens": context_eval.max_output_tokens,
+                "lane": evaluation.lane,
+                "lane_max_concurrent": evaluation.lane_max_concurrent,
+                "lane_active_jobs": evaluation.lane_active_jobs,
+                "lane_limited": evaluation.lane_limited,
+            },
             http_status=200,
         )
 
     if evaluation.action == CapacityAction.REJECT:
+        # context_overflow → REJECTED_CONTEXT_OVERFLOW.  The request cannot
+        # fit the model regardless of available capacity, so it must not be
+        # queued behind work it can never fit.
+        if evaluation.reason.value == "context_overflow":
+            return context_overflow_result(cost, context_eval)
         # queue_full → REJECTED_QUEUE_FULL.  runtime_not_ready is
         # never reached here (see comment above); if it is, treat as
         # overload for backward compatibility with the pre-throughput
@@ -218,8 +293,79 @@ def evaluate_chat_request(
             "capacity_reason": evaluation.reason.value,
             "capacity_mode": evaluation.mode.value,
             "effective_active_limit": evaluation.effective_active_limit,
+            "estimated_tokens": cost.total_tokens,
+            "context_reason": context_eval.reason.value,
+            "context_cost_is_exact": context_eval.cost_is_exact,
+            "context_cost_status": context_eval.cost_status,
+            "context_cost_has_unknown": cost.has_unknown_cost,
+            "context_budget": (
+                context_eval.budget.value if context_eval.budget else None
+            ),
+            "context_max_input_tokens": context_eval.max_input_tokens,
+            "context_max_output_tokens": context_eval.max_output_tokens,
+            "lane": evaluation.lane,
+            "lane_max_concurrent": evaluation.lane_max_concurrent,
+            "lane_active_jobs": evaluation.lane_active_jobs,
+            "lane_limited": evaluation.lane_limited,
         },
         http_status=202,  # Accepted for queueing; caller waits
+    )
+
+
+def resolve_context_budgets(
+    model_id: Optional[str] = None,
+) -> Optional[ContextBudgets]:
+    """Context budgets for the **resolved** model, if any.
+
+    Keyed by the request's model rather than by the process-wide
+    controller identity: a request routed to model B must never be
+    measured against model A's hard ceiling.
+    """
+    return _get_controller().context_budgets(model_id=model_id)
+
+
+def context_overflow_result(
+    cost,
+    context_eval,
+) -> AdmissionResult:
+    """Build the canonical rejection for a request that breaches a hard limit.
+
+    Shared by the chat-completions and generate paths so both endpoints
+    reject a hard-budget breach the same way.
+    """
+    return AdmissionResult(
+        accepted=False,
+        reason=AdmissionDecision.REJECTED_CONTEXT_OVERFLOW,
+        error_code=ErrorCode.CONTEXT_OVERFLOW,
+        message=(
+            "Request exceeds the model's hard context budget "
+            f"({cost.total_tokens} tokens)."
+        ),
+        details={
+            "estimated_tokens": cost.total_tokens,
+            "input_tokens": cost.input_tokens,
+            "output_tokens": cost.output_tokens,
+            "multimodal_tokens": cost.multimodal_tokens,
+            "input_is_exact": cost.input_is_exact,
+            "context_reason": context_eval.reason.value,
+            "context_cost_is_exact": context_eval.cost_is_exact,
+            "context_cost_status": context_eval.cost_status,
+            "context_cost_has_unknown": cost.has_unknown_cost,
+            "context_budget": (
+                context_eval.budget.value if context_eval.budget else None
+            ),
+            "context_breached_budget": (
+                context_eval.breached_budget.value
+                if context_eval.breached_budget
+                else None
+            ),
+            "hard_max_tokens": context_eval.hard_max_tokens,
+            "recommended_max_tokens": context_eval.recommended_max_tokens,
+            "interactive_max_tokens": context_eval.interactive_max_tokens,
+            "context_max_input_tokens": context_eval.max_input_tokens,
+            "context_max_output_tokens": context_eval.max_output_tokens,
+        },
+        http_status=422,
     )
 
 
@@ -228,6 +374,12 @@ def _capacity_context(
     runtime: RuntimeState,
     max_queue_depth: int,
     memory_pressure: MemoryPressureClass,
+    requested_estimated_tokens: Optional[int] = None,
+    request_cost=None,
+    context_budgets: Optional[ContextBudgets] = None,
+    lane: Optional[str] = None,
+    lane_max_concurrent: Optional[int] = None,
+    lane_active_jobs: int = 0,
 ):
     """Build a :class:`CapacityContext` from a runtime + admission inputs.
 
@@ -243,6 +395,12 @@ def _capacity_context(
         max_queue_depth=max_queue_depth,
         runtime_ready=True,
         memory_pressure=memory_pressure,
+        requested_estimated_tokens=requested_estimated_tokens,
+        request_cost=request_cost,
+        context_budgets=context_budgets,
+        lane=lane,
+        lane_max_concurrent=lane_max_concurrent,
+        lane_active_jobs=lane_active_jobs,
     )
 
 
@@ -279,12 +437,36 @@ def reset_controller_for_tests() -> None:
     _controller = None
 
 
-def active_capacity_available(runtime: RuntimeState) -> bool:
-    """Whether the shared controller currently permits another active job."""
-    limit = _get_controller().effective_active_limit(
+def active_capacity_available(
+    runtime: RuntimeState,
+    *,
+    lane: Optional[str] = None,
+    lane_max_concurrent: Optional[int] = None,
+) -> bool:
+    """Whether the shared controller currently permits another active job.
+
+    Two independent constraints must both hold:
+
+    * **global** — ``active_jobs`` below the global effective limit;
+    * **lane** — ``active_jobs_for_lane(lane)`` below that lane's own
+      concurrency ceiling, when the lane declares one.
+
+    The lane check is what stops a queued request from being granted
+    execution when its lane is already saturated.  Checking only the global
+    counter would let the queue hand work to a lane that cannot run it,
+    which is the failure the lane-aware admission exists to prevent.
+    """
+    controller = _get_controller()
+    limit = controller.effective_active_limit(
         memory_pressure=_memory_pressure_from_runtime(runtime),
     )
-    return runtime.active_jobs < limit
+    if runtime.active_jobs >= limit:
+        return False
+    if lane_max_concurrent is not None and lane:
+        lane_active = runtime.active_jobs_for_lane(lane)
+        if lane_active >= max(int(lane_max_concurrent), 1):
+            return False
+    return True
 
 
 # ── Snapshot helper ────────────────────────────────────────────────────────

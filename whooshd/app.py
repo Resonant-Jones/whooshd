@@ -33,7 +33,9 @@ from whooshd import __version__
 from whooshd.admission import (
     AdmissionDecision,
     active_capacity_available,
+    context_overflow_result,
     evaluate_chat_request,
+    resolve_context_budgets,
 )
 from whooshd.adapters.base import StreamingNotSupportedError
 from whooshd.backend_request_policy import (
@@ -67,9 +69,11 @@ from whooshd.control_plane import (
     error_fields,
     negotiate_contract_version,
 )
+from whooshd.capacity_context import evaluate_context, estimate_prompt_cost
 from whooshd.config import (
     get_adapter_backend,
     get_advertised_model_id,
+    get_default_max_tokens,
     get_mlx_lm_server_enabled,
     get_mlx_vlm_enabled,
 )
@@ -448,13 +452,20 @@ def _begin_request_lifecycle(
     *,
     model: str,
     stream: bool,
+    lane: str | None = None,
 ) -> str:
-    """Create and retain a Whoosh'd lifecycle identity for a request."""
+    """Create and retain a Whoosh'd lifecycle identity for a request.
+
+    ``lane`` records which inference lane will execute the request, so
+    active work can be counted per lane and a lane's own concurrency
+    ceiling can be respected at admission.
+    """
 
     request_id = rt.begin_request(
         model=model,
         stream=stream,
         upstream_request_id=_upstream_request_id(request),
+        lane=lane,
     )
     request.state.whoosh_request_id = request_id
     return request_id
@@ -626,10 +637,62 @@ async def generate(request: Request, req: GenerateRequest) -> GenerateResponse:
     """
     rt = get_runtime()
     router = get_router()
-    # ── Admission control (simple: just active request limit) ─────────
-    from whooshd.config import get_max_active_requests
 
-    if rt.active_jobs >= get_max_active_requests():
+    # ── Route resolution (before admission) ────────────────────────────
+    # The lane that will execute this request determines its own
+    # concurrency ceiling, so the route must be known before admission.
+    model = req.model_id or "stub-model"
+    try:
+        resolution = await router.resolve_model_runtime(model)
+    except ModelResolutionError as exc:
+        rt.record_rejected("rejected_model_not_ready")
+        return JSONResponse(
+            status_code=404,
+            content=_error_body_for_request(
+                request,
+                ErrorCode.MODEL_NOT_FOUND,
+                "Requested model is not available",
+                http_status=404,
+                details={"model_alias": safe_model_alias(exc.model_id)},
+            ),
+        )
+
+    # ── Context policy ─────────────────────────────────────────────────
+    # /v1/generate dispatches to the same adapters as /v1/chat/completions,
+    # so the hard context policy applies here too.  A prompt that cannot
+    # fit the resolved model is refused before a lifecycle record is
+    # created, rather than being forwarded and failing upstream.
+    resolved_model_id = resolution.resolved_model_id or model
+    budgets = resolve_context_budgets(resolved_model_id)
+    cost = estimate_prompt_cost(
+        req.prompt,
+        max_tokens=req.max_tokens,
+        default_max_tokens=get_default_max_tokens(),
+    )
+    context_eval = evaluate_context(cost, budgets)
+    if context_eval.over_limit:
+        overflow = context_overflow_result(cost, context_eval)
+        rt.record_rejected(overflow.reason.value)
+        return JSONResponse(
+            status_code=overflow.http_status,
+            content=_error_body_for_request(
+                request,
+                overflow.error_code or ErrorCode.CONTEXT_OVERFLOW,
+                overflow.message or "Request exceeds the model's context budget.",
+                http_status=overflow.http_status,
+                details=overflow.details,
+            ),
+        )
+
+    # ── Admission control ─────────────────────────────────────────────
+    # The same lane-aware admission as the chat path: global capacity and
+    # the selected lane's own ceiling are independent constraints, and
+    # both must hold.
+    if not active_capacity_available(
+        rt,
+        lane=resolution.lane,
+        lane_max_concurrent=resolution.lane_max_concurrent,
+    ):
         rt.record_rejected("rejected_overloaded")
         raise HTTPException(
             status_code=429,
@@ -638,18 +701,25 @@ async def generate(request: Request, req: GenerateRequest) -> GenerateResponse:
                 ErrorCode.RUNNER_OVERLOADED,
                 "Whoosh'd is at its active request limit.",
                 http_status=429,
-                details={"active_jobs": rt.active_jobs},
+                details={
+                    "active_jobs": rt.active_jobs,
+                    "lane": resolution.lane,
+                    "lane_max_concurrent": resolution.lane_max_concurrent,
+                },
             ),
         )
 
     rt.record_accepted()
 
-    model = req.model_id or "stub-model"
-    request_id = _begin_request_lifecycle(rt, request, model=model, stream=False)
+    request_id = _begin_request_lifecycle(
+        rt, request, model=model, stream=False, lane=resolution.lane
+    )
     rt.mark_running(request_id)
 
     try:
-        result = await router.generate(req, request_id=request_id)
+        result = await router.generate(
+            req, request_id=request_id, resolution=resolution
+        )
         rt.complete_request(request_id)
         return result
     except UpstreamRuntimeError:
@@ -1128,8 +1198,38 @@ async def chat_completions(request: Request, req: ChatCompletionRequest):
     router = get_router()
     queue = get_queue()
 
+    # ── Route resolution (before admission) ────────────────────────────
+    # The lane that will execute this request determines its own
+    # concurrency ceiling, so the route must be known before admission.
+    # Resolving first also means an unknown model is reported as such
+    # rather than being admitted and then failing at dispatch.
+    try:
+        resolution = await router.resolve_model_runtime(req.model)
+        adapter = resolution.adapter
+    except ModelResolutionError as exc:
+        rt.record_rejected("rejected_model_not_ready")
+        return JSONResponse(
+            status_code=404,
+            content=_error_body_for_request(
+                request,
+                ErrorCode.MODEL_NOT_FOUND,
+                "Requested model is not available",
+                http_status=404,
+                details={"model_alias": safe_model_alias(exc.model_id)},
+            ),
+        )
+
     # ── Admission control ─────────────────────────────────────────────
-    admission = evaluate_chat_request(req, rt)
+    admission = evaluate_chat_request(
+        req,
+        rt,
+        lane=resolution.lane,
+        lane_max_concurrent=resolution.lane_max_concurrent,
+        # Context budgets are selected by the *resolved* model, so a
+        # multi-model broker never applies one model's hard ceiling to a
+        # request routed to another.
+        model_id=resolution.resolved_model_id or req.model,
+    )
 
     # Queue-full is a hard rejection — record queue-specific counter too.
     if admission.reason == AdmissionDecision.REJECTED_QUEUE_FULL:
@@ -1163,23 +1263,6 @@ async def chat_completions(request: Request, req: ChatCompletionRequest):
 
     # Accepted or queued — both count as non-rejected.
     rt.record_accepted()
-
-    # ── Resolve the adapter via router ───────────────────────────────
-    try:
-        resolution = await router.resolve_model_runtime(req.model)
-        adapter = resolution.adapter
-    except ModelResolutionError as exc:
-        rt.record_rejected("rejected_model_not_ready")
-        return JSONResponse(
-            status_code=404,
-            content=_error_body_for_request(
-                request,
-                ErrorCode.MODEL_NOT_FOUND,
-                "Requested model is not available",
-                http_status=404,
-                details={"model_alias": safe_model_alias(exc.model_id)},
-            ),
-        )
 
     # ── Vision capability check ──────────────────────────────────────
     has_image = _request_has_image_content(req)
@@ -1251,7 +1334,7 @@ async def chat_completions(request: Request, req: ChatCompletionRequest):
     if is_queued:
         # Create the request record and transition to queued.
         request_id = _begin_request_lifecycle(
-            rt, request, model=req.model, stream=req.stream
+            rt, request, model=req.model, stream=req.stream, lane=resolution.lane
         )
         rt.mark_queued(request_id)
         token = rt.get_cancellation_token(request_id)
@@ -1259,13 +1342,35 @@ async def chat_completions(request: Request, req: ChatCompletionRequest):
             request_id=request_id,
             request=backend_request,
             upstream_request_id=_upstream_request_id(request),
+            # The entry carries its own lane so the queue can check the
+            # *candidate's* capacity when a cache-affinity selection picks
+            # a different entry than the one being waited on.
+            lane=resolution.lane,
+            lane_max_concurrent=resolution.lane_max_concurrent,
         )
         queue.enqueue(entry)
 
         ready = await queue.wait_for_execution(
             entry,
             cancel_token=token,
+            # The global constraint.  The lane constraint is applied to
+            # the candidate that is actually granted, below.
             capacity_available=lambda: active_capacity_available(rt),
+            # The lane must be re-checked at release time, not only at
+            # admission: the lane may have saturated while this request
+            # waited.  Releasing on global capacity alone would hand the
+            # request to an adapter that cannot run it.
+            entry_eligible=lambda candidate: active_capacity_available(
+                rt,
+                lane=candidate.lane,
+                lane_max_concurrent=candidate.lane_max_concurrent,
+            ),
+            # The grant reserves the execution slot immediately.  Without
+            # the reservation, a request arriving in the gap between the
+            # grant and this waiter resuming could take the same slot.
+            reserve=lambda granted: rt.reserve_capacity(
+                granted.request_id, granted.lane
+            ),
         )
 
         if not ready:
@@ -1357,7 +1462,9 @@ async def chat_completions(request: Request, req: ChatCompletionRequest):
 
     # ── Non-streaming path (immediate execution) ──────────────────────
     if not req.stream:
-        request_id = _begin_request_lifecycle(rt, request, model=req.model, stream=False)
+        request_id = _begin_request_lifecycle(
+        rt, request, model=req.model, stream=False, lane=resolution.lane
+    )
         rt.mark_running(request_id)
         token = rt.get_cancellation_token(request_id)
         ctx = _execution_context(
@@ -1378,7 +1485,9 @@ async def chat_completions(request: Request, req: ChatCompletionRequest):
     if not adapter.supports_streaming:
         raise StreamingNotSupportedError()
 
-    request_id = _begin_request_lifecycle(rt, request, model=req.model, stream=True)
+    request_id = _begin_request_lifecycle(
+        rt, request, model=req.model, stream=True, lane=resolution.lane
+    )
     rt.mark_streaming(request_id)
     token = rt.get_cancellation_token(request_id)
     ctx = _execution_context(

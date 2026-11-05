@@ -418,27 +418,78 @@ The 3 skips are Metal-gated and pre-existing; they are not new. The
 campaign-era observation above was accurate for its date and is retained as
 historical evidence of that campaign.
 
-### Gemma 4 12B production calibration — PENDING, cause stated
+### Gemma 4 12B production calibration — RESOLVED by CWC-013
 
-§1 and §12 record the 12B calibration as pending. As of 2026-10-02 the
-prerequisites have been checked:
+Superseded on 2026-11-03 by the
+[CWC-013 lane concurrency experiment](../validation/2026-11-03-cwc013-lane-concurrency-experiment.md).
 
-| Prerequisite | Status |
-|---|---|
-| Target host is the campaign host | Present — Mac mini `Mac16,10`, Apple M4, 32 GB |
-| 12B checkpoint | Present and complete — `models--mlx-community--gemma-4-12B-it-qat-4bit`, ~10 GB, 3 safetensors shards plus config, index, tokenizer, chat template |
-| Metal device usable during the release session | Not available |
-| `mlx_lm` / `mlx_vlm` installed | Not installed |
+The CWC-012 packet recorded this as **BLOCKED** on the reasoning that raising
+the lane limit depends on the capacity evidence being sought. That reasoning
+was too strong: the question is answerable by controlled measurement.
 
-The calibration was **not performed** because no MLX inference could execute
-in the release session. No 12B concurrency band, aggregate token throughput, or
-TTFT figure is claimed. E2B results are not presented as 12B results.
+CWC-013 raised `WHOOSHD_MLX_VLM_MAX_CONCURRENT_REQUESTS` to 2 on an **isolated
+broker** — the working deployment on port 8000 was not modified — and
+measured. The figures below are from the **attested re-run** (see the packet's
+§8), in which the harness sampled the broker's own admission state during the
+x2 band and observed `peak_active_jobs = 2` with `peak_queue_depth = 0`:
 
-This remains **PENDING** and is not a GA blocker: the control-plane mechanics
-are already validated against a real MLX runtime by the E2B campaign above.
-The outstanding work is to run `whooshd.bench.capacity_bench` on a
-Metal-capable session with the MLX runtime installed, pointed at the existing
-local checkpoint.
+Two attested re-runs, each on an isolated broker:
+
+| Metric | Run A x1 | Run A x2 | Run B x1 | Run B x2 |
+|---|---:|---:|---:|---:|
+| Successes | 1/1 | **2/2** | 1/1 | **2/2** |
+| Aggregate tokens/sec | 8.218 | **13.661** (+66 %) | 7.383 | **14.920** (+102 %) |
+| Per-request latency (p50) | 9 368 ms | 10 785 ms (+15.2 %) | 9 887 ms | 9 748 ms (−1.4 %) |
+| Observed peak active jobs | 1 | **2** | 1 | **2** |
+| Observed peak queue depth | 0 | **0** | 0 | **0** |
+| Swap pages out | 0 | **0** | 0 | **0** |
+
+Two further attested re-runs on 2026-11-04, under the corrected harness
+(packet §9). The verdict contract now treats an unreadable swap counter and
+a response without token usage as missing evidence rather than as a clean
+band:
+
+| Metric | Run C x1 | Run C x2 | Run D x1 | Run D x2 |
+|---|---:|---:|---:|---:|
+| Successes | 1/1 | **2/2** | 1/1 | **2/2** |
+| Aggregate tokens/sec | 7.351 | **12.457** (+69.5 %) | 8.209 | **15.679** (+91.0 %) |
+| Per-request latency (p50) | 9 930 ms | 11 800 ms (+18.8 %) | 8 892 ms | 9 374 ms (+5.4 %) |
+| Observed peak active jobs | 1 | **2** | 1 | **2** |
+| Observed peak queue depth | 0 | **0** | 0 | **0** |
+| Swap pages out | 0 | **30 016** | 0 | **0** |
+| Verdict | **FAILED** (thrash) | — | **PASS** | — |
+
+Two concurrent requests ran **simultaneously** in all four runs. Aggregate
+throughput roughly **doubled**; the lane limit of 1 was leaving roughly half
+the machine's throughput unused, and was the source of the 429s seen under
+concurrent load.
+
+**The gain is a range, not a figure.** Four attested runs gave +66 %, +102 %,
++69.5 % and +91.0 % aggregate throughput, with per-request latency between
+−1.4 % and +18.8 %. The stable conclusion is the qualitative one:
+concurrency 2 roughly doubles aggregate throughput on this host and
+checkpoint. Any single percentage overstates how repeatable the number is.
+
+**The thrash criterion is not always met.** Three of the four runs recorded
+zero swap-out in every warm band. Run C **failed** it, swapping out 30 016
+pages in the x2 band, in the run whose cold warm-up faulted the model back in
+from disk (252 978 pages out, 601 205 in). The immediately following run,
+with the model resident, recorded zero. The signal therefore coincided with
+the fault-in and did not reproduce — an association, not an established
+mechanism.
+
+An earlier run of the same experiment reported +89 % at +6.3 % latency, but
+its harness could neither attest the lane configuration it claimed to test
+nor verify its own cleanup state — a broker whose lane limit was still 1
+would have produced the same `PASS`. That figure is superseded and is not
+quoted.
+
+Concurrency 2 is therefore evidence-backed for this host and model.
+Concurrency above 2, sustained load, and behaviour on the fanless MacBook Air
+remain unmeasured.
+
+**No 12B concurrency, throughput, or TTFT claim is made beyond what was
+measured.** E2B results are not presented as 12B results.
 
 ### E4B portability — still BLOCKED
 

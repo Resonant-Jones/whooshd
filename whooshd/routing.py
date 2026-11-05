@@ -141,6 +141,11 @@ class RuntimeResolution:
     resolved_model_id: str
     execution_mode: str
     qualification_attestation: RuntimeQualificationAttestationReference | None = None
+    # Inference lane that will execute this request, and that lane's own
+    # concurrency ceiling (None when the lane declares none).  Admission
+    # uses these so the broker does not admit work the lane cannot run.
+    lane: str | None = None
+    lane_max_concurrent: Optional[int] = None
 
     def for_model(self, model_id: str) -> "RuntimeResolution":
         """Retain the selected adapter while describing one batch member."""
@@ -151,6 +156,8 @@ class RuntimeResolution:
             advertised_model_id=model_id,
             resolved_model_id=self.resolved_model_id,
             execution_mode=self.execution_mode,
+            lane=self.lane,
+            lane_max_concurrent=self.lane_max_concurrent,
             qualification_attestation=target_attestation_reference(
                 self.adapter,
                 invocation_model_id=model_id,
@@ -276,6 +283,15 @@ class RuntimeRouter:
             loaded_model_id = adapter.model_id()
         except Exception:
             loaded_model_id = None
+        lane = str(adapter.kind)[:64]
+        lane_max_concurrent: Optional[int] = None
+        try:
+            # Adapters that declare no lane ceiling simply do not expose the
+            # attribute; a protocol default does not apply to concrete
+            # classes, so read it defensively.
+            lane_max_concurrent = getattr(adapter, "max_concurrent_requests", None)
+        except Exception:
+            lane_max_concurrent = None
         return RuntimeResolution(
             adapter=adapter,
             requested_model_id=model_id,
@@ -285,6 +301,8 @@ class RuntimeRouter:
             execution_mode=_EXECUTION_MODES.get(
                 str(adapter.kind), "external_sidecar"
             ),
+            lane=lane,
+            lane_max_concurrent=lane_max_concurrent,
             qualification_attestation=target_attestation_reference(
                 adapter,
                 invocation_model_id=model_id,
@@ -498,10 +516,20 @@ class RuntimeRouter:
         request: GenerateRequest,
         *,
         request_id: str | None = None,
+        resolution: RuntimeResolution | None = None,
     ) -> GenerateResponse:
-        """Route a generate request to the correct adapter."""
+        """Route a generate request to the correct adapter.
+
+        When *resolution* is supplied it is used as the execution target
+        instead of resolving the model again.  A caller that has already
+        resolved and admitted the request must not have the target
+        re-resolved underneath it: the execution target has to be the
+        target whose capacity and context policy were evaluated, and a
+        second resolution can land on a different adapter or lane.
+        """
         model_id = request.model_id or "stub-model"
-        resolution = await self.resolve_model_runtime(model_id)
+        if resolution is None:
+            resolution = await self.resolve_model_runtime(model_id)
         result = await resolution.adapter.generate(
             ensure_backend_generate_request(
                 request, adapter_kind=resolution.adapter.kind

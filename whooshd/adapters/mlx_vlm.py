@@ -280,6 +280,15 @@ class MlxVlmAdapter:
         return RuntimeKind.MLX_VLM.value
 
     @property
+    def max_concurrent_requests(self) -> Optional[int]:
+        """The lane's own concurrency ceiling.
+
+        This is the same limit the adapter's semaphore enforces, surfaced so
+        admission can respect it before dispatch.
+        """
+        return self._max_concurrent
+
+    @property
     def supports_streaming(self) -> bool:
         return True
 

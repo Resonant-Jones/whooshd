@@ -26,6 +26,10 @@ The CLI tracks one daemon process at a time via `~/.whooshd/whooshd.pid` and
 probes, but PID and log state are global, not per-port. `whoosh down --port
 8010` stops the one tracked daemon, not a separate per-port instance.
 
+This limits running **several instances on one host**. It is not a
+multi-machine limitation: two installations on different hosts already have
+separate `~/.whooshd` directories, and their PID files do not conflict.
+
 The CLI will not kill unknown processes occupying a port. Inspect first:
 
 ```bash
@@ -64,6 +68,68 @@ Whoosh'd falls back to the operator ceiling and records `missing_profile`,
 `invalid_profile`, or `model_mismatch`. Evidence calibrated for one model or
 host is never applied to another.
 
+**Two ceilings, and the lower one is real.** The broker's admission limit
+(`WHOOSHD_MAX_ACTIVE_REQUESTS`) and the adapter's own lane limit
+(`WHOOSHD_MLX_MAX_CONCURRENT_REQUESTS`, `WHOOSHD_MLX_VLM_MAX_CONCURRENT_REQUESTS`,
+`WHOOSHD_LLAMA_CPP_MAX_CONCURRENT_REQUESTS`) are independent. The broker's
+`/runtime/capacity` reports the *broker's* effective limit; if the lane limit
+is lower, requests beyond it are refused by the runtime even though the broker
+reports headroom. **Read the lane limit, not just the broker limit, when
+sizing concurrency.**
+
+**Admission now respects the lane.** Each adapter may declare its own
+concurrency ceiling. When a lane declares one, the broker's effective limit
+for that request is capped by it, so a request that the lane cannot run is
+**queued** rather than admitted to stall and be refused. The global limit is
+not lowered for other lanes — a strict lane reserves capacity for itself
+without constraining independent lanes.
+
+Global capacity and lane capacity are **separate constraints over separate
+counters**, and both are checked — at initial admission *and* when a queued
+request is released. A saturated lane does not consume another lane's budget,
+and an idle lane is not starved because a different lane is busy.
+
+**A grant reserves capacity, not just ownership.** When the scheduler grants a
+queued request — including a cache-affinity selection that hands the slot to a
+*different* entry than the one being waited on — the execution slot is
+reserved at the instant of the grant and held until the request actually
+starts running. Without that reservation there is a scheduling gap between the
+grant and the granted waiter resuming, and a request arriving in that gap
+could take the slot that had already been handed out. The reservation is
+taken against the **candidate's** lane as well as against global capacity, and
+a candidate whose own lane is saturated is never granted.
+
+Both `/v1/chat/completions` and `/v1/generate` resolve the route before
+admitting, so the lane is known when the decision is made.
+
+The MLX-VLM lane defaults to **one** concurrent request, which was chosen
+without concurrency evidence. [CWC-013](../validation/2026-11-03-cwc013-lane-concurrency-experiment.md)
+measured concurrency 2 on isolated brokers against the 12B: 2/2 success in
+every run, zero swap-out in every warm band, and a verified clean lifecycle.
+Both runs are **attested**: the harness sampled the broker's own admission
+state during the x2 band and observed `peak_active_jobs = 2` with
+`peak_queue_depth = 0`, so the two requests are demonstrably in flight
+together.
+
+Quote the gain as a **range**, not a figure. Across four attested runs the
+aggregate throughput gain was **+66 %**, **+102 %**, **+69.5 %** and
+**+91.0 %**, with a per-request latency cost between **−1.4 %** and
+**+18.8 %**. The stable conclusion is that concurrency 2 *roughly doubles*
+aggregate throughput on this host and checkpoint; the exact percentage is
+not repeatable run to run.
+
+**Concurrency 2 is not demonstrably free of paging cost.** Three of the four
+runs recorded zero swap-out in every warm band; the fourth **failed its
+thrash criterion** (30 016 pages swapped out in the x2 band) in the run that
+followed the model being faulted back in from disk. The signal did not
+reproduce in the run immediately afterwards, so the mechanism is an
+association, not an established cause. If you raise the lane limit on a
+working deployment, watch swap activity under representative load and be
+ready to roll back.
+
+Raising the lane limit on the working deployment is now an evidence-backed
+choice rather than a guess — with that caveat attached.
+
 Generate a profile against a running instance:
 
 ```bash
@@ -78,6 +144,58 @@ python -m whooshd.bench.capacity_bench \
 
 **Rollback:** `unset WHOOSHD_CAPACITY_MODE WHOOSHD_CAPACITY_PROFILE_PATH`
 returns the process to fixed/default behavior.
+
+### Per-model context policy
+
+A `CapacityProfile` may carry token ceilings for the model it describes:
+
+| Budget | Meaning | Effect when exceeded |
+|---|---|---|
+| hard max | Capability ceiling — never exceeded | Request rejected with `context_overflow` (HTTP 422) |
+| recommended max | Default operating target | Request admitted unchanged; `context_reason` records the advisory |
+| interactive max | Latency-sensitive path target | Request admitted; reason recorded |
+| `max_input_tokens` | The model's maximum prompt size (text **and** media) | Request rejected with `context_overflow` (HTTP 422) |
+| `max_output_tokens` | The model's maximum completion size | Request rejected with `context_overflow` (HTTP 422) |
+
+Every request is costed in **assembled tokens**: input plus reserved output
+plus multimodal content. A model with no calibrated budgets is never
+constrained — the estimate is still reported as observability.
+
+**Budgets follow the request's model.** The lookup is keyed by the *resolved*
+model that will execute the request, not by the process-wide
+`WHOOSHD_CAPACITY_MODEL_ID`. On a broker that serves several models this
+matters: model A's hard ceiling is never applied to a request routed to model
+B. A request whose model has no measured budgets is admitted unchanged.
+
+**The counted prompt is the assembled prompt.** Tool definitions, assistant
+`tool_calls`, structured-output schemas, tool choice, and stop sequences are
+all forwarded upstream, so all of them are charged. The output reservation
+follows the larger of `max_tokens` and `max_completion_tokens`, because the
+broker forwards both and the upstream's precedence between them is not
+knowable from here.
+
+**Precision is reported, never assumed.** Every evaluation carries
+`context_cost_status` — `exact`, `estimated`, or `unknown`. A request whose
+media has no per-unit estimate is *undercounted*, not free, and its
+hard-limit comparison is explicitly best-effort rather than a guarantee.
+
+The model's maximum context window is a **capability ceiling, not a target
+request size**. Routine interactive turns should sit near the recommended
+budget; the hard maximum is for the rare request that genuinely needs it.
+
+### Real-runtime calibration
+
+`whooshd.bench.runtime_calibration` measures a live deployment: time to first
+token, upstream-reported prefill cost, throughput, queue latency, host swap
+activity, prompt-cache effectiveness, and lifecycle leak at rest.
+
+```bash
+scripts/calibrate_runtime.sh
+```
+
+It reads only, and writes a report; it never changes runtime state. Run it
+through the launchd job when the measurement must happen outside an agent
+sandbox — see [Runtime Calibration](ops/whooshd-runtime-calibration.md).
 
 ### Queue and admission
 

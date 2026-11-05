@@ -46,9 +46,38 @@ class QueueEntry:
     # ── Batch execution ────────────────────────────────────────────
     batch_claimed: bool = False
     batch_result_future: Any = None  # asyncio.Future, set at runtime
+    # -- Execution ownership --------------------------------------------
+    # Set when this entry has been granted for execution.  A granted entry
+    # has been removed from the queue and its waiting caller owns it.
+    # Excluded from equality so entries stay comparable by request identity
+    # rather than by their synchronization primitives.
+    granted: bool = field(default=False, compare=False)
+    # Woken when :attr:`granted` becomes true, so the owning waiter learns
+    # of the grant without waiting for a poll tick.
+    grant_event: asyncio.Event = field(
+        default_factory=asyncio.Event, compare=False, repr=False
+    )
+    # -- Route-specific capacity ----------------------------------------
+    # The inference lane that will execute this entry and that lane's own
+    # concurrency ceiling.  A grant must check the *candidate's* lane, not
+    # the granting waiter's: a cache-affinity selection may hand the slot
+    # to a request bound for a different lane.
+    lane: str | None = field(default=None, compare=False)
+    lane_max_concurrent: int | None = field(default=None, compare=False)
+    # -- Queue deadline ---------------------------------------------------
+    # Monotonic timestamp after which this request may no longer be
+    # granted execution.  Stamped at enqueue time.  A selection made by
+    # *another* waiter must honour this deadline, not just the deadline
+    # of the waiter doing the selecting.
+    deadline_at: float | None = field(default=None, compare=False)
 
     def __post_init__(self) -> None:
         self.upstream_request_id = normalize_identifier(self.upstream_request_id)
+
+    def mark_granted(self) -> None:
+        """Record that this entry has been granted for execution."""
+        self.granted = True
+        self.grant_event.set()
 
 
 class RequestQueue:
@@ -198,8 +227,43 @@ class RequestQueue:
 
     # ── Queue operations ──────────────────────────────────────────────
 
+    @staticmethod
+    def _is_expired(entry: Optional[QueueEntry]) -> bool:
+        """Whether *entry* has waited past its own queue deadline.
+
+        An entry with no deadline stamped is not expired — the deadline is
+        an upper bound on waiting time, never a lower bound.
+        """
+        if entry is None or entry.deadline_at is None:
+            return False
+        return time.monotonic() >= entry.deadline_at
+
+    def _timeout_entry(self, entry: QueueEntry) -> None:
+        """Remove an expired entry and record its queue timeout.
+
+        The entry leaves the queue here, so a caller that has waited past
+        its own deadline cannot be granted an execution slot afterwards.
+        """
+        removed = self.remove(entry.request_id)
+        if removed is not None:
+            logger.info(
+                "queue.timeout request_id=%s waited=%.1fs depth_after=%d",
+                entry.request_id,
+                self.timeout_seconds,
+                self.depth,
+            )
+
     def enqueue(self, entry: QueueEntry) -> None:
-        """Append a request to the back of the FIFO queue."""
+        """Append a request to the back of the FIFO queue.
+
+        The entry's **queue deadline** is stamped here: the request may
+        wait at most ``timeout_seconds`` from this moment.  Stamping it at
+        enqueue time (rather than when a waiter starts polling) gives every
+        entry the same deadline regardless of which coroutine happens to
+        be selecting on its behalf.
+        """
+        if entry.deadline_at is None:
+            entry.deadline_at = time.monotonic() + self.timeout_seconds
         self._deque.append(entry)
 
     def dequeue(self) -> Optional[QueueEntry]:
@@ -214,6 +278,8 @@ class RequestQueue:
         self,
         *,
         capacity_available,  # zero-arg callable returning bool
+        entry_eligible=None,  # optional callable(QueueEntry) -> bool
+        reserve=None,  # optional callable(QueueEntry) -> None
     ) -> Optional[QueueEntry]:
         """Scheduler-authoritative selection and atomic dequeue.
 
@@ -224,6 +290,8 @@ class RequestQueue:
         2. Asks the scheduler which request should run next.
         3. Atomically removes the selected entry **by request_id** so
            no position-based race can execute a request twice.
+        4. **Reserves the execution slot** for the selected entry before
+           handing it over.
 
         Returns the selected :class:`QueueEntry`, or ``None`` if no
         request is eligible (capacity unavailable, queue empty, or the
@@ -238,6 +306,29 @@ class RequestQueue:
               twice.
             * ``build_candidates()`` is O(N) but read-only; the atomic
               removal is the synchronisation point.
+
+        Capacity reservation:
+            The grant **reserves** capacity rather than only transferring
+            ownership.  Without the reservation there is a scheduling gap
+            between the grant and the granted waiter's resumption, during
+            which ``active_jobs`` does not yet include the granted
+            request — and a newly arriving request can be admitted into
+            the slot that has already been handed out.  ``reserve`` is
+            called synchronously with the removal, so no other coroutine
+            can observe the un-reserved state.
+
+        ``entry_eligible`` filters candidates by their **own** lane's
+        capacity before the scheduler chooses.  A cache-affinity
+        selection may prefer a candidate bound for a different lane, and
+        that candidate's lane must have room before it is granted.
+
+        Queue deadline:
+            Candidates whose **own** queue deadline has already passed are
+            excluded before the scheduler chooses.  A selection made on
+            behalf of another waiter must not hand execution to a request
+            that has already waited longer than the queue timeout allows —
+            otherwise that request would execute after its deadline, which
+            the timeout contract forbids.
         """
         candidates = self.build_candidates()
         if not candidates:
@@ -249,6 +340,30 @@ class RequestQueue:
             )
             return None
 
+        by_id = {e.request_id: e for e in self._deque}
+
+        # Expire candidates whose own queue deadline has passed.
+        live = [c for c in candidates if not self._is_expired(by_id.get(c.request_id))]
+        if not live:
+            self._scheduler.choose_next(
+                candidates, capacity_available=False
+            )
+            return None
+        candidates = live
+
+        if entry_eligible is not None:
+            eligible = [
+                c
+                for c in candidates
+                if entry_eligible(by_id.get(c.request_id))
+            ]
+            if not eligible:
+                self._scheduler.choose_next(
+                    candidates, capacity_available=False
+                )
+                return None
+            candidates = eligible
+
         decision = self._scheduler.choose_next(
             candidates, capacity_available=True
         )
@@ -257,7 +372,23 @@ class RequestQueue:
 
         # Atomic removal by request_id.  remove() also calls
         # scheduler.remove_request so bypass counts do not leak.
-        return self.remove(decision.request_id)
+        selected = self.remove(decision.request_id)
+        if selected is None:
+            # Another waiter claimed it first; nothing was removed here.
+            return None
+
+        # Reserve the execution slot.  This is synchronous with the
+        # removal above — no await separates them — so the reservation is
+        # atomic with respect to every other coroutine.
+        if reserve is not None:
+            reserve(selected)
+
+        # Execution ownership.  The removed entry is marked granted so its
+        # own waiting caller knows it may execute.  Without this, a
+        # cache-affinity selection would remove a request that no caller
+        # owns: it would neither run nor remain queued.
+        selected.mark_granted()
+        return selected
 
     def remove(self, request_id: str) -> Optional[QueueEntry]:
         """Remove a specific request by ID (for cancellation).
@@ -299,18 +430,57 @@ class RequestQueue:
 
     # ── Waiting ───────────────────────────────────────────────────────
 
+    async def _wait_for_signal(
+        self, entry: QueueEntry, timeout: float
+    ) -> None:
+        """Wait for a capacity signal, this entry's grant, or the timeout.
+
+        A waiter must wake when *its own* entry is granted, not only when
+        the shared capacity event fires: the granting waiter may have
+        selected a different candidate, and the granted entry's caller is
+        the only one that can execute it.
+        """
+        if entry.grant_event.is_set():
+            return
+        tasks = {
+            asyncio.ensure_future(self._capacity_event.wait()),
+            asyncio.ensure_future(entry.grant_event.wait()),
+        }
+        try:
+            await asyncio.wait(
+                tasks, timeout=timeout, return_when=asyncio.FIRST_COMPLETED
+            )
+        finally:
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+
     async def wait_for_execution(
         self,
         entry: QueueEntry,
         *,
         cancel_token: Optional[CancellationToken] = None,
         capacity_available: Optional[callable] = None,
+        entry_eligible: Optional[callable] = None,
+        reserve: Optional[callable] = None,
     ) -> bool:
         """Poll until this entry is at the front of the queue AND capacity
         is available, or until the timeout expires, or cancellation is requested.
 
         ``capacity_available`` is a zero-arg callable that returns True when
         an active execution slot is free (e.g. ``runtime.active_jobs < max``).
+        It expresses the **global** constraint only; per-lane constraints are
+        expressed through ``entry_eligible``.
+
+        ``entry_eligible`` is an optional callable that takes a
+        :class:`QueueEntry` and returns True when that entry's own lane has
+        room.  The scheduler only chooses among eligible candidates, so a
+        cache-affinity selection can never grant work to a saturated lane.
+
+        ``reserve`` is an optional callable that takes the granted
+        :class:`QueueEntry` and reserves its execution slot.  It is invoked
+        atomically with the grant.
 
         When the entry is at the front and capacity is available, the
         scheduler is consulted for the final selection (which under FIFO
@@ -323,7 +493,12 @@ class RequestQueue:
             True  — caller should execute the request (already removed).
             False — the request timed out or was cancelled; do not call adapter.
         """
-        deadline = time.monotonic() + self.timeout_seconds
+        # The entry's deadline is stamped at enqueue time, so it is the
+        # same deadline whoever acts on the entry's behalf.  Fall back to
+        # stamping one now for an entry that was never enqueued.
+        if entry.deadline_at is None:
+            entry.deadline_at = time.monotonic() + self.timeout_seconds
+        deadline = entry.deadline_at
 
         while True:
             # ── Check cancellation before anything else ────────────
@@ -338,6 +513,23 @@ class RequestQueue:
                 return False
 
             # ── Check if we are at the front of the queue ──────────
+            # Already granted?  Then this waiter owns the entry — but only
+            # if the grant was made in time.  A grant that arrives after
+            # this request's own queue deadline has passed must not be
+            # honoured: the request has waited longer than the timeout
+            # allows, so it is treated as timed out.
+            if entry.granted:
+                if self._is_expired(entry):
+                    self.remove(entry.request_id)
+                    logger.info(
+                        "queue.grant_expired request_id=%s waited=%.1fs depth_after=%d",
+                        entry.request_id,
+                        self.timeout_seconds,
+                        self.depth,
+                    )
+                    return False
+                return True
+
             front = self.peek()
             if front is not None and front.request_id == entry.request_id:
                 # We are next — check capacity.
@@ -347,7 +539,9 @@ class RequestQueue:
                     # returns this same entry, so the remove() below
                     # commits the claim by request_id (not position).
                     selected = self.select_and_dequeue(
-                        capacity_available=capacity_available or (lambda: True)
+                        capacity_available=capacity_available or (lambda: True),
+                        entry_eligible=entry_eligible,
+                        reserve=reserve,
                     )
                     if (
                         selected is not None
@@ -355,34 +549,54 @@ class RequestQueue:
                     ):
                         return True
                     # Race: the entry was removed between peek() and
-                    # select_and_dequeue (e.g. cancellation).  Treat as
-                    # "no longer eligible" — caller should not execute.
+                    # select_and_dequeue (e.g. cancellation), or no
+                    # candidate was eligible (e.g. every candidate's lane
+                    # is saturated).  Treat as "not eligible" — the
+                    # caller should not execute.
                     logger.debug(
                         "queue.select_lost request_id=%s selected=%s",
                         entry.request_id,
                         getattr(selected, "request_id", None),
                     )
-                    return False
+                    # The scheduler preferred a different candidate
+                    # (cache affinity).  That candidate has been removed
+                    # and granted, and its own waiting caller owns it.
+                    # This entry is still queued and still ours, so we
+                    # keep waiting for our turn instead of abandoning it.
+                    logger.debug(
+                        "queue.select_deferred request_id=%s selected=%s",
+                        entry.request_id,
+                        getattr(selected, "request_id", None),
+                    )
+                    # The scheduler declines to select an expired entry,
+                    # so a ``None`` result may mean *this* entry's own
+                    # deadline has passed.  Retrying the selection past
+                    # the deadline would spin the request in the queue
+                    # forever instead of returning its queue-timeout
+                    # response, so expiry is checked before the retry.
+                    if self._is_expired(entry):
+                        self._timeout_entry(entry)
+                        return False
+                    await self._wait_for_signal(
+                        entry,
+                        timeout=min(
+                            max(deadline - time.monotonic(), 0.0),
+                            self.poll_interval_s,
+                        ),
+                    )
+                    continue
                 # At front but no capacity — wait for capacity signal.
 
             # ── Check timeout ──────────────────────────────────────
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                removed = self.remove(entry.request_id)
-                if removed is not None:
-                    logger.info(
-                        "queue.timeout request_id=%s waited=%.1fs depth_after=%d",
-                        entry.request_id,
-                        self.timeout_seconds,
-                        self.depth,
-                    )
+                self._timeout_entry(entry)
                 return False
 
             # ── Wait for capacity signal or poll interval ──────────
             try:
-                await asyncio.wait_for(
-                    self._capacity_event.wait(),
-                    timeout=min(remaining, self.poll_interval_s),
+                await self._wait_for_signal(
+                    entry, timeout=min(remaining, self.poll_interval_s)
                 )
                 self._clear_capacity_signal()
             except asyncio.TimeoutError:

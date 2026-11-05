@@ -15,6 +15,8 @@ model serving.
 
 - [Capacity Controller](capacity-controller.md) — how many requests may execute
   right now; fixed/adaptive modes, operator ceiling, model/host-bound profiles
+- [Per-model context policy](operator-guide.md#per-model-context-policy) —
+  hard / recommended / interactive token budgets per model
 - [Throughput Control Plane Report](reports/throughput-control-plane.md) —
   recorded real-MLX validation results and the capacity recommendation
 - [Control-Plane Contract v1](control-plane-v1.md) — bounded machine-readable
@@ -23,6 +25,29 @@ model serving.
   contract, field policy, runtime provenance, qualification attestation
 - [Logging Safety Contract](security/whooshd-logging-safety.md) — bounded
   diagnostics and what remains unproven
+
+## Operations
+
+- [Operator Guide](operator-guide.md) — run, inspect, diagnose, roll back
+- [Runtime Calibration](ops/whooshd-runtime-calibration.md) — measured
+  real-runtime evidence: TTFT, prefill, throughput, cache effectiveness
+- [CWC-012 Runtime Calibration packet](validation/2026-11-02-cwc012-runtime-calibration.md)
+- [Local launchd Runtime](ops/whooshd-launchd-local-runtime.md)
+
+## Roadmap Status
+
+| Phase | Status |
+|---|---|
+| P0 real-runtime proof | **Passed** — CWC-012 (deployment measurement) and CWC-013 (lane concurrency experiment, four attested runs: concurrency 2 roughly doubles aggregate throughput; the thrash criterion was met in three of the four) |
+| P1 queue/scheduler execution-ownership defect | **Fixed** — a request is never removed from the queue without an owner |
+| P2 per-model context policy and request costing | **Shipped** — budgets on `CapacityProfile`, costing in `CapacityController` |
+| P2b route-specific capacity reservation | **Shipped** — admission caps the effective limit by the selected lane's own ceiling |
+| P3 MLX batch execution | **Evaluated — deferred.** See [the evaluation note](mlx-batch-execution-evaluation.md) |
+| P4 multi-node routing | **Demand-conditional** — not scheduled. The consequential blockers are host discovery, authenticated network access, model availability, and routing authority. A configurable state directory matters for several instances on *one* host, not for two machines |
+| P5 embeddings / tool calling | **Demand-conditional** — embeddings need an embedding model; tool calling needs an execute-vs-pass-through decision |
+
+Deferred by existing decision and not reopened: durable KV snapshots, token-step
+shared decode (Cave Thunder), production auth hardening.
 
 ## Reference
 
@@ -98,4 +123,4 @@ retroactively scrubbed.
 | Token-step shared decode | Researched, fake-proven, MLX-blocked |
 | ThreadWake | Observe-mode, KV skeleton; production KV reuse not enabled |
 | MLX / MLX-VLM / llama.cpp runtimes | Supported, host validation required |
-| Gemma 4 12B capacity calibration | Pending — host and checkpoint present, run not performed |
+| Gemma 4 12B capacity calibration | Blocked — the MLX-VLM lane's concurrency limit defaults to 1, so bands above 1 cannot be exercised. The deployment measurement itself passed |
